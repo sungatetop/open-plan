@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useEffect, useLayoutEffect, useMemo, useRef } from "react";
-import { motionScrollBehavior } from "../界面外观.js";
+import { motionScrollBehavior } from "../ui-appearance.js";
 import Icon from "./Icon.jsx";
-import { 提取消息展示文本 } from "./流式文本队列.js";
+import { 提取消息展示文本 } from "./StreamingTextQueue.js";
 
 /**
  * 会话消息目录栏（ZCode 风格细横杠时间线 + 悬停弹层）

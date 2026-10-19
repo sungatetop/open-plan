@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from "react";
 import Icon from "./Icon.jsx";
-import { completionLabel } from "../运行轨迹.js";
+import { completionLabel } from "../run-trace.js";
 
 // 工具 → 脑图分支分类
 const TOOL_CATEGORY = {

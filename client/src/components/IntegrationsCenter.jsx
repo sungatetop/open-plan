@@ -15,7 +15,7 @@ import {
   updatePiExtension,
 } from "../api.js";
 import { askConfirm } from "./Feedback.jsx";
-import { flag } from "../运行开关.js";
+import { flag } from "../feature-flags.js";
 
 const PI_CANDIDATES_KEY = "oaw_pi_package_candidates_v1";
 

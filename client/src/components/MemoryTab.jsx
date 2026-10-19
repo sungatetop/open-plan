@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useCallback, useRef } from "react";
 import Icon from "./Icon.jsx";
 import { approveMemoryProposal, editMemoryProposal, listMemoryProposals, memoryProposalHistory, mergeMemoryProposals, rejectMemoryProposal } from "../api.js";
-import { acquireStream } from "../长连接预算.js";
+import { acquireStream } from "../stream-budget.js";
 
 const MEMORY_CATEGORY_LABELS = {
   project_fact: "项目事实",

@@ -3,7 +3,7 @@ import Icon from "./Icon.jsx";
 import MarkdownBody from "./MarkdownBody.jsx";
 import KnowledgeGraph from "./KnowledgeGraph.jsx";
 import MindMap from "./MindMap.jsx";
-import RetrievalChat from "./检索对话.jsx";
+import RetrievalChat from "./SearchChat.jsx";
 import {
   kbStatus, kbAddRoot, kbRemoveRoot, kbTree, kbSearch, kbGraph, kbDoc,
   kbImaStatus, kbImaBases, kbImaSearch, kbImaDoc,

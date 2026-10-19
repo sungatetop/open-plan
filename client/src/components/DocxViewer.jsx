@@ -3,10 +3,10 @@ import { renderAsync } from "docx-preview";
 import { Document, Packer, Paragraph, TextRun, AlignmentType, HeadingLevel } from "docx";
 import Icon from "./Icon.jsx";
 import CommentMarker from "./CommentMarker.jsx";
-import { repaginateDocx } from "./文档分页.js";
-import { extractDocxOutline } from "./文档目录.js";
-import { motionScrollBehavior } from "../界面外观.js";
-import { buildDocUrls, makeFileIdentity, identityMatches, readIdentityHeader, previewStateFromError, PREVIEW_STATE } from "../文件地址.js";
+import { repaginateDocx } from "./DocPagination.js";
+import { extractDocxOutline } from "./DocOutline.js";
+import { motionScrollBehavior } from "../ui-appearance.js";
+import { buildDocUrls, makeFileIdentity, identityMatches, readIdentityHeader, previewStateFromError, PREVIEW_STATE } from "../file-urls.js";
 
 /**
  * Word 文档查看器（增强版）

@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
-import { atomicWriteJson } from "./持久化工具.mjs";
+import { atomicWriteJson } from "./persistence-utils.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const PROJECT_DIR = path.resolve(__dirname, "..");
@@ -11,7 +11,7 @@ export const CLIENT_DIST = path.join(PROJECT_DIR, "client", "dist");
 
 // OfficeCLI 二进制解析优先级：
 //   1. 环境变量 OFFICECLI_BIN（显式指定）
-//   2. 项目内置 bin/officecli（node scripts/install-officecli.mjs 安装）
+//   2. 项目内置 bin/officecli（node scripts/tools/install-officecli.mjs 安装）
 //   3. 系统 PATH 中的 officecli
 //   4. Windows 默认安装路径（officecli.ai 官方安装脚本）
 function resolveOfficecli() {
@@ -38,7 +38,7 @@ export const OFFICECLI = resolveOfficecli();
 
 // AGENT_DIR 是规聚自己的配置目录；LOCAL_PI_AGENT_DIR 仅用于检测/显式导入。
 // 两者由配置管理器统一解析，避免业务模块继续绑定某台机器的用户目录。
-export { AGENT_DIR, LOCAL_PI_AGENT_DIR } from "./Pi配置管理.mjs";
+export { AGENT_DIR, LOCAL_PI_AGENT_DIR } from "./pi-config-management.mjs";
 
 fs.mkdirSync(WORKSPACE_DIR, { recursive: true });
 

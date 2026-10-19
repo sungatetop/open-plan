@@ -4,10 +4,10 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { getWorkspace } from "./workspace.mjs";
-import { appendEvent } from "./事件存储.mjs";
-import { atomicWriteJson, ensureDirectory } from "./持久化工具.mjs";
-import { attachRunTimingSpans } from "./首字延迟.mjs";
-import { RUNTIME_FLAGS } from "./运行开关.mjs";
+import { appendEvent } from "./event-storage.mjs";
+import { atomicWriteJson, ensureDirectory } from "./persistence-utils.mjs";
+import { attachRunTimingSpans } from "./first-token-latency.mjs";
+import { RUNTIME_FLAGS } from "./feature-flags.mjs";
 import {
   discardStagedRun,
   ensureRunStaging,
@@ -17,9 +17,9 @@ import {
   reclaimStaleWriteLocks,
   releaseRunLocks,
   withWriteLock,
-} from "./写入协调.mjs";
-import { validateArtifactFile } from "./产物验证.mjs";
-import { applyObjectiveDowngrade } from "./运行轨迹.mjs";
+} from "./write-coordination.mjs";
+import { validateArtifactFile } from "./artifact-verification.mjs";
+import { applyObjectiveDowngrade } from "./run-trace.mjs";
 
 const PROJECT_DIR = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 const RUNS_DIR = process.env.OAW_RUNS_DIR || path.join(PROJECT_DIR, ".oaw", "runs");

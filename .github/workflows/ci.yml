@@ -26,49 +26,49 @@ jobs:
         run: npm run build
 
       - name: 执行轨迹归约（工具聚合 / 完成语义 / 每轮用时与 token）
-        run: node scripts/CI运行测试.mjs 执行轨迹归约测试
+        run: node scripts/ci-runner.mjs run-trace-reduction-test
 
       - name: 事件注册表一致性
-        run: node scripts/CI运行测试.mjs 事件注册表测试
+        run: node scripts/ci-runner.mjs event-registry-test
 
       - name: 任务结论事件流
-        run: node scripts/CI运行测试.mjs 任务结论事件流测试
+        run: node scripts/ci-runner.mjs task-conclusion-event-test
 
       - name: 成果可信度（归属分层 / 回滚与固定口径）
-        run: node scripts/CI运行测试.mjs 成果可信度测试
+        run: node scripts/ci-runner.mjs artifact-credibility-test
 
       - name: 动效治理（持续动画白名单与降级）
-        run: node scripts/CI运行测试.mjs 动效治理测试
+        run: node scripts/ci-runner.mjs motion-governance-test
 
       - name: 主任务流（交互与结果卡）
-        run: node scripts/CI运行测试.mjs 主任务流可信度测试
+        run: node scripts/ci-runner.mjs main-flow-credibility-test
 
       - name: 对话流（过程折叠 / 产物卡片 / 结论内嵌）
-        run: node scripts/CI运行测试.mjs 对话流性能回归测试
+        run: node scripts/ci-runner.mjs chat-flow-perf-regression-test
 
       - name: 长连接预算与流去重（切工作区/切会话卡死防护）
-        run: node scripts/CI运行测试.mjs 长连接预算与流去重测试
+        run: node scripts/ci-runner.mjs stream-budget-dedup-test
 
       - name: 地图只读能力与临时层（阶段 0 地基）
-        run: node scripts/CI运行测试.mjs 地图只读能力与临时层测试
+        run: node scripts/ci-runner.mjs map-readonly-temp-layer-test
 
       - name: 地图图层模型与入口（阶段 1：归属 / 选择器 / 审批 / 分组）
-        run: node scripts/CI运行测试.mjs 地图图层模型与入口测试
+        run: node scripts/ci-runner.mjs map-layer-model-test
 
       - name: 交通数据源与可视化描述符（阶段 5 + 阶段 2.1）
-        run: node scripts/CI运行测试.mjs 交通数据源与可视化描述符测试
+        run: node scripts/ci-runner.mjs traffic-sources-visual-descriptor-test
 
       - name: 地图可视化统一与面板整合（阶段 2：面板下线 / 顶栏收敛）
-        run: node scripts/CI运行测试.mjs 地图可视化统一与面板整合测试
+        run: node scripts/ci-runner.mjs map-visual-unification-test
 
       - name: 地图对话栏适配（阶段 4：紧凑呈现 / 状态行 / 临时层提示）
-        run: node scripts/CI运行测试.mjs 地图对话栏适配测试
+        run: node scripts/ci-runner.mjs map-chat-adapter-test
 
       - name: 工作区隔离（地图项目生命周期）
-        run: node scripts/CI运行测试.mjs 工作区隔离回归测试
+        run: node scripts/ci-runner.mjs workspace-isolation-test
 
       - name: Pi 内置供应商目录与一键添加（登录方式区分 / 能力自动带出）
-        run: node scripts/CI运行测试.mjs 供应商目录与一键导入测试
+        run: node scripts/ci-runner.mjs provider-catalog-import-test
 
       - name: Review 报错修复（officecli 参数 / 临时文件 / 输入区布局）
-        run: node scripts/CI运行测试.mjs Review报错修复回归测试
+        run: node scripts/ci-runner.mjs review-fix-regression-test

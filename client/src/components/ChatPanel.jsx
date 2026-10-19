@@ -3,23 +3,23 @@ import { createPortal } from "react-dom";
 import { fileToBase64, listModels, setAgentModel, compactAgentContext, getApprovalMode, setApprovalMode as saveApprovalMode, deleteSession, deleteSessions, renameSession, forkSession, approveMemoryProposal, rejectMemoryProposal, rollbackRun, getRun, listRuns } from "../api.js";
 import MarkdownBody from "./MarkdownBody.jsx";
 import Icon, { ProviderIcon } from "./Icon.jsx";
-import ToolIdentityIcon from "./工具语义图标.jsx";
+import ToolIdentityIcon from "./SemanticToolIcon.jsx";
 import Logo from "./Logo.jsx";
 import ChatTimeline from "./ChatTimeline.jsx";
 import AgentBrainGraph from "./AgentBrainGraph.jsx";
-import { 提取消息展示文本, 计算展示字符数 } from "./流式文本队列.js";
-import { completionLabel, formatDuration, formatTokenCount, reduceRunTrace, reduceTurnMetrics, runToolDetailText, runTraceProgressText, runTraceSummaryText, summarizeRunTrace, summarizeTurnMetrics, turnMetricsText, verificationLabel } from "../运行轨迹.js";
-import { associateRunMessages, projectLegacyRunSummary, upsertRunSummaryMessage } from "../运行展示投影.js";
-import { FLOW_EVENT_TYPES, PHASE_LABELS, STAGE_ONLY_EVENTS, flowEventLabel, flowEventTone, toolIdentity } from "../事件展示.js";
-import { buildArtifactIndex } from "../产物类型.js";
+import { 提取消息展示文本, 计算展示字符数 } from "./StreamingTextQueue.js";
+import { completionLabel, formatDuration, formatTokenCount, reduceRunTrace, reduceTurnMetrics, runToolDetailText, runTraceProgressText, runTraceSummaryText, summarizeRunTrace, summarizeTurnMetrics, turnMetricsText, verificationLabel } from "../run-trace.js";
+import { associateRunMessages, projectLegacyRunSummary, upsertRunSummaryMessage } from "../run-display-projection.js";
+import { FLOW_EVENT_TYPES, PHASE_LABELS, STAGE_ONLY_EVENTS, flowEventLabel, flowEventTone, toolIdentity } from "../event-display.js";
+import { buildArtifactIndex } from "../artifact-types.js";
 import { SessionList } from "./SessionSidebar.jsx";
 import { loadSettings } from "./SettingsPanel.jsx";
-import { isMotionReduced, motionScrollBehavior, useAppearance, useAppearanceSetter } from "../界面外观.js";
-import { startLatencyProbe, markLatency, patchLatencyMeta, markFirstDomText, finalizeLatencyProbe } from "../首字延迟埋点.js";
-import { acquireStream, closeEventSourceQuietly, noteCursorGap } from "../长连接预算.js";
+import { isMotionReduced, motionScrollBehavior, useAppearance, useAppearanceSetter } from "../ui-appearance.js";
+import { startLatencyProbe, markLatency, patchLatencyMeta, markFirstDomText, finalizeLatencyProbe } from "../first-token-latency-tracker.js";
+import { acquireStream, closeEventSourceQuietly, noteCursorGap } from "../stream-budget.js";
 import { notifyError, askConfirm } from "./Feedback.jsx";
-import { flag, flagsReady, numberFlag } from "../运行开关.js";
-import { getBrowserStreamState } from "../浏览器联动.js";
+import { flag, flagsReady, numberFlag } from "../feature-flags.js";
+import { getBrowserStreamState } from "../browser-linkage.js";
 
 // O-P3：浏览器"写操作类"工具白名单 —— 只有这些会拉起内置浏览器侧栏；
 // browser_close / browser_tabs / browser_snapshot / browser_screenshot 等查看或收尾动作不拉起。
@@ -65,7 +65,7 @@ const MODE_KEY = "oaw_chat_mode";
 const THINKING_KEY = "oaw_thinking_level";
 const APPROVAL_MODE_KEY = "oaw_approval_mode";
 const DEFAULT_CONTEXT_WINDOW = 128000;
-// 与服务端 Pi 压缩策略保持一致（server/Pi运行时管理.mjs 的 PI_COMPACTION_POLICY）：
+// 与服务端 Pi 压缩策略保持一致（server/pi-runtime-management.mjs 的 PI_COMPACTION_POLICY）：
 // 服务端快照没返回时用作展示兜底，不代表新策略。
 const PI_COMPACTION_RESERVE_TOKENS = 16384;
 const PI_COMPACTION_KEEP_RECENT_TOKENS = 20000;
@@ -329,7 +329,7 @@ function writeStoredModelList(key, list) {
 // 中心对话区只保留能解释“任务进行到哪一步”的 SSE 事件；高频 token/thinking
 // 仍由消息流渲染，避免把每个 token 都变成一条 UI 记录。运行期间展开，完成后
 // 自动收成一行，用户仍可点击核对模型请求、工具调用、写入和收尾是否完整。
-// 进入执行流的事件类型来自 ../事件展示.js 的注册表（唯一事实来源），
+// 进入执行流的事件类型来自 ../event-display.js 的注册表（唯一事实来源），
 // 不在组件里维护第二份清单。
 
 // 恢复 Pi JSONL 时可能同时存在空 assistant 占位、SSE 重试留下的重复消息，
@@ -406,7 +406,7 @@ export function normalizeHistoryMessages(items) {
   return associateRunMessages(result);
 }
 
-// 事件文案 / 语气 / 阶段统一来自 ../事件展示.js（事件展示注册表），
+// 事件文案 / 语气 / 阶段统一来自 ../event-display.js（事件展示注册表），
 // 这里不再维护第二份 switch，新增事件只需在注册表登记一次。
 
 function appendExecutionFlowEvent(previous, event) {
@@ -434,7 +434,7 @@ function usageDetails(usage) {
   return { input, output, cacheRead, cacheWrite, context };
 }
 
-// token 文案统一走 运行轨迹.js 的 formatTokenCount（导入），不再在组件里维护第二份。
+// token 文案统一走 run-trace.js 的 formatTokenCount（导入），不再在组件里维护第二份。
 
 // Office 是历史任务/会话的兼容值；用户入口使用 Chat / Work / Review。
 function normalizeUiMode(mode) {
@@ -616,7 +616,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   }, []);
   const [historyLoading, setHistoryLoading] = useState(false);
   // B02：执行过程显示由外观设置驱动（compact | expanded | hidden），走共享订阅立即生效；
-  // 旧版独立的 oaw_execution_flow_hidden 已由 界面外观.js 一次性迁移。
+  // 旧版独立的 oaw_execution_flow_hidden 已由 ui-appearance.js 一次性迁移。
   const appearance = useAppearance();
   const setAppearance = useAppearanceSetter();
   const flowHidden = appearance.activityDisplay === "hidden";

@@ -20,7 +20,7 @@ const MAPS_ROOT = path.join(WORKSPACE_DIR, "maps");
 export const DEFAULT_PROJECT = "zhejiang-map";
 
 // 字形地址（单一定义）：自托管到 /glyphs/，由 client/public/glyphs 提供
-// （scripts/生成地图字形.mjs 生成）。改这里即可全项目生效。
+// （scripts/tools/generate-map-glyphs.mjs 生成）。改这里即可全项目生效。
 export const GLYPHS_URL = "/glyphs/{fontstack}/{range}.pbf";
 
 export const STATIC_ROOT = MAPS_ROOT; // index.mjs 静态挂载点
@@ -1152,7 +1152,7 @@ export function getODLines(name = DEFAULT_PROJECT) {
 
   const odPath = path.join(dir, "layers", "OD期望线.geojson");
   if (!fs.existsSync(odPath)) {
-    return { error: "OD 数据不存在，请运行 生成M2数据.mjs" };
+    return { error: "OD 数据不存在，请运行 generate-m2-data.mjs" };
   }
 
   const geojson = JSON.parse(fs.readFileSync(odPath, "utf8"));
@@ -1209,7 +1209,7 @@ export function getExchangeSankey(name = DEFAULT_PROJECT) {
 
   const sankeyPath = path.join(dir, "layers", "区域交换量.json");
   if (!fs.existsSync(sankeyPath)) {
-    return { error: "区域交换量数据不存在，请运行 生成M2数据.mjs" };
+    return { error: "区域交换量数据不存在，请运行 generate-m2-data.mjs" };
   }
 
   const data = JSON.parse(fs.readFileSync(sankeyPath, "utf8"));

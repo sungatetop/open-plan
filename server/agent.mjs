@@ -14,22 +14,22 @@ import {
   defineTool,
   PI_COMPACTION_POLICY,
   piRuntimeManager,
-} from "./Pi运行时管理.mjs";
+} from "./pi-runtime-management.mjs";
 import { SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { RUNTIME_FLAGS } from "./运行开关.mjs";
+import { RUNTIME_FLAGS } from "./feature-flags.mjs";
 // Qoder P0-2：单帧体积护栏（纯函数；开关关闭时不参与任何逻辑）
-import { 工具输出分片, 工具输出帧上限 } from "./流连接.mjs";
-import { canonicalFromEnvelope } from "./事件规范化.mjs";
-import { isToolGateRejection } from "./pi-extensions/工作台把关.mjs";
-import { getBashSidecar } from "./内核侧车.mjs";
+import { 工具输出分片, 工具输出帧上限 } from "./stream-connection.mjs";
+import { canonicalFromEnvelope } from "./event-normalization.mjs";
+import { isToolGateRejection } from "./pi-extensions/workspace-guard.mjs";
+import { getBashSidecar } from "./kernel-sidecar.mjs";
 import { AGENT_DIR, PROJECT_DIR, WORKSPACE_DIR, OFFICECLI, getWorkspace, normalizeWorkspace, isInside } from "./workspace.mjs";
 import {
   TURN_PROGRESS_INTERVAL,
   turnNoticeKind,
   turnNoticeText,
   turnBudgetPolicy,
-} from "./轮次预算.mjs";
+} from "./turn-budget.mjs";
 // 运行预算与重复失败门禁（E02）：把纯逻辑模块接入真实工具/回合路径，
 // 产出可见的预算事件；默认软提醒，OAW_RUN_BUDGET_ENFORCE=hard 时才用 abort 硬停。
 import {
@@ -39,11 +39,11 @@ import {
   noteToolResult,
   noteTurn,
   budgetSnapshot,
-} from "./运行预算.mjs";
-import { importLocalPiSessionFile, readCredentials, readModelsConfig, readModelsStore, readRuntimeSettings, writeCredentials } from "./Pi配置管理.mjs";
+} from "./run-budget.mjs";
+import { importLocalPiSessionFile, readCredentials, readModelsConfig, readModelsStore, readRuntimeSettings, writeCredentials } from "./pi-config-management.mjs";
 import { resolveReferences, readReference, contextSummary } from "./context.mjs";
 import { recordRunEvent, updateRunTodo, getRun } from "./runs.mjs";
-import { markRunTiming, attachRunTimingSpans } from "./首字延迟.mjs";
+import { markRunTiming, attachRunTimingSpans } from "./first-token-latency.mjs";
 import { modeDescription, modeLabel, normalizeTaskMode, taskSummary, toolPolicyForMode } from "./task.mjs";
 
 /**
@@ -64,7 +64,7 @@ export function buildOutputPolicyLines({ mode = "work" } = {}) {
   ];
 }
 import { createDemoAnalysis } from "./map-analysis.mjs";
-import { atomicWriteFile, atomicWriteJson } from "./持久化工具.mjs";
+import { atomicWriteFile, atomicWriteJson } from "./persistence-utils.mjs";
 import {
   acquireWriteLock,
   acquireWriteLockWithRetry,
@@ -76,9 +76,9 @@ import {
   stageWrite,
   stagedAccess,
   writeWorkspaceFile,
-} from "./写入协调.mjs";
+} from "./write-coordination.mjs";
 // officecli 的参数处理（分词 / 暂存文件引用 / 输出目录）抽成纯函数模块，便于单测。
-import { collectReferencedPaths, ensureOfficeOutputDirs, parseOfficeArgs as parseArgs } from "./office参数.mjs";
+import { collectReferencedPaths, ensureOfficeOutputDirs, parseOfficeArgs as parseArgs } from "./office-params.mjs";
 import {
   approveMemoryProposal as approveStoredMemoryProposal,
   createMemoryProposal,
@@ -87,12 +87,12 @@ import {
   listMemoryProposals as listStoredMemoryProposals,
   mergeMemoryProposals,
   rejectMemoryProposal as rejectStoredMemoryProposal,
-} from "./记忆管理.mjs";
-import { isGlobalSearchCommand, normalizeBashOptions } from "./命令安全策略.mjs";
-import { normalizeOfficeFailure } from "./文件权限错误.mjs";
-import { requireToolApproval } from "./审批策略.mjs";
-import { webSearch } from "./联网搜索.mjs";
-import { webFetch } from "./网页读取.mjs";
+} from "./memory-management.mjs";
+import { isGlobalSearchCommand, normalizeBashOptions } from "./command-safety-policy.mjs";
+import { normalizeOfficeFailure } from "./file-permission-error.mjs";
+import { requireToolApproval } from "./approval-policy.mjs";
+import { webSearch } from "./web-search.mjs";
+import { webFetch } from "./web-reader.mjs";
 import {
   browserBack,
   browserClick,
@@ -105,13 +105,13 @@ import {
   browserSnapshot,
   browserTabs,
   browserType,
-} from "./内置浏览器.mjs";
-import { CHANNEL_HISTORY_LIMIT, PROTOCOL_VERSION, createStreamId, pushChannelEvent } from "./事件协议.mjs";
-import { completionStatusLabel, inferCompletion, normalizeCompletion } from "./运行轨迹.mjs";
-import { evaluateMemoryCandidate } from "./记忆准入.mjs";
-import { getProjectForWorkspace } from "./项目管理.mjs";
-import { cachedMcpTools, callMcpTool } from "./mcp管理.mjs";
-import { enabledPiExtensionEntries, enabledPiExtensionPaths } from "./pi扩展管理.mjs";
+} from "./builtin-browser.mjs";
+import { CHANNEL_HISTORY_LIMIT, PROTOCOL_VERSION, createStreamId, pushChannelEvent } from "./event-protocol.mjs";
+import { completionStatusLabel, inferCompletion, normalizeCompletion } from "./run-trace.mjs";
+import { evaluateMemoryCandidate } from "./memory-admission.mjs";
+import { getProjectForWorkspace } from "./project-management.mjs";
+import { cachedMcpTools, callMcpTool } from "./mcp-management.mjs";
+import { enabledPiExtensionEntries, enabledPiExtensionPaths } from "./pi-extension-management.mjs";
 
 function schemaToTypeBox(schema = {}, depth = 0) {
   if (!schema || typeof schema !== "object" || depth > 8) return Type.Any();
@@ -343,7 +343,7 @@ const MODEL_FALLBACK_LIMIT = 2;
 // 让模型显式声明完成状态（否则 Run 只能靠推断，用户无法区分"回答完了"与"任务完成了"）。
 const COMPLETION_NUDGE_PROMPT =
   "系统提醒：本轮工具执行已经结束，但还没有声明完成状态。请立即调用 complete_task，如实填写 status（success/partial/blocked/failed）、summary、未完成项 incomplete 或阻塞原因 blockers、以及验证方式 verification。不要再执行新的工具调用，也不要扩展任务范围。";
-// 轮次预算与周期进度播报来自 server/轮次预算.mjs（唯一事实来源，含单测覆盖）：
+// 轮次预算与周期进度播报来自 server/turn-budget.mjs（唯一事实来源，含单测覆盖）：
 // TURN_BUDGET_SOFT/HARD = 25/45 关键点，TURN_PROGRESS_INTERVAL = 每 N 轮进度小结。
 
 /**
@@ -394,14 +394,14 @@ function stopRunByBudget(entry) {
 }
 
 // 子代理角色/编排（P1-C/P2-B）：角色定义表、并发 fan-out、对抗式核验与 revise 回环
-// 全部在子代理编排器.mjs（确定性代码逻辑）；本文件只提供 Pi 子会话执行器（Provider seam）。
+// 全部在subagent-orchestrator.mjs（确定性代码逻辑）；本文件只提供 Pi 子会话执行器（Provider seam）。
 import {
   SUBAGENT_ROLES,
   resolveRole,
   orchestrateSubagents,
-} from "./子代理编排器.mjs";
+} from "./subagent-orchestrator.mjs";
 // Editorial Pipeline（P2-A）：Planner→Writer→Formatter（原生）→Evaluator 的确定性编排
-import { runEditorialPipeline } from "./编辑流水线.mjs";
+import { runEditorialPipeline } from "./editorial-pipeline.mjs";
 
 export function noteRepeatedToolCall(entry, session, ev, emit) {
   try {
@@ -1066,7 +1066,7 @@ class AgentManager extends EventEmitter {
               "- **Word 批注**: 先用 `officecli get <file> /body --depth 3 --json` 或 `query <file> paragraph --json` 找到真实段落路径，再用 `add <file> /body/p[N] --type comment --prop author=\\\"规聚 Agent\\\" --prop initials=OA --prop text=\\\"批注内容\\\" --json` 写入；一次 get 只传一个 DOM 路径，完成后用 `query <file> comment --json` 回读校验。若错误明确为 sharing violation 或另一个进程占用，再提示关闭 WPS/Word/OfficeCLI 预览；若是 Access denied、is denied、EPERM 或 EACCES，应说明服务进程缺少系统写权限，不要尝试绕过沙箱。",
               "- **写文件规范**: 创建任何新文件（HTML/文档/图表等）时，必须写入 `.agent-context.md` 中的「当前工作区」绝对路径，禁止写入项目目录。否则产物不会被前端检测到。",
               "- **知识库（kb）**: 本地知识库索引了多个 Markdown 根目录（如 柬埔寨公交项目/义乌物流专题资料/_knowledge_base）。可用 kb_search 搜索、kb_read 读取全文。用户引用格式 `@知识库[路径@根目录名]`——例如 `@知识库[OD出行分析报告_完整版.md@柬埔寨公交项目]`，分析知识库内容时优先调用这两个工具，不要靠猜测。",
-              "- **地图（GIS）**: 地图项目位于 `当前工作区/maps/{project}/`（默认项目 zhejiang-map 浙江省交通地图，含高速公路/国省道/农村公路/收费站/枢纽/市县边界图层，矢量瓦片 + MapLibre 渲染）。用户在地图模式下对话时：用 map_read 查看项目状态与图层清单；用 map_edit 修改样式（图层显隐/颜色/线宽/透明度/顺序/新增图层），修改会实时反映到前端地图；用 map_import 把工作区里的 GeoJSON 导入为新图层（自动生成瓦片）。也可直接读写 style.json / map.config.json / layers/*.geojson（相对 maps/{project}/）。若改了 layers/*.geojson 数据，可运行 `node scripts/build-vector-tiles.mjs --layer=<图层名>` 重建瓦片（在项目根目录 `" + PROJECT_DIR + "` 下执行）。底图源：carto/osm/dark/satellite。",
+              "- **地图（GIS）**: 地图项目位于 `当前工作区/maps/{project}/`（默认项目 zhejiang-map 浙江省交通地图，含高速公路/国省道/农村公路/收费站/枢纽/市县边界图层，矢量瓦片 + MapLibre 渲染）。用户在地图模式下对话时：用 map_read 查看项目状态与图层清单；用 map_edit 修改样式（图层显隐/颜色/线宽/透明度/顺序/新增图层），修改会实时反映到前端地图；用 map_import 把工作区里的 GeoJSON 导入为新图层（自动生成瓦片）。也可直接读写 style.json / map.config.json / layers/*.geojson（相对 maps/{project}/）。若改了 layers/*.geojson 数据，可运行 `node scripts/tools/build-vector-tiles.mjs --layer=<图层名>` 重建瓦片（在项目根目录 `" + PROJECT_DIR + "` 下执行）。底图源：carto/osm/dark/satellite。",
               "- **地图分析**: 用户说“在义乌生成热力图/等时圈”、要求 OD 期望线或公交分析时，优先使用 map_analyze 生成并显示临时结果；结果明确标记演示数据，用户确认后再保存为正式图层。",
               "- **主动询问（重要）**: 当用户要求撰写/生成文字内容，但关键信息不明确（文档类型、格式、篇幅、受众、数据来源、风格、范围等）时，**必须调用 ask_user 工具主动提问**，等待用户回答后再继续，不要猜测。每次只问一个最关键的、阻塞后续工作的问题。",
               "- **复杂任务待办**: 预计超过两步的任务，先调用 `todo` 工具创建 2-6 项结构化待办；每完成一项或状态发生变化后，立即用 `todo` 提交完整清单。不要把每个工具调用都拆成待办项。Markdown 清单只能作为可选的人类可读摘要，任务区以 `todo` 工具状态为准。",
@@ -1294,7 +1294,7 @@ class AgentManager extends EventEmitter {
 exec: async (command, cwd, options) => {
           const ctx = activeWriteContext("bash");
           const commandText = String(command || "");
-          // 删除/破坏类命令默认进入用户审批（规则表见 审批策略.mjs）
+          // 删除/破坏类命令默认进入用户审批（规则表见 approval-policy.mjs）
           await requireToolApproval({
             entry, tool: "bash", input: commandText,
             runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, emit: writeEvent,
@@ -1362,7 +1362,7 @@ execute: async (_toolCallId, params) => {
         }
         const mutating = new Set(["set", "batch", "add", "remove", "move", "swap", "delete", "create", "import", "open", "close", "save"]).has(parsed.command);
         if (mutating && parsed.file) assertReviewWriteAllowed(parsed.file, "officecli");
-        // 写入/删除类 Office 命令默认进入用户审批（规则表见 审批策略.mjs）
+        // 写入/删除类 Office 命令默认进入用户审批（规则表见 approval-policy.mjs）
         await requireToolApproval({
           entry, tool: "officecli", input: String(params.args || ""),
           runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, emit: writeEvent,
@@ -1935,7 +1935,7 @@ execute: async (_toolCallId, params) => {
       }),
       execute: async (_toolCallId, params) => {
         const map = await import("./map.mjs");
-        const repo = await import("./图层仓库.mjs");
+        const repo = await import("./layer-repository.mjs");
         const name = params.project || entry.task?.mapProject || map.DEFAULT_PROJECT;
         const p = map.getProject(name);
         if (!p) return { content: [{ type: "text", text: `项目不存在: ${name}` }], details: {} };
@@ -1995,7 +1995,7 @@ execute: async (_toolCallId, params) => {
       }),
       execute: async (_toolCallId, params) => {
         const map = await import("./map.mjs");
-        const repo = await import("./图层仓库.mjs");
+        const repo = await import("./layer-repository.mjs");
         const name = params.project || entry.task?.mapProject || map.DEFAULT_PROJECT;
         const dir = map.projectDir(name);
         if (!dir) return { content: [{ type: "text", text: "项目不存在" }], details: {} };
@@ -2166,7 +2166,7 @@ execute: async (_toolCallId, params) => {
           writeEvent("write_locked", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: `maps/${name}`, kind: "map_import" });
           const imported = await map.importLayer(name, layerId, geojson);
           // 标注归属：导入的图层属于当前工作区（共享数据集内的 id 不会被改写）。
-          const repo = await import("./图层仓库.mjs");
+          const repo = await import("./layer-repository.mjs");
           repo.markLayerOwnership(name, layerId, { workspace: String(ws || entry.workspace || "") });
           return imported;
         });
@@ -2191,7 +2191,7 @@ execute: async (_toolCallId, params) => {
       }),
       execute: async (_toolCallId, params) => {
         const map = await import("./map.mjs");
-        const repo = await import("./图层仓库.mjs");
+        const repo = await import("./layer-repository.mjs");
         const wanted = String(params.project || "").trim();
         const projects = map.listProjects() || [];
         if (!projects.length) {
@@ -2225,8 +2225,8 @@ execute: async (_toolCallId, params) => {
         // 尤其是 local-file——用户把 CSV/GeoJSON 丢进工作区时，这条是唯一入口。
         let sourceRows = [];
         try {
-          const { listSources } = await import("./地图可视化.mjs");
-          await import("./交通数据源.mjs");
+          const { listSources } = await import("./map-visualization.mjs");
+          await import("./traffic-sources.mjs");
           const sources = listSources();
           if (sources.length) {
             sourceRows = [
@@ -2277,7 +2277,7 @@ execute: async (_toolCallId, params) => {
             return { content: [{ type: "text", text: "空间分析能力未开启（OAW_SPATIAL_ANALYSIS=1）。开启后支持缓冲区/空间筛选/范围裁剪。" }], details: {} };
           }
           try {
-            const spatial = await import("./空间分析.mjs");
+            const spatial = await import("./spatial-analysis.mjs");
             const readWorkspaceJson = (relative) => {
               const root = path.resolve(entry.workspace || getWorkspace());
               const target = path.resolve(root, String(relative || "").trim());
@@ -2324,8 +2324,8 @@ execute: async (_toolCallId, params) => {
         // 数据源适配器路径（阶段 5）：有真实数据时优先，避免把用户的数据当演示。
         if (params.dataSource) {
           try {
-            const visual = await import("./地图可视化.mjs");
-            await import("./交通数据源.mjs");
+            const visual = await import("./map-visualization.mjs");
+            await import("./traffic-sources.mjs");
             const descriptor = await visual.loadSource(String(params.dataSource), {
               path: params.path,
               kind: params.analysis === "od" ? "od" : params.analysis === "isochrone" ? "isochrone" : "stations",
@@ -2391,7 +2391,7 @@ execute: async (_toolCallId, params) => {
           return { content: [{ type: "text", text: "场景化分析模板未开启（OAW_MAP_TEMPLATES=1）。开启后可用 od-commuter 模板做 OD 通勤带宽分析并成文。" }], details: {} };
         }
         try {
-          const { runOdCommuterTemplate } = await import("./地图模板.mjs");
+          const { runOdCommuterTemplate } = await import("./map-template.mjs");
           const result = await runOdCommuterTemplate({
             workspace: entry.workspace || getWorkspace(),
             path: params.path,
@@ -2400,7 +2400,7 @@ execute: async (_toolCallId, params) => {
             project: params.project || entry.task?.mapProject || "zhejiang-map",
           });
           // 期望线直接上地图（临时层，与 map_analyze 同一条 map_action 通道）
-          const descriptor = await import("./地图可视化.mjs").then((m) => m.loadSource("local-file", { workspace: entry.workspace || getWorkspace(), path: params.path })).catch(() => null);
+          const descriptor = await import("./map-visualization.mjs").then((m) => m.loadSource("local-file", { workspace: entry.workspace || getWorkspace(), path: params.path })).catch(() => null);
           if (descriptor && !descriptor.error && descriptor.lines) {
             const action = {
               action: "show_analysis",
@@ -2470,7 +2470,7 @@ execute: async (_toolCallId, params) => {
           await map.importLayer(project, layerId, action.geojson);
           if (action.lines) await map.importLayer(project, `${layerId}-lines`, action.lines);
           // 标注归属：分析结果保存后属于当前工作区，前端「我的图层」分组可见。
-          const repo = await import("./图层仓库.mjs");
+          const repo = await import("./layer-repository.mjs");
           const owner = String(entry.workspace || "");
           repo.markLayerOwnership(project, layerId, { workspace: owner });
           if (action.lines) repo.markLayerOwnership(project, `${layerId}-lines`, { workspace: owner });
@@ -2933,7 +2933,7 @@ execute: async (_toolCallId, params) => {
         const runOneTask = createSubagentRunner({ toolKey, parentToolCallId, defaultRole: role, multiple: taskList.length > 1, signal });
         // P2-B：确定性编排——roster 计划（planned）→ 并发 fan-out（2）→ 结果事件 →
         // worker 结果做对抗式核验（verifier 子代理，revise 回环最多 1 轮）→ 关账（closed）。
-        // 编排逻辑全部在子代理编排器.mjs（代码驱动，不靠模型自治）；OAW_SUBAGENT_VERIFY=0 可关闭核验。
+        // 编排逻辑全部在subagent-orchestrator.mjs（代码驱动，不靠模型自治）；OAW_SUBAGENT_VERIFY=0 可关闭核验。
         const verifyEnabled = role === "worker" && String(process.env.OAW_SUBAGENT_VERIFY || "1") !== "0";
         const orchestration = await orchestrateSubagents({
           tasks: taskList,
@@ -3127,7 +3127,7 @@ execute: async (_toolCallId, params) => {
           if (entry) entry.turnCount = Number(entry.turnCount || 0) + 1;
           emit("turn_started", { turnIndex: ev.turnIndex ?? null });
           // 轮次提醒：周期进度小结（每 N 轮）+ 25/45 轮关键点，
-          // 判定与文案统一来自 server/轮次预算.mjs。
+          // 判定与文案统一来自 server/turn-budget.mjs。
           // 已请求取消的 Run 不再提醒——此时鼓励"汇报进度"会与收尾意图相反。
           if (entry && !this.isRunStopping(entry.clientId)) {
             const noticeKind = turnNoticeKind(entry.turnCount);

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { flag } from "../运行开关.js";
+import { flag } from "../feature-flags.js";
 import Icon from "./Icon.jsx";
 
 /**

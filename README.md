@@ -18,9 +18,19 @@ open-plan/
 │  └─ dist/             # 构建产物（npm run build 生成，不入库）
 ├─ server/              # 服务端（Express + Pi Agent SDK）：会话、Run、事件流、工具
 ├─ scripts/             # 回归测试与运维脚本（测试即脚本，node scripts/*.mjs）
+│  ├─ ops/              # 服务启停、批注覆盖等运维脚本
+│  └─ reporting/        # 汇报/视频/口播稿生产脚本（配套数据 data/）
 ├─ templates/           # 文档/汇报模板库
-├─ docs/                # 计划、审计与实施记录（plans / audits）
-├─ office-workspace/    # 默认工作区（用户文档不入库；maps/ 图层入库）
+├─ docs/                # 项目文档（见 docs/README.md 分类索引）
+│  ├─ plans/            # 实施计划 / 迭代计划 / 执行记录
+│  ├─ solutions/        # 实施方案 / 设计方案
+│  ├─ decisions/        # 技术选型 ADR（BRD-001-xxx.md）
+│  ├─ module-design/    # 模块详细设计
+│  ├─ references/       # 调研 / 接入指南 / 契约 / 汇报材料 / 原型
+│  ├─ reports/          # 交付 / 验证 / 诊断 / 评审结论
+│  ├─ data/             # 数据归档（provincial-gis 原始 shp/gdb、zhejiang-osm 分析产物）
+│  └─ audits/           # 审计文档与截图资产
+├─ office-workspace/    # 默认工作区（服务运行时数据；maps/ 图层入库）
 └─ 变更日志.md           # 逐版本变更记录（语义化版本）
 ```
 
@@ -164,4 +174,4 @@ npm run verify   # 语法检查 + 前端构建 + API 冒烟测试
 | `develop` | 主开发分支 |
 | `feature/*` | 功能分支（每轮独立） |
 
-版本管理遵循[版本管理计划.md](版本管理计划.md)：语义化版本 + 轻量 trunk-based + `npm run verify` 门禁。
+版本管理遵循[版本管理计划.md](docs/plans/版本管理计划.md)：语义化版本 + 轻量 trunk-based + `npm run verify` 门禁。

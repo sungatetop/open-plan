@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import PPTXViewJS from "pptxviewjs";
 import Icon from "./Icon.jsx";
-import { buildDocUrls, makeFileIdentity, identityMatches, readIdentityHeader, previewStateFromError, PREVIEW_STATE } from "../文件地址.js";
+import { buildDocUrls, makeFileIdentity, identityMatches, readIdentityHeader, previewStateFromError, PREVIEW_STATE } from "../file-urls.js";
 
 const LARGE_PPT_BYTES = 100 * 1024 * 1024;
 

@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import Icon from "./Icon.jsx";
 import { openInSystem, revealInSystem } from "../api.js";
-import { PREVIEW_STATE } from "../文件地址.js";
+import { PREVIEW_STATE } from "../file-urls.js";
 import { notifyError } from "./Feedback.jsx";
 
 /**

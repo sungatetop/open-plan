@@ -2,9 +2,9 @@ import React, { lazy, Suspense } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App.jsx";
 // F4：桌面原型仅 ?prototype=desktop 可达，lazy 化后不进入主 bundle（按需 chunk 加载）。
-const DesktopAgentPrototype = lazy(() => import("./components/桌面端Agent原型.jsx"));
+const DesktopAgentPrototype = lazy(() => import("./components/DesktopAgentPrototype.jsx"));
 // G7：批量导出视图仅 ?export=map 可达（服务端经内置浏览器打开），同样 lazy 按需加载。
-const MapExportView = lazy(() => import("./components/地图导出视图.jsx"));
+const MapExportView = lazy(() => import("./components/MapExportView.jsx"));
 import { ThemeProvider } from "./theme.jsx";
 import "./styles.css";
 

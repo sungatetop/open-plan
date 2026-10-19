@@ -1,5 +1,5 @@
 import React from "react";
-import 品牌图形 from "./供应商品牌图形.js";
+import 品牌图形 from "./SupplierBrandGraphics.js";
 
 /**
  * 统一图标库（线性 SVG，stroke 风格，统一粗细/尺寸）
@@ -154,7 +154,7 @@ const PROVIDER_GLYPHS = {
   custom: <circle cx="12" cy="12" r="5" />,
 };
 
-// 品牌矢量（simple-icons，CC0，见 供应商品牌图形.js）：key 是 ProviderIcon 用的图形名，
+// 品牌矢量（simple-icons，CC0，见 SupplierBrandGraphics.js）：key 是 ProviderIcon 用的图形名，
 // 值是品牌数据文件里的 slug。同一 key 以品牌矢量为准（覆盖上面的占位图形）。
 const 品牌图形键 = {
   anthropic: "anthropic",

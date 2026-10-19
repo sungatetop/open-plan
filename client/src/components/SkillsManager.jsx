@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useCallback, useMemo } from "react";
 import { listSkills, listWorkflows, exportSkill, importSkill, validateWorkflow } from "../api.js";
 import Icon from "./Icon.jsx";
-import RetrievalChat from "./检索对话.jsx";
+import RetrievalChat from "./SearchChat.jsx";
 
 /**
  * 技能广场（页面中的页面）：

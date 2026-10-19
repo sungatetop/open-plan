@@ -1,10 +1,10 @@
 import React, { useState, useCallback, useEffect } from "react";
 import Icon, { ProviderIcon } from "./Icon.jsx";
-import { 供应商库, formatContext } from "./供应商库.jsx";
-import { providerIdentity } from "../供应商标识.js";
+import { 供应商库, formatContext } from "./ProviderLibrary.jsx";
+import { providerIdentity } from "../provider-identity.js";
 import { useTheme, SKINS } from "../theme.jsx";
-import 跑马灯文本 from "./跑马灯文本.jsx";
-import { ACTIVITY_DISPLAY_OPTIONS, ANSWER_DETAIL_OPTIONS, MARQUEE_COLORS, MARQUEE_SPEEDS, MARQUEE_STYLES, MOTION_LEVELS, PREVIEW_AUTO_OPEN_OPTIONS, useAppearance, useAppearanceSetter } from "../界面外观.js";
+import 跑马灯文本 from "./MarqueeText.jsx";
+import { ACTIVITY_DISPLAY_OPTIONS, ANSWER_DETAIL_OPTIONS, MARQUEE_COLORS, MARQUEE_SPEEDS, MARQUEE_STYLES, MOTION_LEVELS, PREVIEW_AUTO_OPEN_OPTIONS, useAppearance, useAppearanceSetter } from "../ui-appearance.js";
 import { agentAuth, agentAuthSave, agentAuthRemove, agentConfigStatus, agentCustomProvider, agentDiagnostics, agentImportConfig, agentImportPreview, agentModelConfigs, agentNetworkSettings, agentNetworkSettingsSave, agentPlanApply, agentPlanDisconnect, agentPlanModels, agentPlans, agentProviderCatalog, agentSetDefaultModel, archiveProject, classifyProjects, createProject, deleteAgentModelConfig, fetchAgentModels, getPermissionRules, mapSettings, mapSettingsSave, pinProject, probeAgentModel, refreshModels, removePermissionRule, saveAgentModelConfig, searchSettings, searchSettingsSave, searchSettingsTest, updateProject, updateProjectSettings } from "../api.js";
 import { notifyError, askConfirm } from "./Feedback.jsx";
 

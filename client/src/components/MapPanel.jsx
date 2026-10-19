@@ -4,12 +4,12 @@ import ChatPanel from "./ChatPanel.jsx";
 import LayerPanel from "./LayerPanel.jsx";
 import AttributeTable from "./AttributeTable.jsx";
 import Icon from "./Icon.jsx";
-import TaskCenter from "./任务中心.jsx";
+import TaskCenter from "./TaskCenter.jsx";
 // 阶段 2：M2宏观分析 / M3公交分析 / 柬埔寨OD面板 三个旧面板已下线，
-// 统一由可视面板（可视面板.jsx + /api/map/visual 描述符）承担。
-import 可视面板 from "./可视面板.jsx";
+// 统一由可视面板（VisualPanel.jsx + /api/map/visual 描述符）承担。
+import 可视面板 from "./VisualPanel.jsx";
 import shp from "shpjs";
-import { registerLayerReplay, unregisterLayerReplay } from "../图层注册表.js";
+import { registerLayerReplay, unregisterLayerReplay } from "../layer-registry.js";
 import { askConfirm } from "./Feedback.jsx";
 import {
   mapProjects, mapCreateProject, mapProject, mapSaveStyle, mapSaveConfig,
@@ -17,7 +17,7 @@ import {
   mapDuplicateProject, mapRenameProject, mapArchiveProject, mapDeleteProject,
   mapExportBatch, mapExportStatus,
 } from "../api.js";
-import { flag } from "../运行开关.js";
+import { flag } from "../feature-flags.js";
 
 // 底图按钮兜底（服务端未返回元信息时）：服务端按 Key 配置动态生成底图列表
 const BASEMAP_FALLBACK = [

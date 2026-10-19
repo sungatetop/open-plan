@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import Icon from "./Icon.jsx";
-import { motionScrollBehavior } from "../界面外观.js";
+import { motionScrollBehavior } from "../ui-appearance.js";
 
 /**
  * Markdown 目录浮窗组件

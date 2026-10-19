@@ -1,14 +1,14 @@
 import React, { useRef, useState, useEffect, useCallback } from "react";
 import { Document, Packer, Paragraph } from "docx";
 import { uploadFile, deleteFile, fileToBase64, searchFiles, listRuns, listPublishedArtifacts, getRunAcceptance, confirmArtifactAcceptance, publishArtifact, rollbackPublishedArtifact, validateWorkspace, pickWorkspace, cancelWorkspacePick, listFileRoots, addFileRoot, removeFileRoot, pickNativeFiles, openInSystem, revealInSystem } from "../api.js";
-import { sortFiles } from "./文件排序.js";
-import { artifactTypeInfo } from "../产物类型.js";
+import { sortFiles } from "./FileSorting.js";
+import { artifactTypeInfo } from "../artifact-types.js";
 import ContextMenu from "./ContextMenu.jsx";
 import Icon from "./Icon.jsx";
 import Logo from "./Logo.jsx";
 import MemoryTab from "./MemoryTab.jsx";
 import SettingsPanel from "./SettingsPanel.jsx";
-import 跑马灯文本 from "./跑马灯文本.jsx";
+import 跑马灯文本 from "./MarqueeText.jsx";
 import { notifyError, notifySuccess, askConfirm } from "./Feedback.jsx";
 
 // 运行中的状态集合：这些会话的名字用跑马灯 + 灯效展示，一眼看出"还在跑"
@@ -22,7 +22,7 @@ function sameWorkspacePath(a, b) {
   return normalize(a) === normalize(b);
 }
 
-// 问题 6：文件类型表达统一到 产物类型.js 的单一映射（图标名 + 类型文案），
+// 问题 6：文件类型表达统一到 artifact-types.js 的单一映射（图标名 + 类型文案），
 // 文件树、预览标签、产物卡片、命令面板因此对同一文件给出同一种图形与说法；
 // 此前这里另写了一份「彩色字母徽章」，与产物/预览的线性图标互相漂移。
 function FileTypeIcon({ file, size = "normal" }) {

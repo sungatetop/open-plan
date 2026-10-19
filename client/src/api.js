@@ -12,8 +12,8 @@ export {
   withRevision,
   looksUnsupported,
   previewStateFromError,
-} from "./文件地址.js";
-import { closeOptionalStreams } from "./长连接预算.js";
+} from "./file-urls.js";
+import { closeOptionalStreams } from "./stream-budget.js";
 
 export async function api(path, opts = {}) {
   const res = await fetch(path, {

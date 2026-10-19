@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
 import Icon from "./Icon.jsx";
 import { loadSettings } from "./SettingsPanel.jsx";
-import { motionScrollBehavior } from "../界面外观.js";
+import { motionScrollBehavior } from "../ui-appearance.js";
 
 /**
  * 批注组件（Word 风格）

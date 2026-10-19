@@ -6,43 +6,43 @@ import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { listWorkspace, searchWorkspace, filePath, safeName, WORKSPACE_DIR, CLIENT_DIST, OFFICECLI, AGENT_DIR, getWorkspace, setWorkspace, normalizeWorkspace, resolvePath, PROJECT_DIR, listFileRoots, addFileRoot, removeFileRoot, resolveExternalPath, getHiddenWorkspaces, hideWorkspace, isInside } from "./workspace.mjs";
 import { runOfficecli, checkOfficecli, view, get, set, batch, renderHtml, queryComments, startWatch, stopWatch, stopAllWatches } from "./office.mjs";
-import { getApprovalMode, listPendingApprovals, listPermissionRules, removeUserRule, resolveToolApproval, setApprovalMode } from "./审批策略.mjs";
+import { getApprovalMode, listPendingApprovals, listPermissionRules, removeUserRule, resolveToolApproval, setApprovalMode } from "./approval-policy.mjs";
 import { agentManager, classifyAgentError, getCredentialErrors, isAbortLikeError, isProviderTruncation, listAuth, setApiKey, removeApiKey } from "./agent.mjs";
 import * as kb from "./kb.mjs";
 import * as tpl from "./tpl.mjs";
 import * as map from "./map.mjs";
-import * as cambodiaOD from "./柬埔寨OD.mjs";
-import { createDemoAnalysis } from "./地图演示.mjs";
+import * as cambodiaOD from "./cambodia-od.mjs";
+import { createDemoAnalysis } from "./map-demo.mjs";
 import * as mapAnalysis from "./map-analysis.mjs";
 import { parseReferences, resolveReferences, readReference, contextSummary } from "./context.mjs";
 import { beginRun, recordRunEvent, updateRunStep, finishRun, getRun, listRuns, listRunSummaries, runSummaryView, rollbackRun, recoverActiveRuns, requestRunCancellation, filterRunChanges, listPendingCancellations, clearPendingCancellation, awaitBeforeBlobs } from "./runs.mjs";
-import { markRunTiming, attachRunTimingMeta, attachRunTimingSpans, finishRunTiming, mergeClientTiming, latencySummary, recentLatencySamples, STAGE_KEYS } from "./首字延迟.mjs";
-import { appendEvent, eventStoreInfo, getReadCursor, listEvents, markReadCursor, subscribeEvents } from "./事件存储.mjs";
+import { markRunTiming, attachRunTimingMeta, attachRunTimingSpans, finishRunTiming, mergeClientTiming, latencySummary, recentLatencySamples, STAGE_KEYS } from "./first-token-latency.mjs";
+import { appendEvent, eventStoreInfo, getReadCursor, listEvents, markReadCursor, subscribeEvents } from "./event-storage.mjs";
 import { createTaskEnvelope, normalizeTaskMode, planTaskCapabilities } from "./task.mjs";
-import { workspaceTrustSummary, setWorkspaceTrust } from "./项目信任.mjs";
-import { runtimeFlagsSnapshot, RUNTIME_FLAGS } from "./运行开关.mjs";
-import { validateArtifactFile, validateArtifacts } from "./产物验证.mjs";
-import { listPublishedArtifacts, publishArtifact, inspectRunAcceptance, confirmArtifactAcceptance, rollbackPublishedArtifact } from "./成果管理.mjs";
-import { atomicWriteFile, atomicWriteJson, ensureDirectory } from "./持久化工具.mjs";
+import { workspaceTrustSummary, setWorkspaceTrust } from "./project-trust.mjs";
+import { runtimeFlagsSnapshot, RUNTIME_FLAGS } from "./feature-flags.mjs";
+import { validateArtifactFile, validateArtifacts } from "./artifact-verification.mjs";
+import { listPublishedArtifacts, publishArtifact, inspectRunAcceptance, confirmArtifactAcceptance, rollbackPublishedArtifact } from "./artifact-management.mjs";
+import { atomicWriteFile, atomicWriteJson, ensureDirectory } from "./persistence-utils.mjs";
 import { getWorkflow, listWorkflows, workflowIdFromText } from "./workflows.mjs";
 import { listConnectors, getConnector, beginConnectorAuth, setConnectorStatus } from "./connectors.mjs";
-import * as projectManager from "./项目管理.mjs";
-import { listAgents, createAgent, updateAgent, deleteAgent } from "./智能体管理.mjs";
-import { listStagedFilesForValidation, stageWrite, writeWorkspaceFile, withWriteLockAsync } from "./写入协调.mjs";
-import { evaluateWorkspaceWrite, runRuntimeEvaluation } from "./运行评测.mjs";
-import { normalizeOfficeFailure, normalizeWorkspaceWriteError, workspaceWriteHttpStatus } from "./文件权限错误.mjs";
-import { PROTOCOL_VERSION, isHistoryTruncated, resolveReplayCursor, pushChannelEvent, CHANNEL_HISTORY_LIMIT } from "./事件协议.mjs";
-import * as searchModule from "./联网搜索.mjs";
-import { nativeCapabilities, openWithDefaultApp, pickFiles, pickFolder, revealInFileManager, cancelActivePicker, activePickerInfo } from "./原生文件.mjs";
-import { DIFF_LIMITS, diffFileContents } from "./文件差异.mjs";
-import * as browserModule from "./内置浏览器.mjs";
-import { inferCompletion } from "./运行轨迹.mjs";
-import { PI_PACKAGE_VERSION, piRuntimeManager } from "./Pi运行时管理.mjs";
-import { createPiNetworkAdapter } from "./Pi网络代理.mjs";
-import { listMcpServers, saveMcpServer, updateMcpServer, deleteMcpServer, testMcpServer, closeMcpConnections } from "./mcp管理.mjs";
-import { listPiExtensions, addPiExtension, updatePiExtension, checkPiExtension, deletePiExtension } from "./pi扩展管理.mjs";
-import { searchPiPackageCatalog, resolveInstalledPiPackage } from "./pi包目录.mjs";
-import { registerServerStream, releaseServerStream, noteStreamWrite, listServerStreams, serverStreamStats, closeServerStreams, sweepServerStreams, streamQuotaOf, rejectStreamQuota } from "./流连接.mjs";
+import * as projectManager from "./project-management.mjs";
+import { listAgents, createAgent, updateAgent, deleteAgent } from "./agent-management.mjs";
+import { listStagedFilesForValidation, stageWrite, writeWorkspaceFile, withWriteLockAsync } from "./write-coordination.mjs";
+import { evaluateWorkspaceWrite, runRuntimeEvaluation } from "./run-evaluation.mjs";
+import { normalizeOfficeFailure, normalizeWorkspaceWriteError, workspaceWriteHttpStatus } from "./file-permission-error.mjs";
+import { PROTOCOL_VERSION, isHistoryTruncated, resolveReplayCursor, pushChannelEvent, CHANNEL_HISTORY_LIMIT } from "./event-protocol.mjs";
+import * as searchModule from "./web-search.mjs";
+import { nativeCapabilities, openWithDefaultApp, pickFiles, pickFolder, revealInFileManager, cancelActivePicker, activePickerInfo } from "./native-files.mjs";
+import { DIFF_LIMITS, diffFileContents } from "./file-diff.mjs";
+import * as browserModule from "./builtin-browser.mjs";
+import { inferCompletion } from "./run-trace.mjs";
+import { PI_PACKAGE_VERSION, piRuntimeManager } from "./pi-runtime-management.mjs";
+import { createPiNetworkAdapter } from "./pi-network-proxy.mjs";
+import { listMcpServers, saveMcpServer, updateMcpServer, deleteMcpServer, testMcpServer, closeMcpConnections } from "./mcp-management.mjs";
+import { listPiExtensions, addPiExtension, updatePiExtension, checkPiExtension, deletePiExtension } from "./pi-extension-management.mjs";
+import { searchPiPackageCatalog, resolveInstalledPiPackage } from "./pi-package-catalog.mjs";
+import { registerServerStream, releaseServerStream, noteStreamWrite, listServerStreams, serverStreamStats, closeServerStreams, sweepServerStreams, streamQuotaOf, rejectStreamQuota } from "./stream-connection.mjs";
 import {
   getConfigStatus,
   importLocalPiConfig,
@@ -56,10 +56,10 @@ import {
   readRuntimeSettings,
   saveNetworkSettings,
   writeDefaultModel,
-} from "./Pi配置管理.mjs";
-import * as planCatalog from "./套餐目录.mjs";
-import { builtinProviderDetail, builtinProviderList, buildBuiltinImport, findBuiltinModel, invalidateMergedCatalog } from "./供应商目录.mjs";
-import { fetchModelsDevCatalog, readModelsDevCache, writeModelsDevCache } from "./模型目录dev.mjs";
+} from "./pi-config-management.mjs";
+import * as planCatalog from "./plan-catalog.mjs";
+import { builtinProviderDetail, builtinProviderList, buildBuiltinImport, findBuiltinModel, invalidateMergedCatalog } from "./provider-catalog.mjs";
+import { fetchModelsDevCatalog, readModelsDevCache, writeModelsDevCache } from "./models-dev-catalog.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
@@ -637,7 +637,7 @@ app.get("/api/map/project", async (req, res) => {
   // 图层归属视图（阶段 1）：共享 / 本工作区 / 其他工作区。
   // 原有 config/style/files 字段保持不变，只增补 layerViews 供图层树分组使用。
   try {
-    const repo = await import("./图层仓库.mjs");
+    const repo = await import("./layer-repository.mjs");
     const workspace = String(req.query.workspace || "");
     p.layerViews = repo.listLayers(p.config?.project || req.query.name || map.DEFAULT_PROJECT, { workspace });
   } catch { /* 归属视图失败不影响项目详情 */ }
@@ -649,7 +649,7 @@ app.get("/api/map/project", async (req, res) => {
 app.get("/api/map/project/export", async (req, res) => {
   if (!RUNTIME_FLAGS.mapPack) return res.status(404).json({ error: "not found" });
   try {
-    const { buildProjectZip } = await import("./项目打包.mjs");
+    const { buildProjectZip } = await import("./project-pack.mjs");
     const out = await buildProjectZip({
       project: String(req.query.name || ""),
       includeTiles: req.query.tiles === "1",
@@ -754,8 +754,8 @@ app.post("/api/map/prepare", async (req, res) => {
       resolve({ code: err ? 1 : 0, out: (stdout || "") + (stderr || "") });
     });
   });
-  const p1 = await run("scripts/prepare-map-data.mjs", [src]);
-  const p2 = await run("scripts/build-vector-tiles.mjs", ["--force"]);
+  const p1 = await run("scripts/tools/prepare-map-data.mjs", [src]);
+  const p2 = await run("scripts/tools/build-vector-tiles.mjs", ["--force"]);
   res.json({ ok: p1.code === 0 && p2.code === 0, prepare: p1.out.slice(-800), tiles: p2.out.slice(-500) });
 });
 
@@ -1598,7 +1598,7 @@ app.post("/api/agent/model-configs/fetch-models", async (req, res) => {
 });
 
 // ---------- Pi 内置供应商目录（一键添加） ----------
-// 数据由 scripts/提取Pi供应商目录.mjs 从 Pi SDK bundle 固化到 server/Pi内置供应商.json：
+// 数据由 scripts/tools/extract-pi-provider-catalog.mjs 从 Pi SDK bundle 固化到 server/pi-builtin-providers.json：
 // 供应商、Base URL、协议、登录方式（账号登录 / API Key）、每个模型的上下文窗口与图片能力。
 // 这里只读目录 + 已配置状态，不返回任何凭据明文。
 function providerCatalogPayload() {
@@ -2538,7 +2538,7 @@ app.get("/api/workflows", async (_req, res) => {
   // §4 领域工作流（Qoder 对标）：默认关，仅追加只读 domain 字段，既有 workflows 结构不变。
   if (RUNTIME_FLAGS.domainWorkflows) {
     try {
-      const { 列出工作流 } = await import("./工作流注册表.mjs");
+      const { 列出工作流 } = await import("./workflow-registry.mjs");
       payload.domain = (await 列出工作流()).map(({ 文件, ...声明 }) => 声明);
     } catch (error) {
       payload.domain = [];
@@ -2555,7 +2555,7 @@ app.get("/api/workflows/:id/validate", (req, res) => {
 });
 
 // §4 领域工作流 preflight 试算（Qoder 对标 M4.4，flag OAW_DOMAIN_WORKFLOWS，默认关）。
-// 只读：跑 server/工作流校验.mjs 的纯函数检查器，不落盘、不发事件、不改任何运行状态；
+// 只读：跑 server/workflow-validation.mjs 的纯函数检查器，不落盘、不发事件、不改任何运行状态；
 // 关掉开关时该路径不可见（404），前端也不会渲染入口。
 app.post("/api/domain-workflows/preflight", async (req, res) => {
   if (!RUNTIME_FLAGS.domainWorkflows) return res.status(404).json({ ok: false, error: "领域工作流未启用" });
@@ -2563,8 +2563,8 @@ app.post("/api/domain-workflows/preflight", async (req, res) => {
   if (!workflowId) return res.status(400).json({ ok: false, error: "缺少 workflowId" });
   try {
     const [{ 取工作流 }, { 运行预检 }] = await Promise.all([
-      import("./工作流注册表.mjs"),
-      import("./工作流校验.mjs"),
+      import("./workflow-registry.mjs"),
+      import("./workflow-validation.mjs"),
     ]);
     const workflow = await 取工作流(workflowId);
     if (!workflow) return res.status(404).json({ ok: false, error: "工作流不存在" });
@@ -5182,17 +5182,17 @@ app.post(/^\/api\/memory\/([^/]+)$/, (req, res) => {
 import * as mapSvc from "./map.mjs";
 // 统一可视化描述符 + 数据源适配层（阶段 2 §2.1 / 阶段 5）。
 // 导入即注册内置适配器（local-file / bundled-xinchang）。
-import * as visual from "./地图可视化.mjs";
-import "./交通数据源.mjs";
+import * as visual from "./map-visualization.mjs";
+import "./traffic-sources.mjs";
 // GIS G2：外部数据适配器（live-traffic-api / sql-database，OAW_DATA_ADAPTERS 默认关）。
 // flag 关闭 = 不注册 = /api/map/visual/sources 与 map_datasets 看不到，基线行为零变化。
 if (RUNTIME_FLAGS.dataAdapters) {
-  import("./数据源适配器扩展.mjs").catch((e) => console.warn("[data-adapters] 适配器注册失败：", e?.message || e));
+  import("./datasource-adapter-ext.mjs").catch((e) => console.warn("[data-adapters] 适配器注册失败：", e?.message || e));
 }
 
 // 列出可用数据源（供可视面板与 Agent 发现；与 map_datasets 同源）
 app.get("/api/map/visual/sources", async (_req, res) => {
-  const { PLANNED_SOURCES } = await import("./交通数据源.mjs");
+  const { PLANNED_SOURCES } = await import("./traffic-sources.mjs");
   res.json({ sources: visual.listSources(), planned: PLANNED_SOURCES });
 });
 
@@ -5233,7 +5233,7 @@ app.get("/api/map/visual", async (req, res) => {
       return res.json({ descriptor: visual.fromOdLines(r) });
     }
     if (dataset === "cambodia-od") {
-      const r = await import("./柬埔寨OD.mjs").then((m) => m.getCambodiaOD({ minFlow: params.minFlow }));
+      const r = await import("./cambodia-od.mjs").then((m) => m.getCambodiaOD({ minFlow: params.minFlow }));
       return res.json({ descriptor: visual.fromCambodiaOd(r) });
     }
     if (dataset === "demo-analysis") {
@@ -5260,7 +5260,7 @@ app.post("/api/map/report", async (req, res) => {
   if (!RUNTIME_FLAGS.mapReport) return res.status(404).json({ error: "not found" });
   const workspace = normalizeWorkspace(String(req.body?.workspace || "")) || getWorkspace();
   try {
-    const { buildMapReport } = await import("./地图报告.mjs");
+    const { buildMapReport } = await import("./map-report.mjs");
     const result = await buildMapReport({
       workspace,
       project: req.body?.project,
@@ -5277,7 +5277,7 @@ app.post("/api/map/report", async (req, res) => {
 });
 
 // ---------- GIS G7：批量导出队列（flag OAW_MAP_EXPORT，默认关） ----------
-// 计划器/队列编排为纯函数（server/批量导出.mjs）；执行器复用 B4 底座：
+// 计划器/队列编排为纯函数（server/batch-export.mjs）；执行器复用 B4 底座：
 // 专用浏览器会话（map-export|batch，独立实例不干扰用户面板）→ 打开 /?export=map 导出视图
 // → 视口设为目标尺寸 → 轮询就绪 → PNG 截图 / printToPDF → 产物落工作区 地图导出/{批次}/。
 const mapExportBatches = new Map(); // batchId → {id, status, plan, summary?, error?, createdAt, finishedAt?}
@@ -5291,7 +5291,7 @@ function buildExportViewUrl(job) {
 }
 
 async function executeExportJob(job, workspace) {
-  const browser = await import("./内置浏览器.mjs");
+  const browser = await import("./builtin-browser.mjs");
   const key = browser.browserSessionKey("map-export", "batch");
   await browser.browserOpen(key, buildExportViewUrl(job));
   await browser.browserResize(key, job.width, job.height);
@@ -5315,7 +5315,7 @@ app.post("/api/map/export/batch", async (req, res) => {
     return res.status(409).json({ ok: false, error: `已有导出批次在执行（${mapExportActiveBatch}），请等待完成后再发起` });
   }
   const workspace = normalizeWorkspace(String(req.body?.workspace || "")) || getWorkspace();
-  const 批量导出 = await import("./批量导出.mjs");
+  const 批量导出 = await import("./batch-export.mjs");
   const plan = 批量导出.planExportJobs({
     projects: req.body?.projects,
     layerSets: req.body?.layerSets,
@@ -5384,7 +5384,7 @@ app.post("/api/map/template/od-commuter", async (req, res) => {
   if (!RUNTIME_FLAGS.mapTemplates) return res.status(404).json({ error: "not found" });
   const workspace = normalizeWorkspace(String(req.body?.workspace || "")) || getWorkspace();
   try {
-    const { runOdCommuterTemplate } = await import("./地图模板.mjs");
+    const { runOdCommuterTemplate } = await import("./map-template.mjs");
     const result = await runOdCommuterTemplate({
       workspace,
       path: req.body?.path,

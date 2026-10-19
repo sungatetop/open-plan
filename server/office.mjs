@@ -3,8 +3,8 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { OFFICECLI, WORKSPACE_DIR } from "./workspace.mjs";
-import { officeLimiter } from "./Pi运行时管理.mjs";
-import { runNativeOfficeCommand } from "./文档引擎.mjs";
+import { officeLimiter } from "./pi-runtime-management.mjs";
+import { runNativeOfficeCommand } from "./doc-engine.mjs";
 
 const FILE_ARGUMENT_COMMANDS = new Set([
   "view", "get", "set", "batch", "query", "watch", "open", "close", "save", "validate", "refresh", "dump",

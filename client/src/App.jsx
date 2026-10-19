@@ -12,22 +12,22 @@ const CommandPalette = lazy(() => import("./components/CommandPalette.jsx"));
 // 文档预览依赖 docx-preview / pptxviewjs / x-data-spreadsheet 等重库，按需加载
 const DocViewer = lazy(() => import("./components/DocViewer.jsx"));
 import Icon from "./components/Icon.jsx";
-import { isMotionReduced, useAppearance } from "./界面外观.js";
+import { isMotionReduced, useAppearance } from "./ui-appearance.js";
 import Logo from "./components/Logo.jsx";
-import TaskCenter from "./components/任务中心.jsx";
-import WorkProductPanel from "./components/工作产物面板.jsx";
-import BrowserPanel from "./components/内置浏览器面板.jsx";
+import TaskCenter from "./components/TaskCenter.jsx";
+import WorkProductPanel from "./components/WorkArtifactPanel.jsx";
+import BrowserPanel from "./components/BuiltinBrowserPanel.jsx";
 import SettingsPanel from "./components/SettingsPanel.jsx";
 import MemoryTab from "./components/MemoryTab.jsx";
-import 对象栏 from "./components/对象栏.jsx";
-import 工作流启动器 from "./components/工作流启动器.jsx";
+import 对象栏 from "./components/ObjectBar.jsx";
+import 工作流启动器 from "./components/WorkflowLauncher.jsx";
 import { useTheme } from "./theme.jsx";
 import { loadUIState, saveUIState } from "./persist-ui.js";
-import { acquireStream } from "./长连接预算.js";
+import { acquireStream } from "./stream-budget.js";
 import { listFiles, listModels, refreshModels, listSessions, listProjects, listRuns, listWorkspaces, switchWorkspace, deleteSession, deleteSessions, renameSession, getSession, getClientId, createAgentThread, resumeAgentThread, markAgentEventsRead, forkSession, pinSession, freezeSession, cancelRun } from "./api.js";
-import { buildDocUrls, makeFileIdentity, mergeFileIdentity, fileIdentityKey, identityMatches } from "./文件地址.js";
+import { buildDocUrls, makeFileIdentity, mergeFileIdentity, fileIdentityKey, identityMatches } from "./file-urls.js";
 import FeedbackHost, { notifyError } from "./components/Feedback.jsx";
-import { initRuntimeFlags, flag, flagsReady } from "./运行开关.js";
+import { initRuntimeFlags, flag, flagsReady } from "./feature-flags.js";
 
 function historyReferences(text = "") {
   const refs = [];

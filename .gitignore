@@ -56,12 +56,12 @@ Thumbs.db
 ._*
 
 # 浙江 OSM 原始/计算缓存（本地分析输入，部分单文件超过 GitHub 100 MB 限制）
-zhejiang_osm/zhejiang-latest.osm.pbf
-zhejiang_osm/zhejiang_roads.geojson
-zhejiang_osm/zhejiang_nodes.csv
-zhejiang_osm/zhejiang_edges.csv
-zhejiang_osm/isochrone_reachable.geojson
-zhejiang_osm/_dijkstra_cache.pkl
+docs/data/zhejiang-osm/zhejiang-latest.osm.pbf
+docs/data/zhejiang-osm/zhejiang_roads.geojson
+docs/data/zhejiang-osm/zhejiang_nodes.csv
+docs/data/zhejiang-osm/zhejiang_edges.csv
+docs/data/zhejiang-osm/isochrone_reachable.geojson
+docs/data/zhejiang-osm/_dijkstra_cache.pkl
 
 .workspace-state.json
 
@@ -75,7 +75,6 @@ bin/
 # 与本项目无关的本地目录（其它项目源码、素材、工具配置，不入库）
 规聚知识库源码/
 机构知识库平台源码/
-报自然资源厅shp文件/
 .zcode/
 OpenPlan-备份/
 scripts/_tmp_*

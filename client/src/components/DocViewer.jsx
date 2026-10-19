@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useEffect, useRef, useMemo } from "react";
 import { openInSystem, revealInSystem } from "../api.js";
 import { notifyError } from "./Feedback.jsx";
-import { buildDocUrls, makeFileIdentity, identityMatches, PREVIEW_STATE, PREVIEW_STATE_LABEL } from "../文件地址.js";
+import { buildDocUrls, makeFileIdentity, identityMatches, PREVIEW_STATE, PREVIEW_STATE_LABEL } from "../file-urls.js";
 import MarkdownBody from "./MarkdownBody.jsx";
 import MarkdownToc from "./MarkdownToc.jsx";
 import ExcelGrid from "./ExcelGrid.jsx";

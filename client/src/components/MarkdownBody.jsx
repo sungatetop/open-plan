@@ -5,7 +5,7 @@ import remarkMath from "remark-math";
 import rehypeSlug from "rehype-slug";
 import remarkToc from "remark-toc";
 import Icon from "./Icon.jsx";
-import { buildArtifactIndex, resolveArtifactTarget, normalizeLocalFileHref } from "../产物类型.js";
+import { buildArtifactIndex, resolveArtifactTarget, normalizeLocalFileHref } from "../artifact-types.js";
 
 /**
  * 统一 Markdown 渲染组件（聊天消息 + MD 文档共用）

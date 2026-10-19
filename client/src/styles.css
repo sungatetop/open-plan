@@ -10479,12 +10479,12 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
    P3 · 统一动效闸门与一次性反馈（动效治理）
    命中条件（二者任一，属性写在 <html> 上）：
      - data-reduce-motion="1"   系统 prefers-reduced-motion: reduce
-       （index.html 内联脚本负责首帧前同步，界面外观.js 负责运行时同步）
+       （index.html 内联脚本负责首帧前同步，ui-appearance.js 负责运行时同步）
      - data-motion-level="off"  产品"关闭动效"
    原则：
      - 只关闭"持续动画"与"装饰性入场"；颜色、文字、边框、图标等静态等价信息全部保留。
      - 清单刻意不含地图/浏览器模块的交互过渡，避免一条全局规则误杀必要过渡。
-     - 新增持续动画时必须同步本清单，scripts/动效治理测试.mjs 会校验覆盖。
+     - 新增持续动画时必须同步本清单，scripts/motion-governance-test.mjs 会校验覆盖。
    ========================================================================== */
 
 /* 1) 持续动画：旋转 / blink / 呼吸 / 脉冲 */

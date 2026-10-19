@@ -4,7 +4,7 @@ import "maplibre-gl/dist/maplibre-gl.css";
 import shp from "shpjs";
 import Icon from "./Icon.jsx";
 import { mapImportLayer } from "../api.js";
-import { replayTemporaryLayers, clearLayerRegistry, registerLayerReplay, unregisterLayerReplay } from "../图层注册表.js";
+import { replayTemporaryLayers, clearLayerRegistry, registerLayerReplay, unregisterLayerReplay } from "../layer-registry.js";
 
 // 样式文件包含 Agent/用户实时修改，使用查询参数避免浏览器沿用失效的旧样式缓存。
 const STYLE_PATH = (project) => `/api/map/data/${project}/style.json?ts=${Date.now()}`;
