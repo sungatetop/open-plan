@@ -1,0 +1,8 @@
+appId: com.guiju.desktop
+productName: 规聚
+directories:
+  output: dist
+files:
+  - out/**
+  - package.json
+# R6 收口前不对外分发：完整打包需捆绑仓库 server/ 与 client/dist（见重构方案 §6）
