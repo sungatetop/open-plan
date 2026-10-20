@@ -102,7 +102,73 @@ export const DESKTOP_CHANNELS = {
   "op:memory:proposals:edit": { method: "PATCH", path: "/api/memory/proposals/:id" },
   "op:memory:proposals:reject": { method: "POST", path: "/api/memory/proposals/:id/reject" },
   "op:memory:proposals:history": { method: "GET", path: "/api/memory/proposals/:id/history" },
-  "op:memory:proposals:merge": { method: "POST", path: "/api/memory/proposals/:id/merge" }
+  "op:memory:proposals:merge": { method: "POST", path: "/api/memory/proposals/:id/merge" },
+
+  // ---- 文件族（F3 批5b-2：SessionSidebar 文件树/上传/搜索） ----
+  "op:files:search": { method: "GET", path: "/api/files/search" },
+  "op:files:upload": { method: "POST", path: "/api/files/upload" },
+  "op:files:delete": { method: "POST", path: "/api/files/delete" },
+
+  // ---- 模型族（10s 单飞缓存在 renderer API 层，通道只承载传输） ----
+  "op:models:list": { method: "GET", path: "/api/models" },
+  "op:models:refresh": { method: "POST", path: "/api/models/refresh" },
+
+  // ---- Agent 配置族（SettingsPanel：鉴权/导入/网络/模型配置/目录/探测/权限） ----
+  "op:agent:auth:get": { method: "GET", path: "/api/agent/auth" },
+  "op:agent:auth:save": { method: "POST", path: "/api/agent/auth" },
+  "op:agent:auth:remove": { method: "POST", path: "/api/agent/auth/remove" },
+  "op:agent:custom-provider": { method: "POST", path: "/api/agent/custom-provider" },
+  "op:agent:config-status": { method: "GET", path: "/api/agent/config-status" },
+  "op:agent:import-preview": { method: "GET", path: "/api/agent/import-preview" },
+  "op:agent:import-config": { method: "POST", path: "/api/agent/import-config" },
+  "op:agent:plans": { method: "GET", path: "/api/agent/plans" },
+  "op:agent:plans:models": { method: "GET", path: "/api/agent/plans/models" },
+  "op:agent:plans:apply": { method: "POST", path: "/api/agent/plans/apply" },
+  "op:agent:plans:disconnect": { method: "POST", path: "/api/agent/plans/disconnect" },
+  "op:agent:diagnostics": { method: "GET", path: "/api/agent/diagnostics" },
+  "op:agent:network-settings:get": { method: "GET", path: "/api/agent/network-settings" },
+  "op:agent:network-settings:save": { method: "PATCH", path: "/api/agent/network-settings" },
+  "op:agent:model-configs:list": { method: "GET", path: "/api/agent/model-configs" },
+  "op:agent:model-configs:save": { method: "POST", path: "/api/agent/model-configs" },
+  "op:agent:model-configs:delete": { method: "DELETE", path: "/api/agent/model-configs/:provider" },
+  "op:agent:model-configs:fetch-models": { method: "POST", path: "/api/agent/model-configs/fetch-models" },
+  "op:agent:provider-catalog": { method: "GET", path: "/api/agent/provider-catalog" },
+  "op:agent:default-model:set": { method: "POST", path: "/api/agent/default-model" },
+  "op:agent:model:probe": { method: "POST", path: "/api/agent/model/probe" },
+  "op:agent:permissions:get": { method: "GET", path: "/api/agent/permissions" },
+  "op:agent:permissions:rule:remove": { method: "DELETE", path: "/api/agent/permissions/rule" },
+
+  // ---- 联网搜索配置族（SettingsPanel 搜索分节） ----
+  "op:search:settings:get": { method: "GET", path: "/api/search/settings" },
+  "op:search:settings:save": { method: "POST", path: "/api/search/settings" },
+  "op:search:test": { method: "POST", path: "/api/search/test" },
+
+  // ---- 地图设置族（SettingsPanel 地图分节） ----
+  "op:map:settings:get": { method: "GET", path: "/api/map/settings" },
+  "op:map:settings:save": { method: "POST", path: "/api/map/settings" },
+
+  // ---- 项目族（SettingsPanel 项目管理分节） ----
+  "op:projects:create": { method: "POST", path: "/api/projects" },
+  "op:projects:classify": { method: "POST", path: "/api/projects/classify" },
+  "op:projects:update": { method: "PATCH", path: "/api/projects/:id" },
+  "op:projects:pin": { method: "POST", path: "/api/projects/:id/pin" },
+  "op:projects:archive": { method: "POST", path: "/api/projects/:id/archive" },
+  "op:projects:settings:update": { method: "PATCH", path: "/api/projects/:id/settings" },
+
+  // ---- 工作区族（SessionSidebar 工作区切换/验证/系统选择器） ----
+  "op:workspace:validate": { method: "POST", path: "/api/workspace/validate" },
+  "op:workspace:pick": { method: "POST", path: "/api/workspace/pick" },
+  "op:workspace:pick:cancel": { method: "POST", path: "/api/workspace/pick/cancel" },
+
+  // ---- 外部目录（文件根）族 ----
+  "op:file-roots:list": { method: "GET", path: "/api/file-roots" },
+  "op:file-roots:add": { method: "POST", path: "/api/file-roots" },
+  "op:file-roots:remove": { method: "DELETE", path: "/api/file-roots/:id" },
+
+  // ---- 系统集成族（原生文件选择/系统打开/文件管理器显示） ----
+  "op:system:pick-files": { method: "POST", path: "/api/system/pick-files" },
+  "op:system:open": { method: "POST", path: "/api/system/open" },
+  "op:system:reveal": { method: "POST", path: "/api/system/reveal" }
 } as const satisfies Record<string, { method: HttpMethod; path: string }>;
 
 export type DesktopChannelId = keyof typeof DESKTOP_CHANNELS;
@@ -643,6 +709,76 @@ export type MemoryProposalHistoryResponse = {
   [key: string]: unknown;
 };
 
+// ---- 文件族（F3 批5b-2） ----
+
+export type FileSearchRequest = { query: { q: string; limit: number; workspace?: string } };
+export type FileSearchResponse = {
+  workspace?: string;
+  files?: Array<Record<string, unknown>>;
+  [key: string]: unknown;
+};
+export type FileUploadRequest = { body: { name: string; base64: string; workspace?: string } };
+export type FileDeleteRequest = { body: { name: string; workspace?: string } };
+
+// ---- 模型族 ----
+
+export type ModelsListRequest = Record<string, never>;
+export type ModelsListResponse = { models?: Array<Record<string, unknown>>; [key: string]: unknown };
+
+// ---- Agent 配置族（SettingsPanel；响应宽类型，F3 消费时按需收紧） ----
+
+export type AgentAuthSaveRequest = { body: { provider: string; key: string } };
+export type AgentAuthRemoveRequest = { body: { provider: string } };
+export type AgentPlansModelsRequest = { query: { planId: string } };
+export type AgentPlansApplyRequest = { body?: Record<string, unknown> };
+export type AgentPlansDisconnectRequest = { body: { planId: string } };
+export type AgentCustomProviderRequest = { body?: Record<string, unknown> };
+export type AgentImportConfigRequest = { body?: Record<string, unknown> };
+export type AgentDiagnosticsRequest = { query?: { client?: string; thread?: string; runId?: string } };
+export type AgentNetworkSettingsSaveRequest = { body?: Record<string, unknown> };
+export type AgentModelConfigSaveRequest = { body?: Record<string, unknown> };
+export type AgentModelConfigDeleteRequest = { params: { provider: string } };
+export type AgentModelConfigFetchModelsRequest = { body?: Record<string, unknown> };
+export type AgentDefaultModelSetRequest = { body: { provider: string; model: string } };
+export type AgentModelProbeRequest = { body: { model: unknown; timeoutMs: number } };
+export type AgentPermissionRuleRemoveRequest = { body: Record<string, unknown> };
+
+// ---- 联网搜索配置族 ----
+
+export type SearchSettingsSaveRequest = { body?: Record<string, unknown> };
+export type SearchSettingsTestRequest = { body: { backend: string; draft?: unknown } };
+
+// ---- 地图设置族 ----
+
+export type MapSettingsSaveRequest = { body: { basemaps: unknown } };
+
+// ---- 项目族 ----
+
+export type ProjectCreateRequest = { body?: Record<string, unknown> };
+export type ProjectClassifyRequest = { body: { apply: boolean } };
+export type ProjectUpdateRequest = { params: { id: string }; body?: Record<string, unknown> };
+export type ProjectPinRequest = { params: { id: string }; body: { pinned: boolean } };
+export type ProjectArchiveRequest = { params: { id: string }; body: { archived: boolean } };
+export type ProjectSettingsUpdateRequest = { params: { id: string }; body?: Record<string, unknown> };
+
+// ---- 工作区族 ----
+
+export type WorkspaceValidateRequest = { body: { path: string } };
+export type WorkspacePickRequest = { body: Record<string, never> };
+export type WorkspacePickCancelRequest = { body: Record<string, never> };
+
+// ---- 外部目录（文件根）族 ----
+
+export type FileRootsAddRequest = { body: { path: string; label?: string } };
+export type FileRootsRemoveRequest = { params: { id: string } };
+export type FileRootsResponse = { roots?: Array<Record<string, unknown>>; [key: string]: unknown };
+
+// ---- 系统集成族 ----
+
+export type SystemPickFilesRequest = { body?: Record<string, unknown> };
+export type SystemOpenRequest = { body: { path: string } };
+export type SystemRevealRequest = { body: { path: string } };
+
 // ============================================================================
 // 通道协议映射：通道名 → 请求/响应类型（renderer 与 main 共用）。
 // ============================================================================
@@ -702,6 +838,63 @@ export interface DesktopChannelProtocol {
   "op:memory:proposals:reject": { request: MemoryProposalRejectRequest; response: MemoryProposalOpResult };
   "op:memory:proposals:history": { request: MemoryProposalHistoryRequest; response: MemoryProposalHistoryResponse };
   "op:memory:proposals:merge": { request: MemoryProposalMergeRequest; response: MemoryProposalOpResult };
+
+  "op:files:search": { request: FileSearchRequest; response: FileSearchResponse };
+  "op:files:upload": { request: FileUploadRequest; response: Record<string, unknown> };
+  "op:files:delete": { request: FileDeleteRequest; response: Record<string, unknown> };
+
+  "op:models:list": { request: ModelsListRequest; response: ModelsListResponse };
+  "op:models:refresh": { request: Record<string, never>; response: Record<string, unknown> };
+
+  "op:agent:auth:get": { request: Record<string, never>; response: Record<string, unknown> };
+  "op:agent:auth:save": { request: AgentAuthSaveRequest; response: Record<string, unknown> };
+  "op:agent:auth:remove": { request: AgentAuthRemoveRequest; response: Record<string, unknown> };
+  "op:agent:plans": { request: Record<string, never>; response: Record<string, unknown> };
+  "op:agent:plans:models": { request: AgentPlansModelsRequest; response: Record<string, unknown> };
+  "op:agent:plans:apply": { request: AgentPlansApplyRequest; response: Record<string, unknown> };
+  "op:agent:plans:disconnect": { request: AgentPlansDisconnectRequest; response: Record<string, unknown> };
+  "op:agent:custom-provider": { request: AgentCustomProviderRequest; response: Record<string, unknown> };
+  "op:agent:config-status": { request: Record<string, never>; response: Record<string, unknown> };
+  "op:agent:import-preview": { request: Record<string, never>; response: Record<string, unknown> };
+  "op:agent:import-config": { request: AgentImportConfigRequest; response: Record<string, unknown> };
+  "op:agent:diagnostics": { request: AgentDiagnosticsRequest; response: Record<string, unknown> };
+  "op:agent:network-settings:get": { request: Record<string, never>; response: Record<string, unknown> };
+  "op:agent:network-settings:save": { request: AgentNetworkSettingsSaveRequest; response: Record<string, unknown> };
+  "op:agent:model-configs:list": { request: Record<string, never>; response: Record<string, unknown> };
+  "op:agent:model-configs:save": { request: AgentModelConfigSaveRequest; response: Record<string, unknown> };
+  "op:agent:model-configs:delete": { request: AgentModelConfigDeleteRequest; response: Record<string, unknown> };
+  "op:agent:model-configs:fetch-models": { request: AgentModelConfigFetchModelsRequest; response: Record<string, unknown> };
+  "op:agent:provider-catalog": { request: Record<string, never>; response: Record<string, unknown> };
+  "op:agent:default-model:set": { request: AgentDefaultModelSetRequest; response: Record<string, unknown> };
+  "op:agent:model:probe": { request: AgentModelProbeRequest; response: Record<string, unknown> };
+  "op:agent:permissions:get": { request: Record<string, never>; response: Record<string, unknown> };
+  "op:agent:permissions:rule:remove": { request: AgentPermissionRuleRemoveRequest; response: Record<string, unknown> };
+
+  "op:search:settings:get": { request: Record<string, never>; response: Record<string, unknown> };
+  "op:search:settings:save": { request: SearchSettingsSaveRequest; response: Record<string, unknown> };
+  "op:search:test": { request: SearchSettingsTestRequest; response: Record<string, unknown> };
+
+  "op:map:settings:get": { request: Record<string, never>; response: Record<string, unknown> };
+  "op:map:settings:save": { request: MapSettingsSaveRequest; response: Record<string, unknown> };
+
+  "op:projects:create": { request: ProjectCreateRequest; response: Record<string, unknown> };
+  "op:projects:classify": { request: ProjectClassifyRequest; response: Record<string, unknown> };
+  "op:projects:update": { request: ProjectUpdateRequest; response: Record<string, unknown> };
+  "op:projects:pin": { request: ProjectPinRequest; response: Record<string, unknown> };
+  "op:projects:archive": { request: ProjectArchiveRequest; response: Record<string, unknown> };
+  "op:projects:settings:update": { request: ProjectSettingsUpdateRequest; response: Record<string, unknown> };
+
+  "op:workspace:validate": { request: WorkspaceValidateRequest; response: Record<string, unknown> };
+  "op:workspace:pick": { request: WorkspacePickRequest; response: Record<string, unknown> };
+  "op:workspace:pick:cancel": { request: WorkspacePickCancelRequest; response: Record<string, unknown> };
+
+  "op:file-roots:list": { request: Record<string, never>; response: FileRootsResponse };
+  "op:file-roots:add": { request: FileRootsAddRequest; response: Record<string, unknown> };
+  "op:file-roots:remove": { request: FileRootsRemoveRequest; response: Record<string, unknown> };
+
+  "op:system:pick-files": { request: SystemPickFilesRequest; response: Record<string, unknown> };
+  "op:system:open": { request: SystemOpenRequest; response: Record<string, unknown> };
+  "op:system:reveal": { request: SystemRevealRequest; response: Record<string, unknown> };
 }
 
 export type ChannelRequest<C extends DesktopChannelId> = DesktopChannelProtocol[C]["request"];

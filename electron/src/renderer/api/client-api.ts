@@ -273,6 +273,201 @@ export const memoryProposalHistory = (id: string): Promise<ChannelResponse<"op:m
   invokeOrThrow("op:memory:proposals:history", { params: { id } });
 
 // ============================================================================
+// 文件族（F3 批5b-2：SessionSidebar 文件树/上传/搜索；对齐 client/src/api.js）
+// ============================================================================
+
+export function searchFiles(query: string, limit = 200, workspace = ""): Promise<ChannelResponse<"op:files:search">> {
+  const reqQuery: NonNullable<ChannelRequest<"op:files:search">["query"]> = { q: query, limit };
+  if (workspace) reqQuery.workspace = workspace;
+  return invokeOrThrow("op:files:search", { query: reqQuery });
+}
+
+export const uploadFile = (name: string, base64: string, workspace = ""): Promise<ChannelResponse<"op:files:upload">> =>
+  invokeOrThrow("op:files:upload", { body: workspace ? { name, base64, workspace } : { name, base64 } });
+
+export const deleteFile = (name: string, workspace = ""): Promise<ChannelResponse<"op:files:delete">> =>
+  invokeOrThrow("op:files:delete", { body: workspace ? { name, workspace } : { name } });
+
+// ============================================================================
+// 模型族（listModels 10s 单飞缓存逐行等价；refreshModels 立即失效缓存）
+// ============================================================================
+
+let modelsCache: ChannelResponse<"op:models:list"> | null = null;
+let modelsCacheAt = 0;
+let modelsInflight: Promise<ChannelResponse<"op:models:list">> | null = null;
+
+export function listModels({ maxAgeMs = 10000 } = {}): Promise<ChannelResponse<"op:models:list">> {
+  const now = Date.now();
+  if (modelsCache && now - modelsCacheAt < maxAgeMs) return Promise.resolve(modelsCache);
+  if (modelsInflight) return modelsInflight;
+  modelsInflight = invokeOrThrow("op:models:list")
+    .then((data) => { modelsCache = data; modelsCacheAt = Date.now(); return data; })
+    .finally(() => { modelsInflight = null; });
+  return modelsInflight;
+}
+
+export const refreshModels = (): Promise<ChannelResponse<"op:models:refresh">> =>
+  invokeOrThrow("op:models:refresh").then((data) => { modelsCache = null; return data; });
+
+// ============================================================================
+// Agent 配置族（SettingsPanel：鉴权/导入/网络/模型配置/目录/探测/权限）
+// ============================================================================
+
+export const agentAuth = (): Promise<ChannelResponse<"op:agent:auth:get">> => invokeOrThrow("op:agent:auth:get");
+
+export const agentAuthSave = (provider: string, key: string): Promise<ChannelResponse<"op:agent:auth:save">> =>
+  invokeOrThrow("op:agent:auth:save", { body: { provider, key } });
+
+export const agentAuthRemove = (provider: string): Promise<ChannelResponse<"op:agent:auth:remove">> =>
+  invokeOrThrow("op:agent:auth:remove", { body: { provider } });
+
+export const agentCustomProvider = (payload: Record<string, unknown> = {}): Promise<ChannelResponse<"op:agent:custom-provider">> =>
+  invokeOrThrow("op:agent:custom-provider", { body: payload });
+
+export const agentConfigStatus = (): Promise<ChannelResponse<"op:agent:config-status">> =>
+  invokeOrThrow("op:agent:config-status");
+
+export const agentPlans = (): Promise<ChannelResponse<"op:agent:plans">> => invokeOrThrow("op:agent:plans");
+
+export const agentPlanModels = (planId: string): Promise<ChannelResponse<"op:agent:plans:models">> =>
+  invokeOrThrow("op:agent:plans:models", { query: { planId } });
+
+export const agentPlanApply = (payload: Record<string, unknown> = {}): Promise<ChannelResponse<"op:agent:plans:apply">> =>
+  invokeOrThrow("op:agent:plans:apply", { body: payload });
+
+export const agentPlanDisconnect = (planId: string): Promise<ChannelResponse<"op:agent:plans:disconnect">> =>
+  invokeOrThrow("op:agent:plans:disconnect", { body: { planId } });
+
+export const agentImportPreview = (): Promise<ChannelResponse<"op:agent:import-preview">> =>
+  invokeOrThrow("op:agent:import-preview");
+
+export const agentImportConfig = (options: Record<string, unknown> = {}): Promise<ChannelResponse<"op:agent:import-config">> =>
+  invokeOrThrow("op:agent:import-config", { body: options });
+
+export function agentDiagnostics(client = "", thread = "", runId = ""): Promise<ChannelResponse<"op:agent:diagnostics">> {
+  const query: NonNullable<ChannelRequest<"op:agent:diagnostics">["query"]> = {};
+  if (client) query.client = client;
+  if (thread) query.thread = thread;
+  if (runId) query.runId = runId;
+  return invokeOrThrow("op:agent:diagnostics", { query });
+}
+
+export const agentNetworkSettings = (): Promise<ChannelResponse<"op:agent:network-settings:get">> =>
+  invokeOrThrow("op:agent:network-settings:get");
+
+export const agentNetworkSettingsSave = (settings: Record<string, unknown> = {}): Promise<ChannelResponse<"op:agent:network-settings:save">> =>
+  invokeOrThrow("op:agent:network-settings:save", { body: settings });
+
+export const agentModelConfigs = (): Promise<ChannelResponse<"op:agent:model-configs:list">> =>
+  invokeOrThrow("op:agent:model-configs:list");
+
+export const saveAgentModelConfig = (payload: Record<string, unknown> = {}): Promise<ChannelResponse<"op:agent:model-configs:save">> =>
+  invokeOrThrow("op:agent:model-configs:save", { body: payload });
+
+export const deleteAgentModelConfig = (provider: string): Promise<ChannelResponse<"op:agent:model-configs:delete">> =>
+  invokeOrThrow("op:agent:model-configs:delete", { params: { provider } });
+
+export const fetchAgentModels = (payload: Record<string, unknown> = {}): Promise<ChannelResponse<"op:agent:model-configs:fetch-models">> =>
+  invokeOrThrow("op:agent:model-configs:fetch-models", { body: payload });
+
+export const agentProviderCatalog = (): Promise<ChannelResponse<"op:agent:provider-catalog">> =>
+  invokeOrThrow("op:agent:provider-catalog");
+
+export const agentSetDefaultModel = (provider: string, model: string): Promise<ChannelResponse<"op:agent:default-model:set">> =>
+  invokeOrThrow("op:agent:default-model:set", { body: { provider, model } });
+
+export const probeAgentModel = (model: unknown, timeoutMs = 15000): Promise<ChannelResponse<"op:agent:model:probe">> =>
+  invokeOrThrow("op:agent:model:probe", { body: { model, timeoutMs } });
+
+export const getPermissionRules = (): Promise<ChannelResponse<"op:agent:permissions:get">> =>
+  invokeOrThrow("op:agent:permissions:get");
+
+export const removePermissionRule = (rule: Record<string, unknown>): Promise<ChannelResponse<"op:agent:permissions:rule:remove">> =>
+  invokeOrThrow("op:agent:permissions:rule:remove", { body: rule });
+
+// ============================================================================
+// 联网搜索配置族
+// ============================================================================
+
+export const searchSettings = (): Promise<ChannelResponse<"op:search:settings:get">> =>
+  invokeOrThrow("op:search:settings:get");
+
+export const searchSettingsSave = (settings: Record<string, unknown> = {}): Promise<ChannelResponse<"op:search:settings:save">> =>
+  invokeOrThrow("op:search:settings:save", { body: settings });
+
+export const searchSettingsTest = (backend = "", draft: unknown = null): Promise<ChannelResponse<"op:search:test">> =>
+  invokeOrThrow("op:search:test", { body: draft ? { backend, draft } : { backend } });
+
+// ============================================================================
+// 地图设置族
+// ============================================================================
+
+export const mapSettings = (): Promise<ChannelResponse<"op:map:settings:get">> => invokeOrThrow("op:map:settings:get");
+
+export const mapSettingsSave = (basemaps: unknown): Promise<ChannelResponse<"op:map:settings:save">> =>
+  invokeOrThrow("op:map:settings:save", { body: { basemaps } });
+
+// ============================================================================
+// 项目族
+// ============================================================================
+
+export const createProject = (payload: Record<string, unknown>): Promise<ChannelResponse<"op:projects:create">> =>
+  invokeOrThrow("op:projects:create", { body: payload || {} });
+
+export const classifyProjects = (apply = false): Promise<ChannelResponse<"op:projects:classify">> =>
+  invokeOrThrow("op:projects:classify", { body: { apply } });
+
+export const updateProject = (id: string, patch: Record<string, unknown>): Promise<ChannelResponse<"op:projects:update">> =>
+  invokeOrThrow("op:projects:update", { params: { id }, body: patch || {} });
+
+export const pinProject = (id: string, pinned = true): Promise<ChannelResponse<"op:projects:pin">> =>
+  invokeOrThrow("op:projects:pin", { params: { id }, body: { pinned } });
+
+export const archiveProject = (id: string, archived = true): Promise<ChannelResponse<"op:projects:archive">> =>
+  invokeOrThrow("op:projects:archive", { params: { id }, body: { archived } });
+
+export const updateProjectSettings = (id: string, settings: Record<string, unknown>): Promise<ChannelResponse<"op:projects:settings:update">> =>
+  invokeOrThrow("op:projects:settings:update", { params: { id }, body: settings || {} });
+
+// ============================================================================
+// 工作区族
+// ============================================================================
+
+export const validateWorkspace = (path: string): Promise<ChannelResponse<"op:workspace:validate">> =>
+  invokeOrThrow("op:workspace:validate", { body: { path } });
+
+export const pickWorkspace = (): Promise<ChannelResponse<"op:workspace:pick">> =>
+  invokeOrThrow("op:workspace:pick", { body: {} });
+
+export const cancelWorkspacePick = (): Promise<ChannelResponse<"op:workspace:pick:cancel">> =>
+  invokeOrThrow("op:workspace:pick:cancel", { body: {} });
+
+// ============================================================================
+// 外部目录（文件根）族
+// ============================================================================
+
+export const listFileRoots = (): Promise<ChannelResponse<"op:file-roots:list">> => invokeOrThrow("op:file-roots:list");
+
+export const addFileRoot = (path: string, label?: string): Promise<ChannelResponse<"op:file-roots:add">> =>
+  invokeOrThrow("op:file-roots:add", { body: { path, label } });
+
+export const removeFileRoot = (id: string): Promise<ChannelResponse<"op:file-roots:remove">> =>
+  invokeOrThrow("op:file-roots:remove", { params: { id } });
+
+// ============================================================================
+// 系统集成族
+// ============================================================================
+
+export const pickNativeFiles = (options: Record<string, unknown> = {}): Promise<ChannelResponse<"op:system:pick-files">> =>
+  invokeOrThrow("op:system:pick-files", { body: options });
+
+export const openInSystem = (path: string): Promise<ChannelResponse<"op:system:open">> =>
+  invokeOrThrow("op:system:open", { body: { path } });
+
+export const revealInSystem = (path: string): Promise<ChannelResponse<"op:system:reveal">> =>
+  invokeOrThrow("op:system:reveal", { body: { path } });
+
+// ============================================================================
 // 本地工具（无 HTTP）
 // ============================================================================
 

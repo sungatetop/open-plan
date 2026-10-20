@@ -69,34 +69,10 @@ const EXEMPT_PREFIXES = [
   "/api/office"
 ] as const;
 
-/** /api/agent/ 下属于管理配置面（settings/模型域）的逐条豁免；chat 链路路由必须进通道清单。 */
+/** /api/agent/ 下尚未纳入通道清单的管理配置面逐条豁免（已入通道的移除，重叠测试即红）；chat 链路路由必须进通道清单。 */
 const EXEMPT_AGENT_MANAGEMENT_ROUTES = [
-  "GET /api/agent/auth",
-  "POST /api/agent/auth",
-  "POST /api/agent/auth/remove",
-  "GET /api/agent/config-status",
-  "GET /api/agent/diagnostics",
   "GET /api/agent/evaluations",
-  "GET /api/agent/import-preview",
-  "POST /api/agent/import-config",
-  "GET /api/agent/model-configs",
-  "POST /api/agent/model-configs",
-  "POST /api/agent/model-configs/fetch-models",
-  "DELETE /api/agent/model-configs/:provider",
-  "POST /api/agent/custom-provider",
-  "POST /api/agent/default-model",
   "POST /api/agent/model",
-  "POST /api/agent/model/probe",
-  "GET /api/agent/network-settings",
-  "PATCH /api/agent/network-settings",
-  "GET /api/agent/plans",
-  "GET /api/agent/plans/models",
-  "POST /api/agent/plans/apply",
-  "POST /api/agent/plans/disconnect",
-  "GET /api/agent/provider-catalog",
-  "GET /api/agent/provider-catalog/:id",
-  "POST /api/agent/provider-catalog/import",
-  "POST /api/agent/provider-catalog/refresh",
   "GET /api/agent/runtime",
   "GET /api/agent/runtimes",
   "POST /api/agent/runtime/health",
@@ -105,8 +81,9 @@ const EXEMPT_AGENT_MANAGEMENT_ROUTES = [
   "POST /api/agent/timing",
   "GET /api/agent/workspace-trust",
   "POST /api/agent/workspace-trust",
-  "GET /api/agent/permissions",
-  "DELETE /api/agent/permissions/rule"
+  "GET /api/agent/provider-catalog/:id",
+  "POST /api/agent/provider-catalog/import",
+  "POST /api/agent/provider-catalog/refresh"
 ] as const;
 
 const channelRouteSet: ReadonlySet<string> = new Set(
@@ -134,13 +111,29 @@ const extracted = extractRoutes(source);
 describe("channels manifest 对账", () => {
   it("通道清单规约：op: 前缀、族:动作命名、数量钉住（扩清单需同步更新对账）", () => {
     const channelKeys = Object.keys(DESKTOP_CHANNELS);
-    expect(channelKeys.length).toBe(49);
+    expect(channelKeys.length).toBe(97);
     for (const key of channelKeys) {
       expect(key.startsWith("op:")).toBe(true);
     }
-    // 通道族：status / sessions / runs / artifacts / agent / memory
+    // 通道族：status / sessions / runs / artifacts / agent / memory / files / models
+    //   / search / map / projects / workspace / file-roots / system
     const families = new Set(channelKeys.map((key) => key.split(":")[1]));
-    expect([...families].sort()).toEqual(["agent", "artifacts", "memory", "runs", "sessions", "status"]);
+    expect([...families].sort()).toEqual([
+      "agent",
+      "artifacts",
+      "file-roots",
+      "files",
+      "map",
+      "memory",
+      "models",
+      "projects",
+      "runs",
+      "search",
+      "sessions",
+      "status",
+      "system",
+      "workspace"
+    ]);
   });
 
   /** 通道路由是否被正则形式路由的字面前缀覆盖（同 method 且 path 以其为前缀）。 */
