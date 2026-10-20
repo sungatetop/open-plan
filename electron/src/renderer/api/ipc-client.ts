@@ -99,3 +99,23 @@ export async function stopThreadEvents(request?: { client?: string; thread?: str
   if (!api) return;
   await api.stopThreadEvents(request).catch(() => undefined);
 }
+
+/**
+ * 订阅记忆文件变更流（main 侧消费 legacy SSE → op:event，帧类型 op:memory-change）。
+ * 无桥（web 形态）返回 ok:false。
+ */
+export async function watchMemoryEvents(): Promise<EventWatchResult> {
+  const api = getDesktopApi();
+  if (!api) return { ok: false, error: "桌面桥未就绪" };
+  return api.watchMemoryEvents().catch((error: unknown) => ({
+    ok: false,
+    error: error instanceof Error ? error.message : String(error)
+  }));
+}
+
+/** 停止记忆变更流订阅；无桥时为空操作。 */
+export async function stopMemoryEvents(): Promise<void> {
+  const api = getDesktopApi();
+  if (!api) return;
+  await api.stopMemoryEvents().catch(() => undefined);
+}

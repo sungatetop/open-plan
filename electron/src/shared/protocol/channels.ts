@@ -90,13 +90,25 @@ export const DESKTOP_CHANNELS = {
 
   // ---- 事件游标管理（事件桥配套；SSE 本体由 op:event 推送替代） ----
   "op:agent:events-state": { method: "GET", path: "/api/agent/events/state" },
-  "op:agent:events-read": { method: "POST", path: "/api/agent/events/read" }
+  "op:agent:events-read": { method: "POST", path: "/api/agent/events/read" },
+
+  // ---- 记忆域（F3 批4：MemoryTab；file:get/save 对应 server 正则路由 /^\/api\/memory\/([^/]+)$/） ----
+  "op:memory:list": { method: "GET", path: "/api/memory" },
+  "op:memory:init": { method: "POST", path: "/api/memory/init" },
+  "op:memory:file:get": { method: "GET", path: "/api/memory/:rel" },
+  "op:memory:file:save": { method: "POST", path: "/api/memory/:rel" },
+  "op:memory:proposals:list": { method: "GET", path: "/api/memory/proposals" },
+  "op:memory:proposals:approve": { method: "POST", path: "/api/memory/proposals/:id/approve" },
+  "op:memory:proposals:edit": { method: "PATCH", path: "/api/memory/proposals/:id" },
+  "op:memory:proposals:reject": { method: "POST", path: "/api/memory/proposals/:id/reject" },
+  "op:memory:proposals:history": { method: "GET", path: "/api/memory/proposals/:id/history" },
+  "op:memory:proposals:merge": { method: "POST", path: "/api/memory/proposals/:id/merge" }
 } as const satisfies Record<string, { method: HttpMethod; path: string }>;
 
 export type DesktopChannelId = keyof typeof DESKTOP_CHANNELS;
 
 /** SSE 长连接路由 → op:event 推送的替代关系（对账测试断言其存在于 server 路由面）。 */
-export const SSE_REPLACED_ROUTES = ["GET /api/agent/stream", "GET /api/agent/events"] as const;
+export const SSE_REPLACED_ROUTES = ["GET /api/agent/stream", "GET /api/agent/events", "GET /api/memory/stream"] as const;
 
 // ============================================================================
 // 领域载荷类型：对齐 server/index.mjs 各路由的实际请求/响应结构。
@@ -568,6 +580,69 @@ export interface AgentEventsStateResponse { readCursor: number; [key: string]: u
 export type AgentEventsReadRequest = { body: { client: string; seq: number } };
 export interface AgentEventsReadResponse { ok?: boolean; [key: string]: unknown }
 
+// ---- 记忆域（F3 批4：MemoryTab） ----
+
+export interface MemoryFileInfo {
+  rel: string;
+  type?: string;
+  size?: number;
+  [key: string]: unknown;
+}
+
+export type MemoryListResponse = { files: MemoryFileInfo[]; memoryDir?: string };
+
+export type MemoryFileGetResponse = { content: string; path: string };
+
+export type MemoryFileSaveRequest = { params: { rel: string }; body?: { content?: string } };
+
+export type MemoryInitResponse = { ok: true; files: MemoryFileInfo[] };
+
+export interface MemoryProposal {
+  id: string;
+  status?: string;
+  category?: string;
+  section?: string;
+  content?: string;
+  source?: { label?: string; [key: string]: unknown } | null;
+  runId?: string | null;
+  version?: number;
+  [key: string]: unknown;
+}
+
+export type MemoryProposalListRequest = {
+  query?: { workspace?: string; status?: string; projectId?: string; category?: string; client?: string; thread?: string };
+};
+export type MemoryProposalListResponse = { proposals: MemoryProposal[] };
+
+export type MemoryProposalApproveRequest = {
+  params: { id: string };
+  body?: { content?: string; category?: string; section?: string; reviewer?: string };
+};
+export type MemoryProposalEditRequest = {
+  params: { id: string };
+  body?: { content?: string; category?: string; section?: string };
+};
+export type MemoryProposalRejectRequest = { params: { id: string }; body?: { reason?: string } };
+export type MemoryProposalHistoryRequest = { params: { id: string } };
+export type MemoryProposalMergeRequest = { params: { id: string }; body?: { sourceIds?: string[] } };
+
+/** 审批类操作结果（sendMemoryResult 直传 agentManager 结果，失败时调用方走 ApiError）。 */
+export type MemoryProposalOpResult = { ok: boolean; [key: string]: unknown };
+
+export interface MemoryProposalHistoryItem {
+  version?: number;
+  action?: string;
+  at?: string;
+  [key: string]: unknown;
+}
+
+export type MemoryProposalHistoryResponse = {
+  ok?: boolean;
+  id?: string;
+  history?: MemoryProposalHistoryItem[];
+  [key: string]: unknown;
+};
+
 // ============================================================================
 // 通道协议映射：通道名 → 请求/响应类型（renderer 与 main 共用）。
 // ============================================================================
@@ -616,6 +691,17 @@ export interface DesktopChannelProtocol {
 
   "op:agent:events-state": { request: AgentEventsStateRequest; response: AgentEventsStateResponse };
   "op:agent:events-read": { request: AgentEventsReadRequest; response: AgentEventsReadResponse };
+
+  "op:memory:list": { request: Record<string, never>; response: MemoryListResponse };
+  "op:memory:init": { request: Record<string, never>; response: MemoryInitResponse };
+  "op:memory:file:get": { request: { params: { rel: string } }; response: MemoryFileGetResponse };
+  "op:memory:file:save": { request: MemoryFileSaveRequest; response: Record<string, unknown> };
+  "op:memory:proposals:list": { request: MemoryProposalListRequest; response: MemoryProposalListResponse };
+  "op:memory:proposals:approve": { request: MemoryProposalApproveRequest; response: MemoryProposalOpResult };
+  "op:memory:proposals:edit": { request: MemoryProposalEditRequest; response: MemoryProposalOpResult };
+  "op:memory:proposals:reject": { request: MemoryProposalRejectRequest; response: MemoryProposalOpResult };
+  "op:memory:proposals:history": { request: MemoryProposalHistoryRequest; response: MemoryProposalHistoryResponse };
+  "op:memory:proposals:merge": { request: MemoryProposalMergeRequest; response: MemoryProposalOpResult };
 }
 
 export type ChannelRequest<C extends DesktopChannelId> = DesktopChannelProtocol[C]["request"];

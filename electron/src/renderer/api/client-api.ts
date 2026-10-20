@@ -235,6 +235,44 @@ export const markAgentEventsRead = (client: string, seq: number): Promise<Channe
   invokeOrThrow("op:agent:events-read", { body: { client, seq } });
 
 // ============================================================================
+// 记忆域（F3 批4：MemoryTab；对齐 client/src/api.js 记忆端点族）
+// ============================================================================
+
+export const listMemoryFiles = (): Promise<ChannelResponse<"op:memory:list">> => invokeOrThrow("op:memory:list");
+
+export const initMemory = (): Promise<ChannelResponse<"op:memory:init">> => invokeOrThrow("op:memory:init");
+
+export const readMemoryFile = (rel: string): Promise<ChannelResponse<"op:memory:file:get">> =>
+  invokeOrThrow("op:memory:file:get", { params: { rel } });
+
+export const saveMemoryFile = (rel: string, content: string): Promise<ChannelResponse<"op:memory:file:save">> =>
+  invokeOrThrow("op:memory:file:save", { params: { rel }, body: { content } });
+
+export function listMemoryProposals(workspace = "", status = "", projectId = ""): Promise<ChannelResponse<"op:memory:proposals:list">> {
+  // 对齐旧实现 URLSearchParams：仅非空值入串（转发器同样剔除空值，双保险）
+  const query: NonNullable<ChannelRequest<"op:memory:proposals:list">["query"]> = {};
+  if (workspace) query.workspace = workspace;
+  if (status) query.status = status;
+  if (projectId) query.projectId = projectId;
+  return invokeOrThrow("op:memory:proposals:list", { query });
+}
+
+export const approveMemoryProposal = (id: string, payload: Record<string, unknown> = {}): Promise<ChannelResponse<"op:memory:proposals:approve">> =>
+  invokeOrThrow("op:memory:proposals:approve", { params: { id }, body: payload || {} });
+
+export const editMemoryProposal = (id: string, payload: Record<string, unknown> = {}): Promise<ChannelResponse<"op:memory:proposals:edit">> =>
+  invokeOrThrow("op:memory:proposals:edit", { params: { id }, body: payload || {} });
+
+export const rejectMemoryProposal = (id: string, reason = "用户拒绝该记忆建议"): Promise<ChannelResponse<"op:memory:proposals:reject">> =>
+  invokeOrThrow("op:memory:proposals:reject", { params: { id }, body: { reason } });
+
+export const mergeMemoryProposals = (targetId: string, sourceIds: string[] = []): Promise<ChannelResponse<"op:memory:proposals:merge">> =>
+  invokeOrThrow("op:memory:proposals:merge", { params: { id: targetId }, body: { sourceIds } });
+
+export const memoryProposalHistory = (id: string): Promise<ChannelResponse<"op:memory:proposals:history">> =>
+  invokeOrThrow("op:memory:proposals:history", { params: { id } });
+
+// ============================================================================
 // 本地工具（无 HTTP）
 // ============================================================================
 

@@ -35,7 +35,9 @@ const api: OpDesktopApi = {
   watchThreadEvents: (request: ThreadEventWatchRequest): Promise<EventWatchResult> =>
     ipcRenderer.invoke("op:events:watch", request),
   stopThreadEvents: (request?: { client?: string; thread?: string }): Promise<void> =>
-    ipcRenderer.invoke("op:events:unwatch", request ?? {})
+    ipcRenderer.invoke("op:events:unwatch", request ?? {}),
+  watchMemoryEvents: (): Promise<EventWatchResult> => ipcRenderer.invoke("op:memory:watch"),
+  stopMemoryEvents: (): Promise<void> => ipcRenderer.invoke("op:memory:unwatch")
 };
 
 contextBridge.exposeInMainWorld("opDesktop", api);

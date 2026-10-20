@@ -46,7 +46,6 @@ const EXEMPT_PREFIXES = [
   "/api/doc",
   "/api/templates",
   "/api/browser",
-  "/api/memory",
   "/api/m3",
   "/api/bus",
   "/api/demo",
@@ -135,19 +134,32 @@ const extracted = extractRoutes(source);
 describe("channels manifest 对账", () => {
   it("通道清单规约：op: 前缀、族:动作命名、数量钉住（扩清单需同步更新对账）", () => {
     const channelKeys = Object.keys(DESKTOP_CHANNELS);
-    expect(channelKeys.length).toBe(39);
+    expect(channelKeys.length).toBe(49);
     for (const key of channelKeys) {
       expect(key.startsWith("op:")).toBe(true);
     }
-    // chat 域通道族：status / sessions / runs / artifacts / agent
+    // 通道族：status / sessions / runs / artifacts / agent / memory
     const families = new Set(channelKeys.map((key) => key.split(":")[1]));
-    expect([...families].sort()).toEqual(["agent", "artifacts", "runs", "sessions", "status"]);
+    expect([...families].sort()).toEqual(["agent", "artifacts", "memory", "runs", "sessions", "status"]);
   });
+
+  /** 通道路由是否被正则形式路由的字面前缀覆盖（同 method 且 path 以其为前缀）。 */
+  function coveredByRegexRoute(route: string): boolean {
+    const [method = "", routePath = ""] = [route.split(" ")[0], route.split(" ")[1]];
+    for (const regexRoute of extracted.regexRoutePrefixes) {
+      const [regexMethod = "", regexPath = ""] = [regexRoute.split(" ")[0], regexRoute.split(" ")[1]];
+      if (method === regexMethod && routePath.startsWith(regexPath)) return true;
+    }
+    return false;
+  }
 
   it("无幽灵通道：每个通道的 method+path 都存在于 server 路由面", () => {
     const ghost: string[] = [];
     for (const route of channelRouteSet) {
-      if (!extracted.stringRoutes.has(route)) ghost.push(route);
+      if (extracted.stringRoutes.has(route)) continue;
+      // 正则形式路由（如 /^\/api\/memory\/([^/]+)$/）：按同 method 字面前缀归属判断存在性
+      if (coveredByRegexRoute(route)) continue;
+      ghost.push(route);
     }
     expect(ghost).toEqual([]);
   });
@@ -169,12 +181,13 @@ describe("channels manifest 对账", () => {
     expect(uncovered).toEqual([]);
   });
 
-  it("正则形式路由全部落在豁免域（doc/templates/memory/map）", () => {
+  it("正则形式路由全部落在豁免域或通道覆盖域（doc/templates/memory/map）", () => {
     for (const regexRoute of extracted.regexRoutePrefixes) {
       const regexPath = regexRoute.split(" ")[1] ?? "";
       expect(
-        EXEMPT_PREFIXES.some((prefix) => regexPath.startsWith(prefix)),
-        `正则路由 ${regexRoute} 未落在豁免域`
+        EXEMPT_PREFIXES.some((prefix) => regexPath.startsWith(prefix)) ||
+          [...channelRouteSet].some((route) => coveredByRegexRoute(route) && (route.split(" ")[1] ?? "").startsWith(regexPath)),
+        `正则路由 ${regexRoute} 未落在豁免域或通道覆盖域`
       ).toBe(true);
     }
   });

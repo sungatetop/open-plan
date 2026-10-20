@@ -36,6 +36,14 @@ export interface OpDesktopApi {
   watchThreadEvents(request: ThreadEventWatchRequest): Promise<EventWatchResult>;
   /** 停止事件订阅（省略参数 = 停当前订阅）。 */
   stopThreadEvents(request?: { client?: string; thread?: string }): Promise<void>;
+  /**
+   * 订阅记忆文件变更流（main 侧消费 legacy /api/memory/stream SSE → op:event，
+   * 帧类型 op:memory-change，data 为 { file, event, preview, time }）。
+   * 全局单流，重复 watch 幂等。ok=false 表示请求被拒。
+   */
+  watchMemoryEvents(): Promise<EventWatchResult>;
+  /** 停止记忆变更流订阅。 */
+  stopMemoryEvents(): Promise<void>;
 }
 
 /** 对话流事件订阅请求（对齐 /api/agent/stream 查询参数）。 */

@@ -5,6 +5,7 @@ import { resolveRendererTarget } from "./util/renderer-target";
 import { startLegacyServer, type LegacyServerHandle, type ServerStatusSnapshot } from "./legacy-server";
 import { channelRoutes, forwardHttpRequest } from "./ipc/http-forward";
 import { createEventStreamBridge } from "./ipc/events-bridge";
+import { createMemoryEventsBridge } from "./ipc/memory-events-bridge";
 import type { InvokeEnvelope, DesktopEvent } from "../shared/protocol/channels";
 import { createSplashWindow } from "./splash";
 
@@ -104,6 +105,22 @@ function registerEventBridgeHandlers(): void {
   });
 }
 
+/**
+ * 记忆变更事件桥（F3 批4）：main 侧消费 legacy /api/memory/stream SSE → op:event 推送。
+ * 生命周期由渲染层经 op:memory:watch / op:memory:unwatch 控制。
+ */
+function registerMemoryBridgeHandlers(): void {
+  const bridge = createMemoryEventsBridge({
+    getPort: () => (server && server.status.phase === "ready" ? server.port : null),
+    send: (event) => broadcastEvent(event)
+  });
+  ipcMain.handle("op:memory:watch", () => bridge.watch());
+  ipcMain.handle("op:memory:unwatch", () => {
+    bridge.stop();
+    return { ok: true };
+  });
+}
+
 async function bootstrap(): Promise<void> {
   let port: number;
   try {
@@ -181,6 +198,8 @@ if (!gotLock) {
   app.whenReady().then(() => {
     ipcMain.handle("op:server-status", () => server?.status ?? { phase: "starting" });
     registerChannelForwarders();
+    registerEventBridgeHandlers();
+    registerMemoryBridgeHandlers();
     mainWindow = createSplashWindow(PRELOAD_PATH);
     void bootstrap();
   });
