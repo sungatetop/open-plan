@@ -1,0 +1,636 @@
+import { reduceRunTrace, summarizeRunTrace, verificationLabel, type RunTrace } from "./run-trace";
+import { flowEventLabel, phaseForEvent } from "./event-display";
+
+/**
+ * 运行展示投影（W1/A01）
+ *
+ * 目标：实时对话、历史恢复、任务中心、文件改动面板共用同一份「一轮任务」视图，
+ * 避免每个组件各自拼装状态、产物与文件清单（当前结果卡/产物面板重复展示即源于此）。
+ *
+ * 约定：
+ *   - 纯函数，无副作用、无 React 依赖，可在测试与 Node 环境直接调用；
+ *   - 权威数据优先：Run 快照（run.completion / finalText）胜过事件推断；
+ *     空事件不得清除已有权威数据；
+ *   - 生命周期（queued/running/…/completed）与目标达成（outcome.status）分开；
+ *   - 非终态事件不得宣告完成；状态缺失显示 unknown（“状态待同步”），不默认 completed；
+ *   - 只投影明确的交付文件为 deliverables，内部/缓存/临时文件归 internal。
+ *
+ * 与 client/src/run-display-projection.js 逐函数等价（tests/f1-run-display-projection-parity.test.ts 对拍强制）。
+ */
+
+type LooseRecord = Record<string, unknown>;
+
+/** 生命周期（与“目标是否达成”分开）。 */
+export const LIFECYCLE_LABELS: Readonly<Record<string, string>> = Object.freeze({
+  queued: "排队中",
+  running: "执行中",
+  waiting_user: "等待回答",
+  waiting_approval: "等待审批",
+  finalizing: "收尾中",
+  completed: "运行结束",
+  failed: "失败",
+  cancelled: "已取消",
+  unknown: "状态待同步",
+});
+
+export const TERMINAL_LIFECYCLES: readonly string[] = Object.freeze(["completed", "failed", "cancelled"]);
+
+export function isTerminalLifecycle(lifecycle: unknown): boolean {
+  return TERMINAL_LIFECYCLES.includes(String(lifecycle || ""));
+}
+
+export function lifecycleLabel(lifecycle: unknown): string {
+  return LIFECYCLE_LABELS[String(lifecycle || "unknown")] || (LIFECYCLE_LABELS.unknown as string);
+}
+
+/** 原始 status / 事件 → 生命周期。缺失或未知状态返回 unknown，绝不默认 completed。 */
+export function normalizeLifecycle(status: unknown): string {
+  const value = String(status || "").trim().toLowerCase();
+  if (!value || value === "idle") return "unknown";
+  if (["queued", "pending", "admitting", "admitted"].includes(value)) return value === "admitting" ? "running" : "queued";
+  if (["running", "recovering", "recovery", "in_progress", "active"].includes(value)) return "running";
+  if (value === "waiting_user") return "waiting_user";
+  if (["waiting_approval", "waiting_approval_user"].includes(value)) return "waiting_approval";
+  if (["finalizing", "cancel_requested", "cancelling", "canceling"].includes(value)) return "finalizing";
+  if (["completed", "success", "done", "finished"].includes(value)) return "completed";
+  if (["failed", "error"].includes(value)) return "failed";
+  if (["cancelled", "canceled", "aborted", "interrupted"].includes(value)) return "cancelled";
+  return "unknown";
+}
+
+/* ------------------------------ 文件变更分类 ------------------------------ */
+
+// 内部/缓存/临时：不进主交付列表（与服务端 runs.mjs 的噪音规则保持一致的语义）
+const INTERNAL_PATH_PATTERNS: RegExp[] = [
+  /(^|\/)\.oaw(\/|$)/i,
+  /(^|\/)(node_modules|__pycache__|\.venv|venv|\.git|\.cache|\.pytest_cache|dist-info|\.turbo|\.parcel-cache)(\/|$)/i,
+  /(^|\/)\./,                       // 隐藏文件与目录（含 .agent-context.*）
+  /(^|\/)\._/,                      // macOS AppleDouble
+  /(^|\/)~\$/,                      // Office 锁文件
+  /\.(tmp|temp|log|bak|old|orig|pyc|pyo|swp|swo)$/i,
+];
+
+export function isInternalChangePath(relativePath: unknown): boolean {
+  const value = String(relativePath || "").replace(/\\/g, "/");
+  if (!value) return true;
+  return INTERNAL_PATH_PATTERNS.some((pattern) => pattern.test(value));
+}
+
+function normalizeChangeType(status: unknown): string {
+  const value = String(status || "").trim().toLowerCase();
+  if (["added", "created", "new"].includes(value)) return "added";
+  if (["deleted", "removed"].includes(value)) return "deleted";
+  if (value === "renamed") return "renamed";
+  if (["modified", "changed", "updated"].includes(value)) return "modified";
+  return "unclassified";
+}
+
+export interface FileChange {
+  runId: unknown;
+  changeId: unknown;
+  workspaceId: unknown;
+  cwd: unknown;
+  relativePath: string;
+  changeType: string;
+  before: { hash: unknown; size: unknown; reversible: boolean } | null;
+  after: { hash: unknown; size: unknown } | null;
+  source: unknown;
+  confidence: unknown;
+  toolCallId: unknown;
+  role: string;
+  attribution: unknown;
+  attributed: boolean;
+  unattributed: boolean;
+  acceptanceStatus: unknown;
+  publishedAt: unknown;
+}
+
+/**
+ * 产物/变更 → FileChange。
+ * source: artifact（服务端已按前后 hash 确认）| suspected（仅 mtime 线索）| incomplete
+ */
+export function normalizeFileChange(input: LooseRecord | undefined = {}, { runId = null as unknown } = {}): FileChange {
+  const relativePath = String(input.relativePath || input.path || "").replace(/\\/g, "/");
+  const changeType = normalizeChangeType(input.changeType || input.status);
+  const internal = isInternalChangePath(relativePath);
+  const acceptance = (input.acceptance || null) as LooseRecord | null;
+  const accepted = ["passed", "warning", "manual_review"].includes(String(acceptance?.status || input.acceptanceStatus || ""));
+  const published = Boolean(input.publication) || String(input.publicationStatus || "") === "published";
+  const role = internal ? "internal"
+    : (accepted || published) ? "deliverable"
+      : "unclassified";
+  const beforeRecord = input.before as LooseRecord | null | undefined;
+  const afterRecord = input.after as LooseRecord | null | undefined;
+  return {
+    runId: input.runId || runId || null,
+    changeId: input.changeId || null,
+    workspaceId: input.workspaceId || null,
+    cwd: input.cwd || null,
+    relativePath,
+    changeType,
+    before: input.before ? { hash: beforeRecord?.hash || null, size: beforeRecord?.size ?? null, reversible: Boolean(beforeRecord?.reversible) } : null,
+    after: input.after ? { hash: afterRecord?.hash || null, size: afterRecord?.size ?? null } : (input.size != null ? { hash: null, size: input.size } : null),
+    source: input.source || "artifact",
+    confidence: input.confidence || "confirmed",
+    toolCallId: input.toolCallId || null,
+    role,
+    // 归属：write-ledger / run-window = 归到本轮（后者带"待确认"）；unattributed = 只是线索。
+    attribution: input.source || "artifact",
+    attributed: (input.source || "artifact") !== "unattributed",
+    // 无写入台账的快照差异只是“未归属线索”：可查看，但不能算本轮交付。
+    unattributed: input.source === "unattributed" || input.confidence === "suspected",
+    acceptanceStatus: acceptance?.status || input.acceptanceStatus || null,
+    publishedAt: input.publishedAt || null,
+  };
+}
+
+/* ------------------------------ 事件辅助 ------------------------------ */
+
+function eventRunId(event: unknown): unknown {
+  const record = event as LooseRecord | null | undefined;
+  return record?.runId || (record?.data as LooseRecord | undefined)?.runId || null;
+}
+
+/** 只保留属于本 Run 的事件：其他 Run 的迟到事件不得改变本 Run 的视图。 */
+function belongsToRun(event: unknown, runId: unknown): boolean {
+  if (!runId) return true;
+  const value = eventRunId(event);
+  return !value || String(value) === String(runId);
+}
+
+function lastEventOfType(events: unknown[], types: string | string[]): LooseRecord | null {
+  const wanted = new Set(Array.isArray(types) ? types : [types]);
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    const event = events[i] as LooseRecord | null | undefined;
+    if (wanted.has(String(event?.type || ""))) return event as LooseRecord;
+  }
+  return null;
+}
+
+interface WaitingReason {
+  kind: "approval" | "ask";
+  text: string;
+  approvalId?: unknown;
+  question?: unknown;
+}
+
+/** 等待原因：待审批 / 待回答（隐藏过程时也必须能找到需要行动的位置）。 */
+function waitingReasonOf(events: unknown[]): WaitingReason | null {
+  const approvals = new Map<string, LooseRecord>();
+  let pendingAsk: LooseRecord | null = null;
+  for (const event of events) {
+    const record = event as LooseRecord | null | undefined;
+    const data = (record?.data || {}) as LooseRecord;
+    if (record?.type === "tool_approval_request" && data.id) approvals.set(String(data.id), data);
+    if (record?.type === "tool_approval_resolved" && data.id) approvals.delete(String(data.id));
+    if (record?.type === "ask_user") pendingAsk = data;
+    if (record?.type === "ask_answered" || record?.type === "ask_user_answered") pendingAsk = null;
+  }
+  if (approvals.size) {
+    const first = [...approvals.values()][0] as LooseRecord;
+    return { kind: "approval", text: `等待你批准：${first.tool || first.target || "工具"}`, approvalId: first.id || null };
+  }
+  if (pendingAsk) return { kind: "ask", text: "等待你回答", question: pendingAsk.question || "" };
+  return null;
+}
+
+/* ------------------------------ 工作阶段与时间线（W7/E01、E03） ------------------------------ */
+
+/** 工作阶段：与生命周期分开；允许“验证 → 再执行”的回退（失败重试），只有生命周期终态不可倒退。 */
+export const WORK_PHASE_ORDER: readonly string[] = Object.freeze(["idle", "planning", "executing", "verifying", "delivering"]);
+
+function workPhaseOfEvent(event: unknown): string | null {
+  const phase = phaseForEvent(event) as string | null;
+  if (!phase) return null;
+  if (phase === "done" || phase === "finishing") return "delivering";
+  if (phase === "preparing") return "planning";
+  return WORK_PHASE_ORDER.includes(phase) ? phase : null;
+}
+
+export interface WorkPhaseTrailItem {
+  phase: string;
+  at: unknown;
+  attempt: number;
+  retry: boolean;
+}
+
+export interface WorkPhase {
+  phase: string;
+  attempts: Record<string, number>;
+  trail: WorkPhaseTrailItem[];
+  retries: number;
+}
+
+/**
+ * 从事件序列推导工作阶段轨迹：
+ *   - 前进即推进；「验证 → 执行」视为一次重试（attempt+1）；
+ *   - 其余回退忽略（后到的早期事件不把阶段拉回去）。
+ */
+export function deriveWorkPhase(events: unknown[] = []): WorkPhase {
+  let phase = "idle";
+  const attempts: Record<string, number> = { planning: 0, executing: 0, verifying: 0, delivering: 0 };
+  const trail: WorkPhaseTrailItem[] = [];
+  for (const event of events) {
+    const record = event as LooseRecord | null | undefined;
+    const next = workPhaseOfEvent(event);
+    if (!next || next === phase) continue;
+    const from = WORK_PHASE_ORDER.indexOf(phase);
+    const to = WORK_PHASE_ORDER.indexOf(next);
+    const retry = phase === "verifying" && next === "executing";
+    if (!(to > from || retry)) continue;
+    phase = next;
+    attempts[next] = (attempts[next] || 0) + 1;
+    trail.push({ phase: next, at: record?.at || record?.timestamp || null, attempt: attempts[next] as number, retry });
+  }
+  return { phase, attempts, trail, retries: trail.filter((item) => item.retry).length };
+}
+
+function eventTime(event: unknown): unknown {
+  const record = event as LooseRecord | null | undefined;
+  return record?.at || record?.timestamp || record?.createdAt || null;
+}
+
+export interface RunTimeline {
+  admitted: unknown;
+  firstModelEvent: unknown;
+  firstVisibleText: unknown;
+  modelEnd: unknown;
+  verificationEnd: unknown;
+  finished: unknown;
+  latencyToFirstEventMs: number | null;
+  modelDurationMs: number | null;
+  tailLatencyMs: number | null;
+}
+
+/** 结构化时间线（E03）：首事件 / 首个模型事件 / 首可见文本 / 模型结束 / 验证结束 / 终态。 */
+export function deriveTimeline(events: unknown[] = [], run: LooseRecord | undefined = {}): RunTimeline {
+  const firstOf = (types: string[]): unknown => {
+    for (const event of events) if (types.includes(String((event as LooseRecord | null | undefined)?.type || ""))) return eventTime(event);
+    return null;
+  };
+  const lastOf = (types: string[]): unknown => {
+    for (let i = events.length - 1; i >= 0; i -= 1) if (types.includes(String((events[i] as LooseRecord | null | undefined)?.type || ""))) return eventTime(events[i]);
+    return null;
+  };
+  const admitted = firstOf(["run_admitted", "run_admitting", "run_started"]);
+  const firstModelEvent = firstOf(["model_request_started", "thinking", "message_start", "token"]);
+  const firstVisibleText = firstOf(["token", "assistant_final"]);
+  const modelEnd = lastOf(["agent_end", "turn_ended"]);
+  const verificationEnd = lastOf(["artifacts_validated"]);
+  const finished = run.finishedAt || lastOf(["run_finished"]) || null;
+  const ms = (from: unknown, to: unknown): number | null => (from && to ? Math.max(0, new Date(to as string).getTime() - new Date(from as string).getTime()) : null);
+  return {
+    admitted,
+    firstModelEvent,
+    firstVisibleText,
+    modelEnd,
+    verificationEnd,
+    finished,
+    // 分延迟：首事件延迟 / 模型执行 / 后台收尾
+    latencyToFirstEventMs: ms(admitted, firstModelEvent),
+    modelDurationMs: ms(firstModelEvent, modelEnd),
+    tailLatencyMs: ms(modelEnd, finished),
+  };
+}
+
+/* ------------------------------ 主投影 ------------------------------ */
+
+export interface RunViewAnswer {
+  messageId: unknown;
+  version: number;
+  text: string;
+  source: "run" | "event";
+}
+
+export interface RunView {
+  runId: unknown;
+  lifecycle: string;
+  lifecycleLabel: string;
+  terminal: boolean;
+  outcome: LooseRecord | null;
+  answer: RunViewAnswer | null;
+  progress: {
+    phase: string;
+    workPhase: string;
+    attempts: Record<string, number>;
+    retries: number;
+    phaseTrail: WorkPhaseTrailItem[];
+    timeline: RunTimeline;
+    currentAction: string;
+    waitingReason: string | null;
+    waitingKind: string | null;
+    turns: number;
+    toolTotal: number;
+    toolFailed: number;
+    durationMs: number;
+    startedAt: unknown;
+    endedAt: unknown;
+  };
+  trace: Pick<RunTrace, "tools" | "subagents" | "pipeline" | "notes" | "errors" | "files" | "todos">;
+  changes: FileChange[];
+  deliverables: FileChange[];
+  verification: {
+    status: unknown;
+    label: string;
+    checks: unknown[];
+    source: string;
+  };
+  memoryProposalIds: string[];
+  meta: { eventCount: number; changeCount: number; deliverableCount: number; now: number };
+}
+
+/**
+ * @param run     Run 快照（服务端 Run JSON / 列表摘要 / 旧 RunSummary 消息）
+ * @param events  该 Run 的事件（实时通道或历史 Run.events）
+ * @returns RunView
+ */
+export function projectRunView(run: LooseRecord | null | undefined = {}, events: unknown[] = [], { now = Date.now() } = {}): RunView {
+  const source = run && typeof run === "object" ? run : {};
+  const runId = source.runId || source.id || null;
+  const allEvents = (Array.isArray(events) ? events : []).filter((event) => belongsToRun(event, runId));
+  const trace = reduceRunTrace(allEvents, runId as string | null);
+  const stats = summarizeRunTrace(trace);
+
+  // 生命周期：快照 status 优先；快照缺失时用事件推断（但绝不默认 completed）
+  let lifecycle = normalizeLifecycle(source.status || source.lifecycle || "");
+  const waiting = waitingReasonOf(allEvents);
+  if (!isTerminalLifecycle(lifecycle)) {
+    if (waiting?.kind === "approval") lifecycle = "waiting_approval";
+    else if (waiting?.kind === "ask") lifecycle = "waiting_user";
+  }
+  if (lifecycle === "unknown" && allEvents.length) {
+    const ended = lastEventOfType(allEvents, ["run_finished", "agent_end"]);
+    if (ended) {
+      const data = (ended.data || {}) as LooseRecord;
+      const status = String(data.status || "");
+      lifecycle = normalizeLifecycle(status || (String(ended.type) === "run_finished" ? "completed" : "unknown"));
+    }
+  }
+  const terminal = isTerminalLifecycle(lifecycle);
+
+  // 目标达成（outcome）：快照 completion 权威；否则事件推断；非终态不得宣告完成
+  const eventCompletion = (trace.completion || null) as LooseRecord | null;
+  const snapshotCompletion = (source.completion || null) as LooseRecord | null;
+  let outcome = snapshotCompletion || eventCompletion;
+  if (outcome && !terminal && !source.completion) {
+    // 只有事件推断的完成声明、且运行未终态时，不把它当成最终目标达成
+    outcome = { ...outcome, provisional: true };
+  }
+
+  // 最终回答（answer）：只认权威终稿，重连时替换同一条，不追加第二份
+  const finalText = String(source.finalText || "").trim();
+  const finalMessageId = source.finalMessageId || null;
+  const finalTextVersion = Number(source.finalTextVersion || 0) || 0;
+  const answerEvent = lastEventOfType(allEvents, "assistant_final");
+  const answerData = (answerEvent?.data || {}) as LooseRecord;
+  const eventText = String(answerData.text || "").trim();
+  const eventMessageId = answerData.messageId || null;
+  const answer = finalText
+    ? { messageId: finalMessageId, version: finalTextVersion, text: finalText, source: "run" as const }
+    : (eventText ? { messageId: eventMessageId, version: 0, text: eventText, source: "event" as const } : null);
+
+  // 文件改动：Run 快照的 artifacts 为权威；事件里的 file_changed 只作疑似线索。
+  // 必须保留服务端的归属分级（write-ledger / run-window / unattributed）：
+  // 它决定文件是「已确认的产物」「待确认产物」还是「未归属线索」。此前统一覆盖成
+  // "artifact"，后果是台账确认过的文件也显示「待确认」、「已确认」恒为 0，
+  // 用户看到的就是"文件改动里有、本轮产物里不算数"。
+  const artifactChanges = (Array.isArray(source.artifacts) ? source.artifacts : [] as unknown[])
+    .map((artifact) => normalizeFileChange({
+      ...(artifact as LooseRecord),
+      source: (artifact as LooseRecord).source || "artifact",
+      confidence: (artifact as LooseRecord).confidence || "confirmed",
+    }, { runId }));
+  const knownPaths = new Set(artifactChanges.map((change) => change.relativePath));
+  const suspected: FileChange[] = [];
+  for (const event of allEvents) {
+    const record = event as LooseRecord | null | undefined;
+    if (record?.type !== "file_changed") continue;
+    const data = (record.data || {}) as LooseRecord;
+    for (const file of Array.isArray(data.files) ? data.files : [] as unknown[]) {
+      const relativePath = String(file || "").replace(/\\/g, "/");
+      if (!relativePath || knownPaths.has(relativePath)) continue;
+      knownPaths.add(relativePath);
+      suspected.push(normalizeFileChange({ path: relativePath, status: "modified", source: "event", confidence: "suspected" }, { runId }));
+    }
+  }
+  const changes = [...artifactChanges, ...suspected];
+  const workPhase = deriveWorkPhase(allEvents);
+  const timeline = deriveTimeline(allEvents, source);
+  const deliverables = changes.filter((change) => change.role === "deliverable");
+
+  // 记忆建议：只给待审核入口，不插进主回答
+  const memoryProposalIds = [...new Set(allEvents
+    .filter((event) => (event as LooseRecord | null | undefined)?.type === "memory_proposal" && ((event as LooseRecord).data as LooseRecord | undefined)?.id)
+    .map((event) => String(((event as LooseRecord).data as LooseRecord).id)))];
+
+  // 当前动作：最近一条“有内容”的事件标签（阶段类事件不参与）
+  const latestEvent = (() => {
+    for (let i = allEvents.length - 1; i >= 0; i -= 1) {
+      const record = allEvents[i] as LooseRecord | null | undefined;
+      const type = String(record?.type || "");
+      if (!type || type === "stats" || type === "token" || type === "heartbeat") continue;
+      return record as LooseRecord;
+    }
+    return null;
+  })();
+  const currentAction = latestEvent ? String(flowEventLabel(latestEvent) || "") : "";
+
+  return {
+    runId,
+    lifecycle,
+    lifecycleLabel: lifecycleLabel(lifecycle),
+    terminal,
+    outcome,
+    answer,
+    progress: {
+      phase: stats.phase || "idle",
+      workPhase: workPhase.phase,
+      attempts: workPhase.attempts,
+      retries: workPhase.retries,
+      phaseTrail: workPhase.trail,
+      timeline,
+      currentAction,
+      waitingReason: waiting ? waiting.text : null,
+      waitingKind: waiting ? waiting.kind : null,
+      turns: stats.turns,
+      toolTotal: stats.toolTotal,
+      toolFailed: stats.toolFailed,
+      durationMs: stats.durationMs,
+      startedAt: stats.startedAt,
+      endedAt: trace.endedAt || null,
+    },
+    trace: {
+      tools: trace.tools || [],
+      subagents: trace.subagents || [],
+      pipeline: trace.pipeline || null,
+      notes: trace.notes || [],
+      errors: trace.errors || [],
+      files: trace.files || [],
+      todos: trace.todos || [],
+    },
+    changes,
+    deliverables,
+    verification: {
+      status: source.verificationStatus || trace.verification || "not_checked",
+      label: verificationLabel(source.verificationStatus || trace.verification || "not_checked"),
+      checks: Array.isArray(source.validations) ? source.validations : [],
+      source: source.verificationStatus ? "run" : (trace.verification ? "event" : "none"),
+    },
+    memoryProposalIds,
+    // 调试用：投影输入规模，便于排查“事件很多但没变化”
+    meta: { eventCount: allEvents.length, changeCount: changes.length, deliverableCount: deliverables.length, now },
+  };
+}
+
+/**
+ * 旧数据适配器（A02 第 3 条 / A01“旧事件适配器”）：
+ * 历史里的 RunSummary 系统消息（m.summary === true）没有 Run 快照，但有 text/completion/artifacts/products/events。
+ * 这里把它折成 Run 快照形状，喂给同一个投影，避免为历史再写一套展示逻辑。
+ */
+export function adaptLegacyRunSummary(message: LooseRecord | undefined = {}): LooseRecord {
+  const artifacts = Array.isArray(message.artifacts) && message.artifacts.length
+    ? message.artifacts
+    : (Array.isArray(message.products) ? message.products : []).map((product) => (typeof product === "string" ? { path: product, status: "modified" } : product));
+  const verification = message.verification as LooseRecord | null | undefined;
+  return {
+    runId: message.runId || null,
+    status: message.runStatus || null,
+    completion: message.completion || null,
+    verificationStatus: verification?.status || message.verificationStatus || null,
+    // 旧 RunSummary 的 text 是 harness 收尾摘要，不是助手最终答复。
+    // 只有明确的 finalText/authoritativeFinalText 才进入答案投影，避免摘要与正文重复。
+    finalText: message.finalText || message.authoritativeFinalText || "",
+    artifacts,
+    cwd: message.workspace || null,
+    productPaths: Array.isArray(message.products) ? message.products : [],
+    model: message.model || null,
+  };
+}
+
+/** 便捷入口：直接投影一条旧 RunSummary 消息。 */
+export function projectLegacyRunSummary(message: LooseRecord | undefined = {}, events: unknown[] = [], options: { now?: number } = {}): RunView {
+  return projectRunView(adaptLegacyRunSummary(message), Array.isArray(events) && events.length ? events : ((message.events || []) as unknown[]), options);
+}
+
+export interface RunSummaryMessage extends LooseRecord {
+  id?: unknown;
+  role?: string;
+  text?: unknown;
+  products?: unknown[];
+  artifacts?: unknown[];
+  runId?: unknown;
+  runStatus?: unknown;
+  model?: unknown;
+  references?: unknown[];
+  task?: LooseRecord | null;
+  workspace?: unknown;
+  runMode?: unknown;
+  eventCount?: number;
+  events?: unknown[];
+  finalText?: unknown;
+  completion?: LooseRecord | null;
+  reviewSources?: unknown[];
+  status?: string;
+  summary?: boolean;
+  createdAt?: unknown;
+  expanded?: boolean;
+  flashFiles?: boolean;
+  internalProcess?: boolean;
+}
+
+/**
+ * 合并同一 Run 的实时摘要与终态事件。
+ * agent_summary 通常先到，run_finished 随后补齐状态、结论和产物；
+ * 这里集中处理旧消息复用，避免事件处理器依赖 setState updater 内部变量。
+ */
+export function upsertRunSummaryMessage(messages: unknown[] = [], data: LooseRecord | undefined = {}, {
+  id = null as unknown,
+  workspace = "",
+  runMode = "agent",
+  createdAt = Date.now(),
+} = {}): RunSummaryMessage[] {
+  const list = associateRunMessages(Array.isArray(messages) ? messages : []) as RunSummaryMessage[];
+  const runId = data?.runId || null;
+  if (!runId) return list;
+
+  const index = list.findIndex((item) => item?.summary && item.runId === runId);
+  const previous = index >= 0 ? list[index] : null;
+  const status = (data.status || previous?.runStatus || "") as string;
+  const statusText = status === "failed" ? "失败"
+    : status === "cancelled" ? "已取消"
+      : status === "aborted" ? "已中断"
+        : status === "running" ? "执行中"
+          : status === "completed" ? "完成"
+            : "状态待同步";
+  const summaryText = String(data.summary || (data.completion as LooseRecord | undefined)?.summary || previous?.text || `本轮任务${statusText}`).trim();
+  const incomingArtifacts = Array.isArray(data.artifacts) ? data.artifacts : [];
+  const artifacts = incomingArtifacts.length ? incomingArtifacts : null;
+  const incomingProducts = Array.isArray(data.products) ? data.products : [];
+  const products = incomingProducts.length
+    ? incomingProducts
+    : (artifacts || []).map((item) => (item as LooseRecord | null | undefined)?.path).filter(Boolean);
+  const nextArtifacts = artifacts || previous?.artifacts || [];
+  const nextProducts = products.length ? products : (previous?.products || []);
+  const completionData = data.completion as LooseRecord | null | undefined;
+  const next: RunSummaryMessage = {
+    ...(previous || {}),
+    id: previous?.id || id || `run-summary:${runId}`,
+    role: "system",
+    text: summaryText,
+    products: nextProducts,
+    artifacts: nextArtifacts,
+    runId,
+    runStatus: status || "unknown",
+    // 本轮实际使用的模型（服务端 run.model）：会话按轮显示"由谁执行"、以及模型切换分割线都读它。
+    model: String(data.model || previous?.model || ""),
+    references: (data.references || previous?.references || []) as unknown[],
+    task: (data.task || previous?.task || null) as LooseRecord | null,
+    workspace: data.workspace || previous?.workspace || workspace || "",
+    runMode: (data.task as LooseRecord | undefined)?.mode || previous?.runMode || runMode || "agent",
+    eventCount: Number(data.eventCount || previous?.eventCount || 0),
+    events: Array.isArray(data.events) ? data.events : (previous?.events || []),
+    finalText: String(data.finalText || previous?.finalText || ""),
+    completion: completionData || previous?.completion || null,
+    reviewSources: Array.isArray(data.reviewSources) ? data.reviewSources : (previous?.reviewSources || []),
+    status: "done",
+    summary: true,
+    createdAt: previous?.createdAt || createdAt,
+    expanded: false,
+    // 只有“本轮刚刚结束”才做文件改动高亮；历史回放与重连补齐不重播动画。
+    flashFiles: data.fresh === true || previous?.flashFiles === true,
+  };
+  if (index < 0) return associateRunMessages([...list, next]);
+  return associateRunMessages(list.map((item, itemIndex) => itemIndex === index ? next : item));
+}
+
+/**
+ * 把同一轮里的 assistant 过程消息及系统进度提醒关联到 runId，
+ * 让界面能将它们和 SSE/结论合并到同一个过程面板；真实用户消息仍是分组边界。
+ */
+export function associateRunMessages<T = LooseRecord>(messages: unknown[] = []): T[] {
+  const list = Array.isArray(messages) ? messages : [];
+  if (!list.length) return list as T[];
+  let next: unknown[] = list;
+  let changed = false;
+  for (let summaryIndex = 0; summaryIndex < list.length; summaryIndex += 1) {
+    const summary = list[summaryIndex] as LooseRecord | null | undefined;
+    const runId = String(summary?.role === "system" && summary.summary ? summary.runId || "" : "");
+    if (!runId) continue;
+    let start = summaryIndex - 1;
+    for (; start >= 0; start -= 1) {
+      const item = list[start] as LooseRecord | null | undefined;
+      if (item?.role === "system" && item.summary) break;
+      const internalReminder = item?.role === "user" && /^\s*(?:\[系统提醒\]|系统提醒[：:])/.test(String(item.text || ""));
+      if (item?.role === "user" && !internalReminder) break;
+    }
+    for (let index = start + 1; index < summaryIndex; index += 1) {
+      const item = (changed ? next : list)[index] as LooseRecord | null | undefined;
+      const internalProcess = item?.role === "user" && /^\s*(?:\[系统提醒\]|系统提醒[：:])/.test(String(item.text || ""));
+      if ((!internalProcess && item?.role !== "assistant") || (item.runId && item.runId !== runId)) continue;
+      if (item.runId === runId && Boolean(item.internalProcess) === internalProcess) continue;
+      if (!changed) { next = [...list]; changed = true; }
+      next[index] = { ...item, runId, ...(internalProcess ? { internalProcess: true } : {}) };
+    }
+  }
+  return (changed ? next : list) as T[];
+}
