@@ -5,7 +5,12 @@ import type {
   DesktopEvent,
   InvokeResult
 } from "../../shared/protocol/channels";
-import type { OpDesktopApi, ServerStatusPayload } from "../../shared/desktop-protocol";
+import type {
+  EventWatchResult,
+  OpDesktopApi,
+  ServerStatusPayload,
+  ThreadEventWatchRequest
+} from "../../shared/desktop-protocol";
 
 /**
  * 桌面 IPC client 范本（F2）。
@@ -61,4 +66,24 @@ export function subscribeDesktopEvents(listener: (event: DesktopEvent) => void):
   const api = getDesktopApi();
   if (!api) return () => {};
   return api.onEvent(listener);
+}
+
+/**
+ * 订阅线程对话流（main 侧消费 legacy SSE → op:event）。
+ * 无桥（web 形态）返回 ok:false，由调用方决定是否走 HTTP/SSE 兜底。
+ */
+export async function watchThreadEvents(request: ThreadEventWatchRequest): Promise<EventWatchResult> {
+  const api = getDesktopApi();
+  if (!api) return { ok: false, error: "桌面桥未就绪" };
+  return api.watchThreadEvents(request).catch((error: unknown) => ({
+    ok: false,
+    error: error instanceof Error ? error.message : String(error)
+  }));
+}
+
+/** 停止线程对话流订阅；无桥时为空操作。 */
+export async function stopThreadEvents(request?: { client?: string; thread?: string }): Promise<void> {
+  const api = getDesktopApi();
+  if (!api) return;
+  await api.stopThreadEvents(request).catch(() => undefined);
 }

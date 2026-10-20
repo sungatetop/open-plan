@@ -7,7 +7,12 @@ import {
   type DesktopEvent,
   type InvokeResult
 } from "../shared/protocol/channels";
-import type { OpDesktopApi, ServerStatusPayload } from "../shared/desktop-protocol";
+import type {
+  EventWatchResult,
+  OpDesktopApi,
+  ServerStatusPayload,
+  ThreadEventWatchRequest
+} from "../shared/desktop-protocol";
 
 const api: OpDesktopApi = {
   protocolVersion: 2,
@@ -26,7 +31,11 @@ const api: OpDesktopApi = {
     const handler = (_event: IpcRendererEvent, evt: DesktopEvent) => listener(evt);
     ipcRenderer.on(EVENT_PUSH_CHANNEL, handler);
     return () => ipcRenderer.removeListener(EVENT_PUSH_CHANNEL, handler);
-  }
+  },
+  watchThreadEvents: (request: ThreadEventWatchRequest): Promise<EventWatchResult> =>
+    ipcRenderer.invoke("op:events:watch", request),
+  stopThreadEvents: (request?: { client?: string; thread?: string }): Promise<void> =>
+    ipcRenderer.invoke("op:events:unwatch", request ?? {})
 };
 
 contextBridge.exposeInMainWorld("opDesktop", api);

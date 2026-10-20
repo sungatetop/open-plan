@@ -29,4 +29,23 @@ export interface OpDesktopApi {
   ): Promise<InvokeResult<ChannelResponse<C>>>;
   /** 订阅事件推送（op:event）；返回退订函数。 */
   onEvent(listener: (event: DesktopEvent) => void): () => void;
+  /**
+   * 订阅某线程的对话流事件（main 侧消费 legacy SSE → op:event 推送）。
+   * 同键幂等；切换线程由 main 侧优雅收旧流。ok=false 表示请求被拒（缺参等）。
+   */
+  watchThreadEvents(request: ThreadEventWatchRequest): Promise<EventWatchResult>;
+  /** 停止事件订阅（省略参数 = 停当前订阅）。 */
+  stopThreadEvents(request?: { client?: string; thread?: string }): Promise<void>;
+}
+
+/** 对话流事件订阅请求（对齐 /api/agent/stream 查询参数）。 */
+export interface ThreadEventWatchRequest {
+  client: string;
+  thread?: string;
+  cwd?: string;
+}
+
+export interface EventWatchResult {
+  ok: boolean;
+  error?: string;
 }

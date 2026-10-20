@@ -4,7 +4,8 @@ import { pickPreferredPort } from "./util/port";
 import { resolveRendererTarget } from "./util/renderer-target";
 import { startLegacyServer, type LegacyServerHandle, type ServerStatusSnapshot } from "./legacy-server";
 import { channelRoutes, forwardHttpRequest } from "./ipc/http-forward";
-import type { InvokeEnvelope } from "../shared/protocol/channels";
+import { createEventStreamBridge } from "./ipc/events-bridge";
+import type { InvokeEnvelope, DesktopEvent } from "../shared/protocol/channels";
 import { createSplashWindow } from "./splash";
 
 const SMOKE = process.env.OP_DESKTOP_SMOKE === "1";
@@ -73,6 +74,34 @@ function registerChannelForwarders(): void {
       return forwardHttpRequest(server.port, route.method, route.path, payload);
     });
   }
+}
+
+/** 事件广播：op:event 推送到所有窗口（渲染层 subscribeDesktopEvents 消费）。 */
+function broadcastEvent(event: DesktopEvent): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send("op:event", event);
+  }
+}
+
+/**
+ * 对话流事件桥（F2c）：main 侧消费 legacy SSE → op:event 推送。
+ * 生命周期由渲染层经 op:events:watch / op:events:unwatch 控制。
+ */
+let eventsBridge: ReturnType<typeof createEventStreamBridge> | null = null;
+
+function registerEventBridgeHandlers(): void {
+  const bridge = createEventStreamBridge({
+    getPort: () => (server && server.status.phase === "ready" ? server.port : null),
+    send: (event) => broadcastEvent(event)
+  });
+  eventsBridge = bridge;
+  ipcMain.handle("op:events:watch", (_event, request: Parameters<typeof bridge.watch>[0]) =>
+    bridge.watch(request)
+  );
+  ipcMain.handle("op:events:unwatch", (_event, request?: { client?: string; thread?: string }) => {
+    bridge.stop(request ?? {});
+    return { ok: true };
+  });
 }
 
 async function bootstrap(): Promise<void> {
