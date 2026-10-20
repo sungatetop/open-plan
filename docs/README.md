@@ -19,9 +19,9 @@ date: 2026-10-19
 | 目录 | 内容 | 现状 |
 |---|---|---|
 | [plans/](plans/) | 实施计划 / 迭代计划 / 执行记录 | 47 篇，含 `assets/` 配图 |
-| [solutions/](solutions/) | 实施方案 / 设计方案 / 适配与落地方案 / 线框图 | 17 篇 |
-| [decisions/](decisions/) | 技术选型 ADR（`BRD-001-xxx.md`） | 待建立 |
-| [module-design/](module-design/) | 各模块详细设计（接口 / 契约 / 数据模型） | 待建立 |
+| [solutions/](solutions/) | 实施方案 / 设计方案 / 适配与落地方案 / 线框图 | 19 篇 |
+| [decisions/](decisions/) | 技术选型 ADR（`BRD-001-xxx.md`）：运行时内核/双壳/feature-flag/事件治理/桌面端路线等 9 条关键决策（BRD-007/008 已被 BRD-009 取代） | 9 篇 |
+| [module-design/](module-design/) | 各模块详细设计（接口 / 契约 / 数据模型） | 1 篇（架构总览） |
 | [references/](references/) | 调研、外部对标、接入指南、契约、示例副本 | 6 篇 |
 | [references/汇报材料/](references/汇报材料/) | 口播稿与汇报 docx | 2 份 |
 | [references/prototypes/](references/prototypes/) | 界面原型 / 动效演示 HTML | 3 份 |
@@ -34,6 +34,8 @@ date: 2026-10-19
 ## 常用入口
 
 - 项目总览：[README.md](../README.md)
-- 需求与设计：[REQUIREMENTS.md](../REQUIREMENTS.md)、[DESIGN.md](../DESIGN.md)
+- 需求与设计：[REQUIREMENTS.md](../REQUIREMENTS.md)（R1-R14）、[DESIGN.md](../DESIGN.md)（设计目标/总体架构）
+- 架构与决策：[module-design/架构总览.md](module-design/架构总览.md)、[decisions/](decisions/) ADR 系列
+- 后续开发路线：[plans/2026-10-19-001-规聚产品基线与后续开发路线.md](plans/2026-10-19-001-规聚产品基线与后续开发路线.md)
 - 变更记录：[变更日志.md](../变更日志.md)
 - 版本管理：[plans/版本管理计划.md](plans/版本管理计划.md)

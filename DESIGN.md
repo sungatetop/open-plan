@@ -1,238 +1,150 @@
-# Open Plan - 前端设计文档
+---
+title: Open Plan 设计文档
+summary: 规聚 v0.11.55 基线的产品定位、设计目标、业务能力域与总体架构设计
+keywords: [规聚, Open Plan, 设计目标, 总体架构, 业务能力, Pi Agent, 地图 GIS]
+status: done
+date: 2026-10-19
+---
 
-当前基线：**v0.8.34**（feature/phase1-safety-baseline）
+# Open Plan - 设计文档
 
-## 架构概览
+当前基线：**v0.11.55**（package.json `0.11.55`，变更日志最新已发布条目 v0.11.55 / 2026-10-15，其后为 10 批未发布的 Qoder 对标优化，全部由运行开关控制、默认关闭）。
 
-```
-浏览器 (React SPA)
-── App.jsx: kbMode ? KnowledgeBase(全屏) : 三栏办公布局 ──
+> 术语：规聚（Open Plan）=「规划 + 聚集」。本文回答"产品是什么、为什么这样设计、整体长什么样"；模块级接口契约见 `docs/module-design/`，历史决策依据见 `docs/decisions/`。
 
-┌─ 三栏办公模式（kbMode=false）─────────────────────────────────────────────────┐
-│ 左栏 (SessionSidebar)    │ 中栏 (DocViewer)      │ 右栏 (ChatPanel)  │
-│ - 文件标签页             │ - DocxViewer (docx-preview)│ - 模型选择器+推理强度 │
-│ - 历史标签页(按文档过滤) │ - PptxViewer (pptxviewjs)  │ - 最近会话栏        │
-│ - 文件列表(右键菜单)     │ - ExcelGrid (可编辑表格)   │ - 消息流            │
-│ - 会话列表(重命名/删除)  │ - MarkdownBody(+目录浮窗)  │ - 思考过程(默认展开) │
-│ - 技能广场/智能体广场    │ - HTML/TXT 预览           │ - 工具调用卡片       │
-│                          │ - 批注面板(CommentMarker) │ - PlanBoard 任务板   │
-│                          │                           │ - 图片粘贴/上传      │
-└──────────────────────────┴───────────────────────────┴──────────────────────┘
+## 1. 产品定位与设计目标
 
-┌─ 知识库全屏模式（kbMode=true）────────────────────────────────────────────────┐
-│ 左: 目录树/搜索结果/IMA │ 中: Markdown 预览 + G6 知识图谱│ 右: 文档信息面板  │
-│ - 根目录选择/添加/移除   │ - KnowledgeGraph (G6 力导向图)│ - 双向链接 [[link]]│
-│ - 搜索框(全文子串)      │   节点=文档/标签/目录          │ - 反向链接         │
-│ - 树节点展开/收起       │   边=内容相似/链接/标签/目录   │ - 标签、标题结构   │
-│ - IMA 云端知识库标签    │   点击节点 → 打开预览         │ - @ 到对话按钮     │
-│ - 模式切换: 浏览/图谱   │   缩放/拖拽/图例/布局控制    │                   │
-└──────────────────────────┴───────────────────────────┴──────────────────────┘
-           │ 三栏可拖拽 (Resizer)      │ SSE + POST               │
-┌──────────┴──────────────────────────┴──────────────────────────┴─────────┐
-│  Express 后端 (localhost:3001)                                           │
-│  ├─ /api/files*        文件管理(上传/删除/列表)                          │
-│  ├─ /api/doc/:file*    raw/html/comments/watch/cells（正则路由）          │
-│  ├─ /api/office        officecli 操作                                   │
-│  ├─ /api/sessions*     会话历史(CRUD + ?file= 过滤)                      │
-│  ├─ /api/runs*         TaskEnvelope/run manifest/产物 diff/回滚           │
-│  ├─ /api/workflows*    声明式技能工作流与依赖校验                        │
-│  ├─ /api/models        模型列表 /api/agent/model 切换                    │
-│  ├─ /api/skills*       技能列表/导出/导入                                │
-│  ├─ /api/workspaces*   工作区管理(切换/校验)                             │
-│  ├─ /api/agent*        Pi SDK Agent 会话 (SSE 流式 + prompt/abort)      │
-│  │     └─ officecli 自定义工具 + kb_search/kb_read 自定义工具           │
-│  ├─ /api/kb/*          知识库索引(状态/树/搜索/图谱/文档) + IMA 代理     │
-│  └─ /api/open-in-explorer  文件管理器定位                                 │
-└──────────────────────────────────────────────────────────────────────────┘
-```
+### 1.1 一句话定位
 
-## 组件树
+面向交通规划工程师的 AI 一体化工作台：把 Office 文档、知识库、地图 GIS、模板库与 AI Agent 协作聚到同一个 Web 工作台，让工程师用自然语言驱动文档编制、数据分析与地图可视化的完整工作流。
 
-```
-App.jsx
-├── ThemeProvider (theme.jsx: dark/light, localStorage 记忆)
-├── KnowledgeBase.jsx      知识库全屏模式（kbMode=true 时渲染）
-│   ├── KnowledgeGraph.jsx  antv G6 力导向图（节点/边/缩放/拖拽/图例）
-│   ├── MarkdownBody.jsx    文档内容预览（GFM/KaTeX/高亮，复用）
-│   └── Icon.jsx            back/cloud/backlink 等图标
-├── TemplateLibrary.jsx    模版库全屏模式（tplMode=true 时渲染）
-│   ├── MarkdownBody.jsx    模版内容预览（.md 渲染）
-│   └── Icon.jsx            文件类型图标
-├── SessionSidebar.jsx     左栏：文件/历史标签、技能广场、智能体广场
-│   ├── FileSidebar.jsx    文件列表 + ContextMenu 右键菜单
-│   └── SkillsManager.jsx  技能管理（@调用/导入/导出）
-├── AgentMarket.jsx        智能体广场（4 个交通规划助手，@ 注入对话）
-├── DocViewer.jsx          中栏文件分派（按 kind 选择渲染器）
-│   ├── DocxViewer.jsx     docx-preview 高保真渲染（批注/修订开关、翻页）
-│   ├── PptxViewer.jsx     pptxviewjs Canvas 渲染（翻页/跳页/页码）
-│   ├── ExcelGrid.jsx      x-spreadsheet 可编辑表格（多 sheet）
-│   ├── MarkdownBody.jsx   GFM + KaTeX + 高亮 + 锚点
-│   │   └── MarkdownToc.jsx 目录浮窗（滚动高亮当前标题）
-│   └── CommentMarker.jsx  批注面板（定位段落/黄底高亮/编号徽标）
-└── ChatPanel.jsx          右栏：模型选择、推理强度、消息流、输入区
-    ├── PlanBoard.jsx      任务板（解析 - [ ] 列表，进度条）
-    └── Resizer.jsx        三栏拖拽
-```
+### 1.2 设计目标
 
-## 通信机制
+1. **领域优先**：一切能力围绕交通规划工程师的真实工作流（现状调研 → 数据分析 → 方案编制 → 图纸/地图 → 汇报材料），而不是通用聊天壳。
+2. **Agent 与人对等协作**：Agent 能读写的，人也能在界面上做（反之亦然）——Agent 的文档修改实时反映到预览，人的批注 Agent 可读；UI 操作与 Agent 工具保持能力对等。
+3. **过程可信**：每轮任务有 TaskEnvelope、run manifest、产物归属与回滚；结论必须可溯源（来源/修改/产物/假设/下一步五要素固定总结）。
+4. **稳定优先于新功能**：事件注册表统一治理、SSE 流预算与去重、断线自愈、工作区隔离；回归测试即脚本（`node scripts/*.mjs`）纳入 CI。
+5. **渐进演进不换内核**：Pi Agent SDK 为运行时内核，自研能力以适配层与 feature flag 渐进叠加，保持可回滚（见 BRD-001 / BRD-003）。
 
-### 网页端 ↔ 后端
-- **POST /api/agent/prompt** — 发送用户指令（含图片 base64）
-- **GET /api/agent/stream?client=xxx** — SSE 长连接，实时推送事件流
-- **GET /api/agent/abort** — 中断当前 agent 处理
-- **POST /api/agent/model** — 切换当前会话模型
+### 1.3 非目标（不做清单）
 
-### 后端 API 路由表（server/index.mjs）
+- 不修改 Pi 内核、不复制 Pi 源码；不引入 Pi 原生 subagent / plan mode（能力走 skill 与前端工作流）。
+- 不做通用皮肤/主题引擎（只做暗/亮两主题 + Qoder 视觉层 opt-in）。
+- 不重写手写 SSE 解析层（已有流预算与去重防护）。
+- 第一阶段不做云端 SaaS 多租户（先内网多用户，见 BRD-006）。
 
-| 方法 | 路由 | 用途 |
-|------|------|------|
-| GET | /api/status | 健康检查 |
-| GET | /api/files | 文件列表 |
-| POST | /api/files/upload, /api/files/delete | 上传/删除 |
-| GET | /api/doc/:file/raw | 原始文件流（docx-preview/pptxviewjs 拉取） |
-| GET | /api/doc/:file | 渲染 HTML / Excel 数据 / 文本内容 |
-| GET | /api/doc/:file/html | officecli 渲染 HTML（Word/PPT 备用预览） |
-| GET | /api/doc/:file/comments | 批注列表（md/txt 返回会话衍生修订） |
-| GET | /api/doc/:file/watch | 文件 watch（实时预览） |
-| POST | /api/doc/:file/cells | Excel 单元格保存 |
-| POST | /api/office | officecli 操作（agent 工具） |
-| GET | /api/models | 模型列表（30+，含视觉标记） |
-| GET | /api/skills, /api/skills/export, /api/skills/import | 技能管理 |
-| GET | /api/workspaces, /api/workspace/switch, /api/workspace/validate | 工作区管理 |
-| GET/POST | /api/sessions, /api/sessions/:id, /rename, /fork | 会话历史 CRUD、分支（?file= 过滤） |
-| GET/POST | /api/runs, /api/runs/:id, /rollback | 执行记录、产物清单、显式回滚 |
-| GET | /api/workflows, /api/workflows/:id/validate | 工作流注册表与技能依赖校验 |
-| POST | /api/agent/prompt, /api/agent/abort, GET /api/agent/stream | agent 会话 |
-| **GET** | **/api/kb/status** | 知识库索引状态（roots/fileCount/ima配置） |
-| **POST/DELETE** | **/api/kb/roots** | 添加/移除知识库根目录 |
-| **GET** | **/api/kb/tree?root=N** | 某根目录的文件树（递归目录结构） |
-| **GET** | **/api/kb/search?q=...&root=N** | 全文搜索（加权打分：标题10/标签6/标题行4/正文1） |
-| **GET** | **/api/kb/graph?include=...** | 知识图谱数据（nodes+edges，可选 links/similar/tags/folders） |
-| **GET** | **/api/kb/doc?path=...&root=N** | 文档详情（内容+标签+headings+links+backlinks） |
-| **GET** | **/api/kb/ima/status** | IMA 凭证状态 |
-| **GET** | **/api/kb/ima/bases** | IMA 知识库列表 |
-| **GET** | **/api/kb/ima/search?q=...&kb=...** | IMA 云端搜索 |
-| **GET** | **/api/kb/ima/doc?media_id=...** | IMA 文档详情（笔记/文件原文） |
-| **GET** | **/api/templates** | 模版库列表（?category= 分类筛选） |
-| **GET** | **/api/templates/content?path=...** | 模版内容预览（md返回text，其他返回binary） |
-| **POST** | **/api/templates/refresh** | 重新扫描模版目录 |
-| POST | /api/open-in-explorer | 文件管理器定位 |
+## 2. 业务目标与能力域
 
-> 文档路由全部为**正则路由**（`/^\/api\/doc\/([^\/]+)\/(raw|html|comments|watch|cells)$/`），修复 Express 5 中 `:file` 参数吞掉后缀导致中文文件名匹配失败的问题。
+产品能力分为六大域（业务需求的逐条定义见 `REQUIREMENTS.md`）：
 
-### 后端 ↔ Pi Agent
-- 后端进程内调用 `@earendil-works/pi-coding-agent` SDK
-- `createAgentSession()` 创建常驻会话，自动发现 skills
-- `session.prompt()` 发送指令，`session.subscribe()` 接收事件流
-- agent 拥有完整工具链：read/bash/edit/write + 自定义 officecli 工具 + **kb_search（知识库搜索）+ kb_read（知识库读取）**
-- 推理强度：`setThinkingLevel(low|medium|high)` 对应 ⚡/⚖/🧠
+| 能力域 | 业务目标 | 关键载体 |
+|---|---|---|
+| 文档办公 | Word/PPT/Excel 高保真查看与编辑，批注精确定位与修订痕迹，支撑报告编制日常 | DocViewer 系、office/doc-engine、officecli |
+| AI 协作 | 90+ 模型可切换、流式对话、任务进度卡、ask_user 主动询问、办公/开发双模式 | ChatPanel、agent.mjs、pi-runtime |
+| 知识库 | Obsidian 风格三视图（浏览/思维图谱/脑图）、加权全文检索、双向链接、@ 引用分析 | KnowledgeBase 系、kb.mjs |
+| 地图 GIS | MapLibre 矢量瓦片地图 + QGIS 风格图层管理 + Agent 驱动的地图编辑与分析（等时圈/OD/网络分配） | MapPanel 系、map-* 模块族 |
+| 模板库 | 318 个模板（含 106 个 OpenDesign HTML PPT），报告/汇报材料速成 | TemplateLibrary、templates/ |
+| 记忆与智能 | AGENTS.md + 分层记忆、memory_update 建议-确认、智能体广场、声明式领域工作流 | memory-*、workflow-registry、AgentMarket |
 
-### 文件定位机制
-1. **当前文件注入**：用户打开文件后，发送消息时前端自动附加 `[当前打开文件: xxx.docx]`
-2. **officecli 工具**：agent 通过自定义 `officecli` 工具操作文档，文件名相对于 workspace 目录
-3. **agent 上下文**：每轮注入 TaskEnvelope、当前工作区、分层记忆和 KB 使用说明；输出固定总结读取来源、修改文件、产物、假设和下一步
-
-## 知识库设计（KnowledgeBase + KnowledgeGraph）
-
-### 知识库索引服务（server/kb.mjs）
-- **配置**：`kb.json` 持久化（roots[] 根目录路径、imaSkillDir），前端可添加/移除根目录
-- **扫描**：递归遍历 roots 下的 .md 文件（跳过 node_modules/.git/.venv 等），基于 mtime+size 增量缓存（8s 去重窗口，解析版本号强制失效）
-- **解析**：frontmatter（title/tags）、第一个 `# 标题`、`[[wikilink]]`、内联 `#tag`（排除 hex 色值）、headings[]、links[]
-- **全文索引**：子串匹配打分（标题×10 / 标签×6 / 标题行×4 / 正文×1），每项独立计数（上限10），返回排序结果 + 摘要片段（首次命中±60/140字符窗口）
-- **图谱生成**：节点=文件/标签/目录（受 maxNodes 上限保护），边=wikilink 双向边 / 内容相似边 / 标签边 / 目录边，相似边算法：
-  - 提取文档前6000字符的 CJK/字母数字字符二元组 Set
-  - pair-wise overlap = |A∩B| / min(|A|,|B|)，阈值≥8 且 overlap≥0.16
-  - 按 overlap 降序截断至 files×3 上限，simCache 按 rootIdx 缓存
-
-### 前端 KnowledgeBase.jsx
-- **状态管理**：roots/rootIdx/tree/searchQ/results/doc/graphData/graphInc/view(浏览|图谱)/imaOpen/imaResults
-- **顶部工具栏**：返回办公模式、根目录下拉选择（含添加/移除）、搜索框（Enter 触发）、浏览/图谱切换、IMA 标签
-- **浏览模式**：左树/右信息面板/中预览（MarkdownBody 复用），@ 到对话按钮（插入 `@知识库[路径@根目录名]`）
-- **图谱模式**：KnowledgeGraph 全屏，顶栏控制（similar/links/tags/folders 复选框，重新布局按钮）
-
-### KnowledgeGraph.jsx（antv G6 v5）
-- `new Graph({data, node, edge, layout, behaviors})`，`graph.render()`
-- 节点样式：文件青绿色(16px)、标签黄色(9px)、目录蓝色(7px)，标签下方显示
-- 边样式：链接青绿色(1.4px)、相似蓝色(0.8px/0.45透明度)、标签/目录灰色
-- 布局：force 力导向（linkDistance:130, nodeStrength:-320, preventOverlap, collideStrength:0.9）
-- 行为：drag-canvas / zoom-canvas / drag-element / hover-activate / click-select
-- 事件：node:click → 回传 onSelectNode（带 relPath/rootIdx），联动打开文档预览
-- 高亮：graph.focusElement(highlightId) 聚焦当前打开文档节点
-
-### @ 引用分析链路
-1. 前端知识库文档「到对话」按钮 → `chatInputRef.insertText(`@知识库[${relPath}@${rootName}]`)`
-2. agent 收到 prompt（含 `@知识库[...]` 格式文本），ResourceLoader 上下文告知 agent 这是知识库引用格式
-3. agent 调用 `kb_read(path)` 工具（path=`相对路径@根目录名`）→ kb.mjs getDoc() 返回完整 Markdown 内容（含标签/反链）
-4. agent 读取全文后进行分析/回答
-
-## SSE 事件流
+## 3. 总体架构
 
 ```
-SSE Event Types:
-├── token        → 文本输出 token（流式追加，rAF 节流渲染）
-├── thinking     → 思考过程 token（默认展开实时可见）
-├── tool_start   → 工具调用开始 {name, input}
-├── tool_output  → 工具执行输出流 {name, output}
-├── tool_end     → 工具调用结束 {name, isError, result}
-├── message_start/end → 消息生命周期
-├── agent_end    → agent 完成（关闭 busy 状态）
-├── agent_error  → 错误
-└── file_changed → 文件变更通知 {files: [...]}
+浏览器 (React 18 SPA, Vite 5)
+─────────────────────────────────────────────────────
+ 三栏办公布局（默认）           知识库全屏模式
+ ├ SessionSidebar 左栏          ├ 目录树/搜索/IMA 云端
+ ├ DocViewer 中栏（文档/地图/    ├ Markdown 预览 + G6 知识图谱
+ │  任务中心/产物面板分派）      └ 文档信息面板（双链/反链/标签）
+ └ ChatPanel 右栏（对话流/工具
+    卡片/审批/进度/结论卡）
+─────────────────────────────────────────────────────
+        │ REST (POST/GET)   SSE (GET /api/agent/stream)
+        ▼
+Express 5 服务端 (localhost:3002, Node ≥ 22)
+─────────────────────────────────────────────────────
+ 路由编排层   index.mjs（≈207 个路由注册点）
+ 会话/Agent   agent.mjs · subagent-orchestrator · approval-policy · command-safety-policy
+ 事件流       event-registry(115 种) · event-protocol · event-normalization
+             event-storage · stream-connection（预算/去重/自愈）
+ 运行与产物   runs · run-trace · run-budget · turn-budget · artifact-credibility/rollback
+ 地图 GIS     map · map-visualization · map-analysis · map-report
+             map-template · layer-repository · spatial-analysis · traffic-sources · batch-export
+ Office       office · doc-engine · office-params · native-files
+ 知识库       kb.mjs（kb.json 配置 · 本地索引 · IMA 代理）
+ 工作流       workflow-registry · workflow-validation · workflows/
+ Pi 配置      pi-runtime · pi-config · pi-network-proxy · provider-catalog · models-dev-catalog
+ 其他         builtin-browser · web-search · web-reader · mcp-management · memory-*
+─────────────────────────────────────────────────────
+        │ 进程内 SDK 调用
+        ▼
+Pi Agent SDK (@earendil-works/pi-coding-agent 1.1.0)
+ createAgentSession · ModelRuntime · SessionManager · DefaultResourceLoader
+ 自定义工具族：officecli · kb_search/kb_read · map_read/map_edit/map_import/map_analyze…
 ```
 
-## Office 查看器设计
+要点：
 
-### DocxViewer（docx-preview）
-- 高保真渲染：分页、表格、图片、样式完整还原
-- 工具栏：批注开关（`renderComments`）、修订开关（`renderChanges`）、翻页
-- 数据源：`/api/doc/:file/raw` 原始文件流（Buffer 直传，避免 HTML 中转失真）
-- 样式容器：`.oaw-docx-wrap`，纸张白底、周围灰底（暗/亮主题适配）
+- **单进程 Express 承载全部业务**，Pi SDK 进程内嵌入，API Key 与文件权限不出服务端。
+- **所有对外事件经事件注册表**（event-registry）注册与校验，前端按注册表消费，杜绝协议漂移（115 种事件有一致性回归守护）。
+- **工作区（office-workspace/）是默认运行时数据目录**，可切换、可校验，会话/产物/地图项目均落工作区。
 
-### PptxViewer（pptxviewjs）
-- Canvas 逐页渲染，工具栏：上一页/下一页/页码输入/总页数
-- 数据源：`/api/doc/:file/raw`
-- 样式容器：`.oaw-pptx-wrap`
+## 4. 前端结构（client/src/）
 
-### ExcelGrid（x-spreadsheet）
-- 多 sheet 切换，单元格直接编辑
-- 保存：POST /api/doc/:file/cells 写回文件，保存后触发预览刷新
+- `App.jsx` + 19 个纯函数模块：`run-trace.js`（轨迹归约）、`run-display-projection.js`（运行展示投影）、`stream-budget.js`（流预算）、`layer-registry.js`（图层注册表）、`event-display.js`（事件展示映射）、`persist-ui.js` 等——**展示逻辑与组件分离，纯函数可回归测试**。
+- `components/` 54 个组件，按域分组：
+  - 对话流：ChatPanel（折叠/结论内嵌/审批卡/模型选择）及其子卡
+  - 文档：DocViewer / DocxViewer / PptxViewer / ExcelGrid / MarkdownBody / CommentMarker
+  - 地图：MapPanel / MapViewer / 可视面板（图层/属性表/测量/等时圈）
+  - 任务与产物：TaskCenter / 任务进度卡 / SubagentDetailPanel
+  - 入口与配置：SessionSidebar / AgentMarket / WorkflowLauncher / SettingsPanel / ProviderLibrary
+- 状态无全局 store，组件内 state + 纯函数投影；SSE 事件按 event-registry 白名单消费。
 
-### MarkdownBody
-- rehype-slug 生成标题锚点，MarkdownToc 目录浮窗定位（ID+文本双重查找）
-- KaTeX 公式、代码高亮、GFM 表格
+## 5. 通信机制
 
-## 消息渲染
+### 5.1 会话链路
 
-### 思考过程
-- 折叠块：默认展开（实时可见），点击收起/展开
-- 左边框 accent 色标记
+1. `POST /api/agent/prompt` 发送指令（含附件）→ 服务端创建/复用 Agent 会话。
+2. `GET /api/agent/stream` SSE 长连接推送事件流（token/thinking/tool/审批/产物/结论…，全量 115 种见 event-registry）。
+3. `GET /api/agent/abort` 中断（结果回传 runId，带 stillQueued 语义，10 秒确认窗兜底）。
+4. 流侧防护：`stream-budget.js` 预算与去重，切工作区/切会话不卡死。
 
-### 工具调用卡片
-- 状态着色：pending(黄) / success(绿) / error(红)
-- 点击展开显示：输入参数 + 执行输出/结果
-- 输出超过 200 字符自动截断预览
+### 5.2 路由族（按域概述）
 
-### PlanBoard 任务板
-- 从 agent 回复的 `- [ ]` / `- [x]` 解析为可勾选任务列表
-- 顶部进度条（已完成/总数），勾选状态本地维护
+`/api/files*`、`/api/doc/:file*`（正则路由兼容中文文件名）、`/api/office`、`/api/sessions*`、`/api/runs*`、`/api/workflows*` 与 `/api/domain-workflows*`、`/api/models*`、`/api/skills*`、`/api/workspaces*`、`/api/agent*`、`/api/kb/*`、`/api/templates*`、`/api/map*`、`/api/memory*`、`/api/agents*`（子代理）、`/api/browser*`（内置浏览器）、`/api/status`（健康检查 + runtimeFlags）。
 
-### 文件上下文标记
-- 用户消息气泡顶部显示 `[当前文件: xxx]` 小标签
-- 同时注入到发送给 agent 的 prompt 文本中
+完整路由表以 `server/index.mjs` 为准（≈207 个注册点），模块级契约在 `docs/module-design/` 逐域补充。
 
-### 批注定位（CommentMarker）
-- Word 式批注：点击 → 定位段落 + 整段黄底高亮 + 段落旁编号徽标 + 滚动居中
-- 关键词匹配：从批注指令提取关键词匹配正文（TreeWalker 文本级定位），失败回退首段
-- md/txt 批注：服务端 `/api/doc/:file/comments` 返回会话衍生的修订记录（行号/段落匹配）
-- 手动刷新按钮，文件修改后自动重新拉取
+## 6. 关键设计
 
-## 模型选择与推理强度
-- 下拉菜单显示所有 30+ 可用模型，`[V]` 前缀标记 13 个视觉模型
-- 选择后实时切换 agent 会话模型（POST /api/agent/model）
-- 附图片时若当前模型不支持视觉，显示黄色提示条
-- 推理强度：⚡快速(low) / ⚖标准(medium) / 🧠深度(high) 三档，映射 setThinkingLevel
+### 6.1 Agent 会话与工具
 
-## 设计规范
+- `createAgentSession()` 常驻会话；每轮注入 TaskEnvelope、当前工作区、分层记忆与 KB 使用说明；完成后要求五要素固定总结（来源/修改/产物/假设/下一步）。
+- 工具族：officecli（文档）、kb_search/kb_read（知识库）、map_read/map_edit/map_import/map_analyze/map_template（地图）、web-search/web-reader（联网）、builtin-browser（浏览器）。
+- 审批：approval-policy 按工具风险分级；高危命令经 command-safety-policy 拦截。
+
+### 6.2 事件注册表（治理核心）
+
+- 所有 SSE 事件在 `server/event-registry.mjs` 注册（名称/负载 schema/语义），共 115 种。
+- `scripts/event-registry-test.mjs` 守护注册表一致性；前端 `event-display.js` 按事件映射展示形态。
+- 新增事件必须先注册再使用——这是"稳定优先"目标的落点。
+
+### 6.3 运行与产物可信度
+
+- run manifest 记录每轮的执行轨迹（run-trace 归约：工具聚合/完成语义/每轮用时与 token）。
+- 产物带归属分层（agent 产物 vs 会话衍生），支持显式回滚与固定口径（artifact-credibility/rollback）。
+- 预算双轨：run-budget（运行级）与 turn-budget（轮次级）控制 token/时长。
+
+### 6.4 地图 Agent 化
+
+- 阶段 0-5 演进：只读能力与临时层 → 图层模型（归属/选择器/审批/分组）→ 面板收敛 → 对话栏适配 → 交通数据源与可视化描述符。
+- Agent 通过 map_* 工具读写图层；可视化描述符统一驱动前端渲染；地图项目落工作区 `maps/`。
+
+### 6.5 内置浏览器与联网
+
+- builtin-browser：headless Edge/Chrome 经 CDP 截图流 + 用户坐标接管 + Agent 操作队列。
+- web-search/web-reader 提供检索与正文抽取；MCP 管理支持外部工具接入。
+
+## 7. 设计规范
 
 ### 配色（pi dark 主题，默认）
 ```
@@ -258,19 +170,8 @@ SSE Event Types:
 ```
 主题切换：ThemeProvider（theme.jsx），`document.documentElement.setAttribute("data-theme", ...)`，localStorage key `oaw_theme`。
 
-### 字体
-```
-font-family: ui-monospace, 'Cascadia Code', 'Source Code Pro', Menlo, Consolas, monospace;
-```
-> 注：上行为**等宽栈**（代码 / 路径 / 参数 / 数字场景）。正文实际使用系统 sans 栈，见下方「排版与字体（现状）」。
-
-### 间距与细节
-- 基准字号 12px，行高 18px；按钮圆角 3px，padding 2-8px；卡片圆角 3-4px
-- 全局滚动条：8px 细滚动条、圆角、hover 高亮，CSS 变量自动适配暗/亮主题
-- 头像：圆形，用户蓝色系、agent 青绿色
-
 ### 设计令牌三层结构（2026-10-18 起）
-后两层只允许引用上一层；新增颜色必须落到令牌层，不得在规则里直写色值——由 `scripts/设计令牌一致性测试.mjs` 的「硬编码色值棘轮」守护（当前 393 处 / 129 种，只允许下降）。
+后两层只允许引用上一层；新增颜色必须落到令牌层，不得在规则里直写色值——由一致性测试的「硬编码色值棘轮」守护（当前 393 处 / 129 种，只允许下降）。
 
 第 1 层 · 基础色阶（只声明取值，不带语义）
 ```
@@ -295,14 +196,22 @@ font-family: ui-monospace, 'Cascadia Code', 'Source Code Pro', Menlo, Consolas, 
 
 ### Qoder 视觉层（opt-in · 默认关）
 - **生效条件**：`<html data-oaw-style="qoder">`；由运行开关 `qoderStyle` / `OAW_QODER_STYLE` 控制，**默认关闭**——关闭时外观逐像素回到 pi-dark 基线（只「覆盖」变量取值，不删不改名任何既有规则）。
-- **内容**：
-  1. 整站配色：中性灰阶打底（去掉蓝紫倾向）+ 单一冷蓝强调 + 语义三色统一饱和（§3.1）；
-  2. 令牌三层结构（见上节）；
-  3. 组件交互规范（§3.3）：执行流状态点五态（运行 = 强调蓝 + 呼吸 / 完成 = 绿 / 降级 = 琥珀 / 失败 = 红 / 无状态 = 中性灰）、思考块左竖线 2px · 强调色 22%（hover 45%）、工具卡片状态色只留左侧 3px 边条与状态图标（本体中性）、审批卡左侧形态条 + 拒绝按钮红描边。
-- **动效令牌**：`--dur-fast 120ms / --dur-base 200ms / --dur-slow 320ms / --ease-out`，只作用于 `transform` / `opacity`；统一动效闸门（`data-reduce-motion` / `data-motion-level="off"`）仍可用 `!important` 覆盖，关闭动效后呼吸点静止、信息不丢。
-- **回滚**：见 `docs/plans/2026-10-18-004-Qoder优化开关与回滚说明.md`（开关级 / 单文件级 / 整站级三层）。
+- **内容**：整站配色（中性灰阶打底 + 单一冷蓝强调 + 语义三色统一饱和）；令牌三层结构；组件交互规范（执行流状态点五态、思考块左竖线、工具卡片状态色边条、审批卡形态条）。
+- **动效令牌**：`--dur-fast 120ms / --dur-base 200ms / --dur-slow 320ms / --ease-out`，只作用于 `transform` / `opacity`；动效闸门（`data-reduce-motion` / `data-motion-level="off"`）可强制覆盖。
+- **回滚**：开关级 / 单文件级 / 整站级三层，见 `docs/plans/2026-10-18-004-Qoder优化开关与回滚说明.md`。
 
 ### 排版与字体（现状 · 2026-10-18 核对）
-- 正文：系统 sans 栈 —— `-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif`；Qoder 视觉层对 `body` 显式固化同一栈，避免被 `inherit` 链改回等宽。
-- 代码 / 路径 / 参数 / 数字：等宽栈 —— `ui-monospace, 'Cascadia Code', 'Source Code Pro', Menlo, Consolas, monospace`（局部使用 `'SF Mono', 'Fira Code', …`）。
-- **待办（需确认）**：计划里「把 font-family 拆为 `--font-sans` / `--font-mono` 两个令牌」尚未做——它要改基线 `body` 的字体声明行（外观核心行），故先以文档记录现状取值，改动等确认。
+- 正文：系统 sans 栈 —— `-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif`。
+- 代码 / 路径 / 参数 / 数字：等宽栈 —— `ui-monospace, 'Cascadia Code', 'Source Code Pro', Menlo, Consolas, monospace`。
+- **待办（需确认）**：`--font-sans` / `--font-mono` 令牌化尚未做（要改基线 `body` 字体声明行，改动等确认）。
+
+## 8. 文档索引
+
+| 主题 | 文档 |
+|---|---|
+| 需求基线 | `REQUIREMENTS.md` |
+| 架构总览（数据流/事件治理/目录模型） | `docs/module-design/架构总览.md` |
+| 关键决策（ADR） | `docs/decisions/BRD-001-*.md` 起 |
+| 演进路线与后续计划 | `docs/plans/2026-10-19-001-规聚产品基线与后续开发路线.md` |
+| 版本演进明细 | `变更日志.md` |
+| 开发代理约束 | `AGENT.MD` |

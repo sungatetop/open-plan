@@ -1,9 +1,19 @@
+---
+title: Open Plan 需求文档
+summary: 规聚 v0.11.55 基线的核心需求、非功能需求与技术约束，覆盖 R1-R14 能力域
+keywords: [规聚, Open Plan, 需求, 功能需求, 版本矩阵]
+status: done
+date: 2026-10-19
+---
+
 # Open Plan - 需求文档
 
 ## 项目概述
 基于 Pi Agent SDK 和 officecli 的 Web 端 Office 文档查看/编辑 + AI Agent 协作工具，面向交通规划工程师的日常办公场景。
 
-当前基线：**v0.8.34**（feature/phase1-safety-baseline）
+当前基线：**v0.11.55**（变更日志最新已发布条目；其后为 10 批未发布的 Qoder 对标优化，全部由运行开关控制、默认关闭）
+
+> 历史基线 v0.8.34 的需求（R1-R9）全部继续有效；v0.9-v0.11 新增能力以 R10-R14 补充。
 
 ## 核心需求
 
@@ -19,7 +29,7 @@
 - 通过右侧聊天面板与 Pi Agent 对话
 - Agent 可通过 officecli 工具读取、修改 Office 文档
 - 支持所有 Pi Agent 能力：skills、插件、工具、图片输入
-- 30+ 模型可切换，13 个视觉模型支持图片理解（`[V]` 标记）
+- 90+ 模型可切换，视觉模型支持图片理解（`[V]` 标记）
 - **推理强度三档**：⚡快速 / ⚖标准 / 🧠深度（映射 pi `setThinkingLevel`）
 
 ### R3. 对话流完整展示
@@ -66,6 +76,34 @@
 - **@ 引用分析**：知识库文档「到对话」按钮插入 `@知识库[路径@根目录名]`，agent 通过 `kb_search`/`kb_read` 自定义工具检索并读取全文后分析
 - **根目录管理**：前端支持添加/移除知识库根目录（不删除原文件），kb.json 持久化配置
 
+### R10. 地图 GIS 与 Agent 驱动的地图分析
+- MapLibre + 矢量瓦片底图，浙江交通主题图层（路网/枢纽/OD/收费站等）
+- QGIS 风格图层面板：图层分组/归属/选择器/审批、属性表、测量、等时圈分析
+- SHP/GeoJSON/CSV 导入；OD 期望线、网络分配报告可视化
+- Agent 通过 map_read / map_edit / map_import / map_analyze / map_save_analysis / map_clear_analysis / map_template 工具读写地图与分析
+- 可视化描述符统一驱动前端渲染；地图项目（layers/style/config）落工作区 `maps/`
+
+### R11. 任务运行与产物可信度
+- TaskEnvelope + run manifest：每轮执行轨迹（工具聚合/完成语义/每轮用时与 token）
+- 产物归属分层（Agent 产物 vs 会话衍生）、产物 diff 与显式回滚
+- run-budget / turn-budget 双轨预算；对话流过程折叠、结论内嵌、任务进度卡
+- 任务中心（TaskCenter）集中查看运行记录与子代理执行详情
+
+### R12. 模型与供应商管理
+- 90+ 模型目录（models-dev-catalog）、供应商凭据管理（provider-catalog 一键导入）
+- Pi 配置独立（pi-config/pi-network-proxy 网络适配）、模型诊断接口与真实回归
+- 模型区分三态：目录存在 / 已配置凭据 / 当前可调用
+
+### R13. 内置浏览器与联网能力
+- builtin-browser：headless 浏览器 CDP 截图流 + 用户坐标接管 + Agent 操作队列 + 临时层提示
+- web-search / web-reader 联网检索与正文抽取
+- MCP 管理与外部工具接入（mcp-management）
+
+### R14. 领域工作流 Harness 与事件治理
+- 声明式领域工作流（workflow-registry/workflows/）+ 技能依赖校验 + WorkflowLauncher 一键启动
+- 事件注册表统一治理：115 种 SSE 事件先注册再使用，一致性回归守护
+- 子代理编排（subagent-orchestrator）与审批策略（approval-policy）、命令安全策略（command-safety-policy）
+
 ## 非功能需求
 - 中文界面
 - 三栏可拖拽布局（Resizer）
@@ -74,23 +112,25 @@
 - 暗色主题（pi 风格等宽字体）
 
 ## 技术约束
-- Pi Agent SDK（@earendil-works/pi-coding-agent v0.83.0）
+- Pi Agent SDK（@earendil-works/pi-coding-agent **1.1.0**，进程内嵌入，不暴露到渲染进程）
 - officecli（v1.0.143，本地安装）
-- Node.js >= 22 + React 18 + Vite 5
+- Node.js >= 22 + React 18 + Vite 5 + Express 5（服务端口 3002）
 - **docx-preview**（Word 高保真渲染，renderComments/renderChanges）
 - **pptxviewjs**（PPT Canvas 渲染）
 - **@antv/g6 ^5.1.1**（知识图谱力导向图，Canvas 渲染）
+- 运行开关（runtimeFlags）门控一切新行为，默认关闭（见 BRD-003）
 
 ## 版本完成矩阵
 
-| 版本 | 内容 | 状态 |
-|------|------|------|
-| v0.1.0 | 初版：对话流分块渲染/工作区/会话历史/MD渲染/Excel多sheet/技能管理/双模式 | 已发布 |
-| v0.2.0 | MD目录浮窗/批注定位/产物点击打开/右键菜单/错误边界/SSE重连/白屏修复 | 已发布（main） |
-| v0.3.0 | 图标库统一/主题切换/头像/技能广场分类+工作流/会话按文档过滤/附件导入 | 已发布 |
-| v0.3.1 | 智能体广场(4助手)/AGENT.MD长期记忆/Word式批注/滚动条统一/最近会话置顶 | 已发布 |
-| v0.3.2 | 工作计划展示板/推理强度选择/Agent报错竞态修复/创作产物写工作区/批注Word风格重设计/对话设置栏下移 | 已发布 |
-| v0.4.0 | 顶部工具栏(编辑/预览)/对话输入区重设计/批注可展开/文本编辑保存/历史兼容pi v3/批注精确定位 | feature/v0.4.0 WIP |
-| v0.5.0 | Office Viewer集成（docx-preview + pptxviewjs）/raw文件流接口/文档路由正则化修复 | 分支完成，待合并 |
-| v0.6.0 | 知识库全屏模式(Obsidian风格)/知识图谱(G6力导向)/本地索引+全文搜索/IMA云端集成/kb工具/@引用分析链路 | feature/knowledge-base 开发中 |
-| v0.8.34 | TaskEnvelope/run manifest/产物 diff 与回滚/历史 fork/声明式工作流/记忆建议确认/任务状态栏 | 本轮完成 |
+> 完整明细见 `变更日志.md`（136 个版本条目），此处仅列主线。
+
+| 版本段 | 主题 | 状态 |
+|--------|------|------|
+| v0.1-v0.3 | 初版对话流/工作区/会话历史 → 批注定位/图标库/主题/智能体广场/PlanBoard | 已发布 |
+| v0.4-v0.6 | 顶部工具栏 → Office Viewer 集成 → 知识库全屏（Obsidian 风格/G6 图谱/IMA） | 已发布 |
+| v0.7-v0.8 | 地图面板与 GIS 编辑 → 品牌重塑「规聚」/ask_user/知识图谱增强/TaskEnvelope 基线（v0.8.34） | 已发布 |
+| v0.9 | 会话恢复、地图稳定性、任务中心、模式收敛、事件持久化、成果固定、模型诊断与真实回归 | 已发布 |
+| v0.10 | 三栏工作台迁移、Pi 网络适配与配置独立 | 已发布 |
+| v0.11.3-v0.11.30 | 事件注册表/归档、进度叙事、内置浏览器 | 已发布 |
+| v0.11.31-v0.11.55 | 对话流折叠/结论/token 统计、地图 Agent 化（阶段 0-5）、首字提速 4.6s→0.4s、会话状态修复 | 已发布 |
+| 未发布批次 | Qoder 对标优化第一~十批（领域工作流 Harness/流分片/交互归属/设计令牌三层化/组件交互规范/事件 schema 覆盖），全部 opt-in 默认关 | 已完成开发，待转正 |
