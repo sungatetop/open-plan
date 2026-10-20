@@ -163,9 +163,22 @@ describe("run-trace(client) TS 版与 client 版等价（对拍）", () => {
     // seq=0 / seq=1 key 不同，但同 toolCallId 的 tool_start 只会更新同一条
     const seqEvents = [ev("tool_start", { toolCallId: "x" }, 0, { seq: 0 }), ev("tool_start", { toolCallId: "x" }, 0, { seq: 1 })];
     expect(reduceRunTrace(seqEvents).tools).toHaveLength(1);
-    // 畸形事件不抛错
+    // 畸形事件不抛错（无 at 兜底为调用时刻 new Date()，两侧毫秒可能跨 tick：剥时间后比较）
     const junk: unknown[] = [null, undefined, 42, "str", {}, { type: "tool_start" }, { type: "", data: null }];
-    expect(reduceRunTrace(junk)).toEqual(client.reduceRunTrace(junk));
+    const stripClockFields = (trace: unknown): Record<string, unknown> => {
+      const plain = JSON.parse(JSON.stringify(trace)) as Record<string, unknown>;
+      delete plain.startedAt;
+      plain.phases = (plain.phases as Record<string, unknown>[]).map((phase) => {
+        const { at: _at, ...rest } = phase;
+        return rest;
+      });
+      plain.tools = (plain.tools as Record<string, unknown>[]).map((tool) => {
+        const { startAt: _startAt, endAt: _endAt, ...rest } = tool;
+        return rest;
+      });
+      return plain;
+    };
+    expect(stripClockFields(reduceRunTrace(junk))).toEqual(stripClockFields(client.reduceRunTrace(junk)));
     // runId 透传 + 空事件
     expect(reduceRunTrace([], "r1").runId).toBe("r1");
     expect(reduceRunTrace().runId).toBeNull();
