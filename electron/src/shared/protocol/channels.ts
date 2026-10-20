@@ -133,6 +133,9 @@ export const DESKTOP_CHANNELS = {
   "op:agent:model-configs:delete": { method: "DELETE", path: "/api/agent/model-configs/:provider" },
   "op:agent:model-configs:fetch-models": { method: "POST", path: "/api/agent/model-configs/fetch-models" },
   "op:agent:provider-catalog": { method: "GET", path: "/api/agent/provider-catalog" },
+  "op:agent:provider-catalog:detail": { method: "GET", path: "/api/agent/provider-catalog/:id" },
+  "op:agent:provider-catalog:import": { method: "POST", path: "/api/agent/provider-catalog/import" },
+  "op:agent:provider-catalog:refresh": { method: "POST", path: "/api/agent/provider-catalog/refresh" },
   "op:agent:default-model:set": { method: "POST", path: "/api/agent/default-model" },
   "op:agent:model:probe": { method: "POST", path: "/api/agent/model/probe" },
   "op:agent:permissions:get": { method: "GET", path: "/api/agent/permissions" },
@@ -742,6 +745,8 @@ export type AgentModelConfigFetchModelsRequest = { body?: Record<string, unknown
 export type AgentDefaultModelSetRequest = { body: { provider: string; model: string } };
 export type AgentModelProbeRequest = { body: { model: unknown; timeoutMs: number } };
 export type AgentPermissionRuleRemoveRequest = { body: Record<string, unknown> };
+export type AgentProviderCatalogDetailRequest = { params: { id: string } };
+export type AgentProviderCatalogImportRequest = { body?: Record<string, unknown> };
 
 // ---- 联网搜索配置族 ----
 
@@ -865,6 +870,9 @@ export interface DesktopChannelProtocol {
   "op:agent:model-configs:delete": { request: AgentModelConfigDeleteRequest; response: Record<string, unknown> };
   "op:agent:model-configs:fetch-models": { request: AgentModelConfigFetchModelsRequest; response: Record<string, unknown> };
   "op:agent:provider-catalog": { request: Record<string, never>; response: Record<string, unknown> };
+  "op:agent:provider-catalog:detail": { request: AgentProviderCatalogDetailRequest; response: Record<string, unknown> };
+  "op:agent:provider-catalog:import": { request: AgentProviderCatalogImportRequest; response: Record<string, unknown> };
+  "op:agent:provider-catalog:refresh": { request: Record<string, never>; response: Record<string, unknown> };
   "op:agent:default-model:set": { request: AgentDefaultModelSetRequest; response: Record<string, unknown> };
   "op:agent:model:probe": { request: AgentModelProbeRequest; response: Record<string, unknown> };
   "op:agent:permissions:get": { request: Record<string, never>; response: Record<string, unknown> };

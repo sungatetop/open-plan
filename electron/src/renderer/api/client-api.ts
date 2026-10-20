@@ -373,6 +373,15 @@ export const fetchAgentModels = (payload: Record<string, unknown> = {}): Promise
 export const agentProviderCatalog = (): Promise<ChannelResponse<"op:agent:provider-catalog">> =>
   invokeOrThrow("op:agent:provider-catalog");
 
+export const agentProviderDetail = (provider: string): Promise<ChannelResponse<"op:agent:provider-catalog:detail">> =>
+  invokeOrThrow("op:agent:provider-catalog:detail", { params: { id: provider } });
+
+export const agentProviderImport = (payload: Record<string, unknown> = {}): Promise<ChannelResponse<"op:agent:provider-catalog:import">> =>
+  invokeOrThrow("op:agent:provider-catalog:import", { body: payload });
+
+export const agentProviderCatalogRefresh = (): Promise<ChannelResponse<"op:agent:provider-catalog:refresh">> =>
+  invokeOrThrow("op:agent:provider-catalog:refresh");
+
 export const agentSetDefaultModel = (provider: string, model: string): Promise<ChannelResponse<"op:agent:default-model:set">> =>
   invokeOrThrow("op:agent:default-model:set", { body: { provider, model } });
 

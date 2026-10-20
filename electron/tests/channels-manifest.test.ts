@@ -80,10 +80,7 @@ const EXEMPT_AGENT_MANAGEMENT_ROUTES = [
   "GET /api/agent/timing",
   "POST /api/agent/timing",
   "GET /api/agent/workspace-trust",
-  "POST /api/agent/workspace-trust",
-  "GET /api/agent/provider-catalog/:id",
-  "POST /api/agent/provider-catalog/import",
-  "POST /api/agent/provider-catalog/refresh"
+  "POST /api/agent/workspace-trust"
 ] as const;
 
 const channelRouteSet: ReadonlySet<string> = new Set(
@@ -111,7 +108,7 @@ const extracted = extractRoutes(source);
 describe("channels manifest 对账", () => {
   it("通道清单规约：op: 前缀、族:动作命名、数量钉住（扩清单需同步更新对账）", () => {
     const channelKeys = Object.keys(DESKTOP_CHANNELS);
-    expect(channelKeys.length).toBe(97);
+    expect(channelKeys.length).toBe(100);
     for (const key of channelKeys) {
       expect(key.startsWith("op:")).toBe(true);
     }
