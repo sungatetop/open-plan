@@ -1,10 +1,13 @@
 # 依赖
 node_modules/
 client/node_modules/
+electron/node_modules/
 
 # 构建产物
 client/dist/
 dist/
+electron/out/
+electron/dist/
 
 # 运行日志
 server_out.log

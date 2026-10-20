@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'" />
+    <title>规聚</title>
+    <style>
+      :root { color-scheme: dark; }
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      body {
+        height: 100vh; display: flex; align-items: center; justify-content: center;
+        background: #111418; color: #d7dce3;
+        font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+      }
+      .panel { text-align: center; max-width: 640px; padding: 32px; }
+      .brand { font-size: 28px; font-weight: 600; letter-spacing: 2px; margin-bottom: 20px; }
+      .status { font-size: 14px; color: #8b93a1; min-height: 20px; }
+      .spinner {
+        width: 28px; height: 28px; margin: 0 auto 18px;
+        border: 3px solid #2a2f38; border-top-color: #4d9fff; border-radius: 50%;
+        animation: spin 0.9s linear infinite;
+      }
+      .spinner.hidden { display: none; }
+      @keyframes spin { to { transform: rotate(360deg); } }
+      .error {
+        display: none; text-align: left; margin-top: 18px; padding: 14px;
+        background: #1a1e25; border: 1px solid #3a2026; border-radius: 8px;
+        font-family: Consolas, monospace; font-size: 12px; color: #e08585;
+        max-height: 260px; overflow: auto; white-space: pre-wrap;
+      }
+      .error.visible { display: block; }
+    </style>
+  </head>
+  <body>
+    <div class="panel">
+      <div class="brand">规聚</div>
+      <div class="spinner" id="spinner"></div>
+      <div class="status" id="status">正在启动本地服务…</div>
+      <div class="error" id="error"></div>
+    </div>
+    <script type="module" src="./splash.ts"></script>
+  </body>
+</html>

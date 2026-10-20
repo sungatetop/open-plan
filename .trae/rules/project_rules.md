@@ -54,7 +54,8 @@ date: 2026-10-19
 | 工程配置 | `package.json`、`package-lock.json`、`.gitignore`、`.gitattributes`、`.file-roots.json`、`.github/`、`.vscode/`、`.trae/`、`.claude/`、`.superpowers/` |
 | 顶层文档 | `README.md`、`REQUIREMENTS.md`、`DESIGN.md`、`AGENT.MD`、`变更日志.md`（唯一豁免的常驻活文档） |
 | 运行时配置 | `kb.json`（`server/kb.mjs` 从项目根读取，等同配置文件） |
-| 代码目录 | `client/`、`server/`、`scripts/` |
+| 运行时数据 | `.oaw/`（Office Agent Workspace 运行时数据）、`.规聚会话/`（会话运行时数据）、`.agent-context.md`（Office 上下文，运行时生成）；三者均已 gitignore，不入库 |
+| 代码目录 | `client/`、`server/`、`scripts/`、`electron/`（桌面端一体化 monorepo，BRD-009） |
 | 内容与数据目录 | `templates/`、`docs/`、`designs/`、`office-workspace/`（服务运行时默认工作区，路径被产品代码引用，勿随意改名；`maps/` 下为运行时地图项目数据） |
 
 禁止在根目录新增：临时文件（`_t.txt`、`*.bak` 等）、脚本（入 `scripts/`）、文档（入 `docs/`）、数据 JSON（随所属脚本或入运行时配置）。
@@ -64,5 +65,44 @@ date: 2026-10-19
 - `scripts/` 根目录：仅存放 `package.json` 直接引用的回归测试与运维脚本（测试即脚本，`node scripts/*.mjs`），保持现状不挪动
 - `scripts/ops/`：服务启停（.ps1）、工作区批注、文档维护等运维脚本
 - `scripts/reporting/`：汇报 / 视频 / 口播稿生产脚本，配套数据放 `scripts/reporting/data/`
+- 根 `package.json` 的 `desktop:*` 系列命令（dev / build / typecheck / test / smoke）统一代理到 `electron/`（`npm --prefix electron run ...`）；桌面端自有脚本放 `electron/scripts/`，不在 `scripts/` 新增桌面端脚本
 - 新增脚本按上述归入子目录；确需被 `package.json` 引用时才可放 `scripts/` 根目录
 - 脚本内引用项目根路径时统一用 `path.resolve(__dirname, ...)` 锚定，不依赖当前工作目录
+
+## 4. 桌面端架构规范（BRD-009 现行）
+
+- `electron/` 为桌面端唯一演进方向，结构：`src/main`（Node 侧后端，承载全部领域服务，不监听端口）、`src/preload`（contextBridge 桥接）、`src/renderer`（TS + React 前端）、`src/shared`（跨层共享：`protocol/` 为 115 事件注册表单一事实源，`runtime/` 为纯函数域）
+- 全仓 TypeScript strict；协议以 typebox schema → TS 类型打通，禁止在 TS 侧另立协议副本
+- 前后端经 IPC 通信（事件推送沿用 event-registry 协议），桌面端新代码禁止引入 HTTP/SSE 通道
+- 迁移采用绞杀者模式分域推进（后端 B1-B6 / 前端 F1-F6 / 基建 R0-R6）：每迁移一个域须先通过功能等价验收（跨仓对拍 + 既有回归基线）再切换；迁移期旧 `client/`、`server/` 共存，按域吞并后退役
+- 桌面端验收命令：`npm run desktop:typecheck`、`desktop:build`、`desktop:test`（vitest）、`desktop:smoke`
+
+## 5. 提交规则（Git Commit）
+
+### 5.1 提交信息格式
+
+- 采用 Conventional Commits：`type(scope): 中文主题行`
+- 允许的 type：`feat` / `fix` / `perf` / `docs` / `test` / `chore` / `ci` / `release` / `merge`
+- scope 用小写英文域名（如 `agent`、`ui`、`gis`、`events`、`qoder`、`ops`、`providers`、`plans`、`test`、`ci`），无明确归属可省略
+- 主题行用中文、一句话讲清"做了什么"；版本收口可带版本号，开关类改动可带 flag 名（如 `OAW_REPLAY_RECOVER 默认关`）
+
+### 5.2 提交正文（Body）
+
+- 以 `-` 分点列出关键改动，一条一个事实；引用方案/决策文档时写明路径
+- 涉及代码或测试的提交必须带「验证」段：列出实际执行的测试命令与结果（如 `test:event-payload 11/11`、`desktop:smoke SMOKE_OK`），不得凭空宣称
+- 有意不做的事项写入「未做」段，避免后人误判遗漏；已知基线既有失败需显式标注"基线既有"
+- 提交前至少跑改动面相关的 `test:*` 回归；桌面端改动跑 `desktop:typecheck` + `desktop:test` + `desktop:smoke`；纯文档改动可免测试但需在 body 声明
+
+### 5.3 提交粒度与拆分
+
+- 一条提交只收口一条工作线；跨线改动分开提交，未纳入的留置改动需在 body 中显式说明
+- 分阶段实施按阶段逐个提交，每阶段附简要总结，不积攒大杂烩提交
+- 纯文档改动用 `docs` 前缀单独提交，不与代码混提
+- 版本收口用 `release` / `chore(release)` 提交，同步 `变更日志.md` 与 README 版本号
+
+### 5.4 禁止项
+
+- 禁止提交密钥/凭据类文件（`.env`、`credentials.json` 等）
+- 禁止提交临时文件与运行时产物（`_t.txt`、`*.bak`、`_smoke_*.log`、`_svc_*.log` 等）
+- 禁止 `--no-verify` 跳过钩子、禁止对主干 force push
+- 大体积产物按 `.gitignore` 排除（如 `docs/data/` 下大文件、`models-dev` 目录缓存）
