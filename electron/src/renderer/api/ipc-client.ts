@@ -61,6 +61,18 @@ export async function invokeChannel<C extends DesktopChannelId>(
   return api.invoke(channel, ...(args as [payload?: ChannelRequest<C>])) as Promise<InvokeResult<ChannelResponse<C>>>;
 }
 
+/**
+ * invokeChannel 的直通形态（payload 可选传）：供 api 层泛型封装使用，
+ * 规避条件元组变参在泛型转发处的类型摩擦。语义与 invokeChannel 完全一致。
+ */
+export async function invokeChannelRaw<C extends DesktopChannelId>(
+  channel: C,
+  payload?: ChannelRequest<C>
+): Promise<InvokeResult<ChannelResponse<C>>> {
+  const api = requireDesktopApi();
+  return api.invoke(channel, payload) as Promise<InvokeResult<ChannelResponse<C>>>;
+}
+
 /** 订阅事件推送（op:event）；无桥时返回空退订。 */
 export function subscribeDesktopEvents(listener: (event: DesktopEvent) => void): () => void {
   const api = getDesktopApi();
