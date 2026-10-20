@@ -1,3 +1,10 @@
+import type {
+  ChannelRequest,
+  ChannelResponse,
+  DesktopChannelId,
+  DesktopEvent,
+  InvokeResult
+} from "../../shared/protocol/channels";
 import type { OpDesktopApi, ServerStatusPayload } from "../../shared/desktop-protocol";
 
 /**
@@ -35,4 +42,23 @@ export function subscribeServerStatus(callback: (status: ServerStatusPayload) =>
   const api = getDesktopApi();
   if (!api) return () => {};
   return api.onServerStatus(callback);
+}
+
+/**
+ * 调用请求/响应通道（通道清单见 shared/protocol/channels.ts）。
+ * 非 2xx 不抛异常：返回 ok:false（error 信息在 data.error）；桥缺失才抛错。
+ */
+export async function invokeChannel<C extends DesktopChannelId>(
+  channel: C,
+  ...args: ChannelRequest<C> extends Record<string, never> ? [] : [payload: ChannelRequest<C>]
+): Promise<InvokeResult<ChannelResponse<C>>> {
+  const api = requireDesktopApi();
+  return api.invoke(channel, ...(args as [payload?: ChannelRequest<C>])) as Promise<InvokeResult<ChannelResponse<C>>>;
+}
+
+/** 订阅事件推送（op:event）；无桥时返回空退订。 */
+export function subscribeDesktopEvents(listener: (event: DesktopEvent) => void): () => void {
+  const api = getDesktopApi();
+  if (!api) return () => {};
+  return api.onEvent(listener);
 }

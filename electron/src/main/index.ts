@@ -3,6 +3,8 @@ import path from "node:path";
 import { pickPreferredPort } from "./util/port";
 import { resolveRendererTarget } from "./util/renderer-target";
 import { startLegacyServer, type LegacyServerHandle, type ServerStatusSnapshot } from "./legacy-server";
+import { channelRoutes, forwardHttpRequest } from "./ipc/http-forward";
+import type { InvokeEnvelope } from "../shared/protocol/channels";
 import { createSplashWindow } from "./splash";
 
 const SMOKE = process.env.OP_DESKTOP_SMOKE === "1";
@@ -54,6 +56,22 @@ async function smokeNewUi(): Promise<void> {
 function broadcastStatus(status: ServerStatusSnapshot): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) win.webContents.send("op:server-status", status);
+  }
+}
+
+/**
+ * 注册 invoke 通道转发（F2b 迁移期过渡形态）：渲染层 IPC → 内嵌 legacy server 的 HTTP。
+ * 服务未就绪时返回 ok:false（不挂起调用方）；B6 收口后由主进程域服务实现替换。
+ */
+function registerChannelForwarders(): void {
+  for (const { channel, route } of channelRoutes()) {
+    ipcMain.handle(channel, async (_event, payload: InvokeEnvelope | undefined) => {
+      const ready = server && server.status.phase === "ready";
+      if (!ready || !server) {
+        return { ok: false, status: 0, data: { error: "本地服务未就绪，请稍后重试" } };
+      }
+      return forwardHttpRequest(server.port, route.method, route.path, payload);
+    });
   }
 }
 
@@ -133,6 +151,7 @@ if (!gotLock) {
 
   app.whenReady().then(() => {
     ipcMain.handle("op:server-status", () => server?.status ?? { phase: "starting" });
+    registerChannelForwarders();
     mainWindow = createSplashWindow(PRELOAD_PATH);
     void bootstrap();
   });
