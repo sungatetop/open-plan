@@ -1,8 +1,4 @@
-import type { OpDesktopApi, ServerStatusPayload } from "../shared/desktop-protocol";
-
-declare global {
-  interface Window { opDesktop: OpDesktopApi }
-}
+import type { ServerStatusPayload } from "../shared/desktop-protocol";
 
 const statusEl = document.getElementById("status") as HTMLDivElement;
 const spinnerEl = document.getElementById("spinner") as HTMLDivElement;

@@ -19,7 +19,10 @@ export default defineConfig({
     build: {
       outDir: "out/renderer",
       rollupOptions: {
-        input: path.resolve(__dirname, "src/renderer/index.html")
+        input: {
+          splash: path.resolve(__dirname, "src/renderer/index.html"),
+          app: path.resolve(__dirname, "src/renderer/app/index.html")
+        }
       }
     }
   }

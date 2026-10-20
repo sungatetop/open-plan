@@ -1,0 +1,112 @@
+/* 新 UI 应用骨架样式（F2 范本）：仅骨架所需最小变量与布局，域样式随域迁移进入 features/。 */
+
+:root {
+  --app-bg: #f5f7fa;
+  --app-surface: #ffffff;
+  --app-border: #d9dee5;
+  --app-text: #1c2128;
+  --app-text-dim: #5b6472;
+  --app-accent: #0e9488;
+}
+
+:root[data-theme="dark"] {
+  --app-bg: #111418;
+  --app-surface: #191e26;
+  --app-border: #2a2f38;
+  --app-text: #d7dce3;
+  --app-text-dim: #8b93a1;
+  --app-accent: #4dd0c4;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  background: var(--app-bg);
+  color: var(--app-text);
+}
+
+.app-shell {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 16px;
+  height: 48px;
+  background: var(--app-surface);
+  border-bottom: 1px solid var(--app-border);
+  flex: none;
+}
+
+.app-brand {
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: 2px;
+}
+
+.app-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.app-skin-select {
+  height: 28px;
+  padding: 0 6px;
+  border: 1px solid var(--app-border);
+  border-radius: 6px;
+  background: var(--app-bg);
+  color: var(--app-text);
+  font-size: 12px;
+}
+
+.app-theme-toggle {
+  height: 28px;
+  padding: 0 12px;
+  border: 1px solid var(--app-border);
+  border-radius: 6px;
+  background: var(--app-bg);
+  color: var(--app-text);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.app-theme-toggle:hover {
+  border-color: var(--app-accent);
+}
+
+.app-status {
+  padding: 6px 16px;
+  font-size: 12px;
+  color: var(--app-text-dim);
+  border-bottom: 1px solid var(--app-border);
+  flex: none;
+}
+
+.app-main {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 0;
+}
+
+.app-placeholder {
+  color: var(--app-text-dim);
+  font-size: 14px;
+}
