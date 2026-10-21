@@ -171,7 +171,7 @@ interface ComposerItem {
   session?: SessionRecord;
 }
 
-interface LastPromptInfo {
+export interface LastPromptInfo {
   text: string;
   references: ChatReference[];
   contextText: string;
