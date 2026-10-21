@@ -51,6 +51,14 @@ export interface ThreadEventWatchRequest {
   client: string;
   thread?: string;
   cwd?: string;
+  /**
+   * 续传游标（对齐 /api/agent/stream 的 after 查询参数，0/省略 = 从头回放）。
+   * 桥内部断线重连自持游标；该字段只作用于 watch 建流起点（渲染层换线程/
+   * 强制重连时携带，服务端据此回放补齐缺失事件）。
+   */
+  after?: number;
+  /** 已知通道代际 id（对齐 stream 查询参数）：代际不一致时服务端将游标清零。 */
+  streamId?: string;
 }
 
 export interface EventWatchResult {

@@ -93,7 +93,12 @@ let eventsBridge: ReturnType<typeof createEventStreamBridge> | null = null;
 function registerEventBridgeHandlers(): void {
   const bridge = createEventStreamBridge({
     getPort: () => (server && server.status.phase === "ready" ? server.port : null),
-    send: (event) => broadcastEvent(event)
+    send: (event) => broadcastEvent(event),
+    // 桥连接状态以 op:stream-state 帧广播：渲染层连接层据此在断线重连窗口
+    // （retrying）即时置断开并解除握手等待，与旧客户端 EventSource.onerror 的
+    // 用户可见语义对齐；watching/connecting/stopped 帧仅作可观测记录。
+    onState: (state, detail) =>
+      broadcastEvent({ type: "op:stream-state", data: { state, detail: detail ?? null } })
   });
   eventsBridge = bridge;
   ipcMain.handle("op:events:watch", (_event, request: Parameters<typeof bridge.watch>[0]) =>

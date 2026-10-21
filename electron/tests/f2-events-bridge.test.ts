@@ -92,12 +92,12 @@ describe("createEventStreamBridge", () => {
     expect(calls[0]?.init?.headers?.accept).toBe("text/event-stream");
   });
 
-  it("转发数据帧、过滤心跳、应用层握手帧（无 id）原样透传", async () => {
+  it("转发数据帧、心跳转 op:heartbeat 活性帧、应用层握手帧（无 id）原样透传", async () => {
     const chunks = [
       // 对齐 legacy server/index.mjs 实际线上形态：type 在 JSON 体内，无 SSE event 字段
       `data: ${JSON.stringify({ type: "runtime_connecting", at: "2026-10-20T00:00:00.000Z", data: { client: "web", thread: "t1" } })}\n\n`,
       `data: ${JSON.stringify({ type: "runtime_connected", at: "2026-10-20T00:00:00.100Z" })}\n\n`,
-      "event: heartbeat\ndata: {}\n\n",
+      `event: heartbeat\ndata: ${JSON.stringify({ type: "heartbeat", at: "2026-10-20T00:00:01.000Z" })}\n\n`,
       frame(7, "message.delta", "s1", { data: { text: "hi" } })
     ];
     const sent: DesktopEvent[] = [];
@@ -105,12 +105,24 @@ describe("createEventStreamBridge", () => {
     const bridge = createEventStreamBridge({ getPort: () => 3003, send: (e) => sent.push(e), fetchImpl: fetch, delay: neverDelay });
     await bridge.watch({ client: "web", thread: "t1" });
     await settle();
-    expect(sent.map((e) => e.type)).toEqual(["runtime_connecting", "runtime_connected", "message.delta"]);
-    expect(sent[2]?.id).toBe(7);
-    expect(sent[2]?.streamId).toBe("s1");
-    expect(sent[2]?.data).toEqual({ text: "hi" });
+    expect(sent.map((e) => e.type)).toEqual(["runtime_connecting", "runtime_connected", "op:heartbeat", "message.delta"]);
+    expect(sent[2]?.at).toBe("2026-10-20T00:00:01.000Z");
+    expect(sent[3]?.id).toBe(7);
+    expect(sent[3]?.streamId).toBe("s1");
+    expect(sent[3]?.data).toEqual({ text: "hi" });
     expect(sent[0]?.id).toBeUndefined();
     expect(sent[0]?.at).toBe("2026-10-20T00:00:00.000Z");
+  });
+
+  it("watch 请求携带 after/streamId：建流起点带续传参数（渲染层换线程/强制重连回放）", async () => {
+    const { fetch, calls } = makeFetch(() => hangingResponse());
+    const bridge = createEventStreamBridge({ getPort: () => 3003, send: () => {}, fetchImpl: fetch, delay: neverDelay });
+    await bridge.watch({ client: "web", thread: "t1", after: 42, streamId: "gen-X" });
+    await settle();
+    const params = new URL(calls[0]?.url ?? "").searchParams;
+    expect(params.get("after")).toBe("42");
+    expect(params.get("stream")).toBe("gen-X");
+    expect(calls[0]?.init?.headers?.["last-event-id"]).toBe("42");
   });
 
   it("同键重复 watch 幂等：不重建流", async () => {

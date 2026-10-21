@@ -5,7 +5,8 @@
  * 语义对齐旧客户端（client/src ChatPanel 的 EventSource 用法）：
  *   - 同键重复 watch 幂等；切换线程先走 /api/agent/stream/close 优雅收流再建新流；
  *   - 断线按退避重连，携带 after（last-event-id）+ stream（通道代际）续传去重；
- *   - 心跳帧（event: heartbeat）只作活性，不进事件流；
+ *   - 心跳帧（event: heartbeat）不进事件流，转发为 op:heartbeat 活性帧供渲染层
+ *     连接层的静默 watchdog 判活（与旧客户端把心跳当存活信号同语义）；
  *   - 连接建立的应用层握手（runtime_connecting/connected 帧）原样转发，
  *     渲染层与旧客户端一样以 `connected` 帧确认 Agent 就绪。
  *
@@ -153,7 +154,18 @@ export function createEventStreamBridge(deps: EventBridgeDeps): EventStreamBridg
           deps.send(event);
         };
         parser = createSseParser((message) => {
-          if (message.event === "heartbeat") return; // 传输层心跳不进事件流
+          if (message.event === "heartbeat") {
+            // 传输层心跳不进事件流，但转发为 op:heartbeat 活性帧：渲染层连接层
+            // 的静默 watchdog（旧 ChatPanel 同款）以心跳为存活信号——Runtime 冷
+            // 启动期间只有心跳帧，不转发会导致渲染层误判断线反复重建连接。
+            const heartbeatEnvelope = parseJson(message.data) as Record<string, unknown> | null;
+            forward({
+              type: "op:heartbeat",
+              at: heartbeatEnvelope && typeof heartbeatEnvelope.at === "string" ? heartbeatEnvelope.at : undefined,
+              data: {}
+            });
+            return;
+          }
           const payload = parseJson(message.data);
           if (!payload || typeof payload !== "object") return;
           const envelope = payload as Record<string, unknown>;
@@ -223,7 +235,13 @@ export function createEventStreamBridge(deps: EventBridgeDeps): EventStreamBridg
       }
 
       setState("watching");
-      void runStream(gen, { client, thread, cwd: request.cwd }, { after: 0, streamId: "" });
+      // 建流起点携带渲染层游标/代际（watch 请求的 after/streamId）：换线程或
+      // 强制重连时服务端据此回放补齐；桥内部断线重连仍自持 lastId 续传。
+      void runStream(
+        gen,
+        { client, thread, cwd: request.cwd },
+        { after: Number(request.after ?? 0), streamId: typeof request.streamId === "string" ? request.streamId : "" }
+      );
       return { ok: true };
     },
 
