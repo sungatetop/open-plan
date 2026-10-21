@@ -234,6 +234,15 @@ export const setApprovalMode = (mode: string): Promise<ChannelResponse<"op:agent
 export const markAgentEventsRead = (client: string, seq: number): Promise<ChannelResponse<"op:agent:events-read">> =>
   invokeOrThrow("op:agent:events-read", { body: { client, seq } });
 
+/** 提交工具审批决策（PendingActionBar/ApprovalBlock：旧组件内联 fetch("/api/agent/approval") → IPC 通道）。 */
+export const submitAgentApproval = (id: string, decision: "allow" | "always" | "deny"): Promise<ChannelResponse<"op:agent:approval">> =>
+  invokeOrThrow("op:agent:approval", { body: { id, decision } });
+
+/** 回答 agent 提问（AskBlock/PendingActionBar：旧组件内联 fetch("/api/agent/answer") → IPC 通道）。
+ * thread 允许 null（旧组件在线程未建时传 null，服务端 `thread || ""` 兜底）；404 失效分支由调用方按 ApiError.status 判定。 */
+export const answerAgentQuestion = (client: string, thread: string | null, answer: string): Promise<ChannelResponse<"op:agent:answer">> =>
+  invokeOrThrow("op:agent:answer", { body: { client, thread: thread ?? undefined, answer } });
+
 // ============================================================================
 // 记忆域（F3 批4：MemoryTab；对齐 client/src/api.js 记忆端点族）
 // ============================================================================
