@@ -26,7 +26,7 @@ type AuthEntry = { masked?: string; set?: boolean };
 type AuthErrorInfo = { message?: string };
 type AuthPayload = { providers?: Record<string, AuthEntry>; authErrors?: Record<string, AuthErrorInfo> };
 
-type ModelRecord = {
+export type ModelRecord = {
   id: string;
   name?: string;
   provider?: string;

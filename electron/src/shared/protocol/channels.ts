@@ -109,6 +109,9 @@ export const DESKTOP_CHANNELS = {
   "op:files:upload": { method: "POST", path: "/api/files/upload" },
   "op:files:delete": { method: "POST", path: "/api/files/delete" },
 
+  // ---- 知识库族（F3 批5b-5：SessionSidebar docx 存入知识库；域内其余路由仍走前缀豁免） ----
+  "op:kb:ingest": { method: "POST", path: "/api/kb/ingest" },
+
   // ---- 模型族（10s 单飞缓存在 renderer API 层，通道只承载传输） ----
   "op:models:list": { method: "GET", path: "/api/models" },
   "op:models:refresh": { method: "POST", path: "/api/models/refresh" },
@@ -379,6 +382,16 @@ export interface RunActions {
   [key: string]: unknown;
 }
 
+/** 验收详情：服务端在 artifact.acceptance / run.acceptance 上都会返回（人工确认/可固定状态）。 */
+export interface RunAcceptanceInfo {
+  readyToPublish?: boolean;
+  status?: string;
+  summary?: string;
+  checks?: Record<string, { status?: string }>;
+  artifacts?: Array<{ path?: string; [key: string]: unknown }>;
+  [key: string]: unknown;
+}
+
 export interface RunArtifact {
   changeId?: string;
   artifactId?: string;
@@ -386,6 +399,7 @@ export interface RunArtifact {
   path?: string;
   cwd?: string;
   blobs?: { before?: string | boolean | null; after?: string | boolean | null };
+  acceptance?: RunAcceptanceInfo;
   acceptanceStatus?: string | null;
   verificationStatus?: string | null;
   [key: string]: unknown;
@@ -417,6 +431,7 @@ export interface RunRecord {
   summary?: string;
   model?: string | null;
   finalText?: string;
+  acceptance?: RunAcceptanceInfo;
   verificationStatus?: string;
   completion?: Record<string, unknown> | null;
   actions?: RunActions;
@@ -723,6 +738,11 @@ export type FileSearchResponse = {
 export type FileUploadRequest = { body: { name: string; base64: string; workspace?: string } };
 export type FileDeleteRequest = { body: { name: string; workspace?: string } };
 
+// ---- 知识库族 ----
+
+export type KbIngestRequest = { body: { name: string } };
+export type KbIngestResponse = { ok?: boolean; mdName?: string; error?: string; [key: string]: unknown };
+
 // ---- 模型族 ----
 
 export type ModelsListRequest = Record<string, never>;
@@ -847,6 +867,8 @@ export interface DesktopChannelProtocol {
   "op:files:search": { request: FileSearchRequest; response: FileSearchResponse };
   "op:files:upload": { request: FileUploadRequest; response: Record<string, unknown> };
   "op:files:delete": { request: FileDeleteRequest; response: Record<string, unknown> };
+
+  "op:kb:ingest": { request: KbIngestRequest; response: KbIngestResponse };
 
   "op:models:list": { request: ModelsListRequest; response: ModelsListResponse };
   "op:models:refresh": { request: Record<string, never>; response: Record<string, unknown> };

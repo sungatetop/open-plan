@@ -288,6 +288,10 @@ export const uploadFile = (name: string, base64: string, workspace = ""): Promis
 export const deleteFile = (name: string, workspace = ""): Promise<ChannelResponse<"op:files:delete">> =>
   invokeOrThrow("op:files:delete", { body: workspace ? { name, workspace } : { name } });
 
+/** 存入知识库（SessionSidebar 右键菜单）：旧组件内联 fetch("/api/kb/ingest") → IPC 通道。 */
+export const ingestToKb = (name: string): Promise<ChannelResponse<"op:kb:ingest">> =>
+  invokeOrThrow("op:kb:ingest", { body: { name } });
+
 // ============================================================================
 // 模型族（listModels 10s 单飞缓存逐行等价；refreshModels 立即失效缓存）
 // ============================================================================
