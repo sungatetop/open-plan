@@ -126,7 +126,7 @@ export const pinSession = (id: string, pinned = true): Promise<ChannelResponse<"
 export const freezeSession = (id: string, frozen = true, reason = ""): Promise<ChannelResponse<"op:sessions:freeze">> =>
   invokeOrThrow("op:sessions:freeze", { params: { id }, body: { frozen, reason } });
 
-export const forkSession = (id: string, label: string, options: Record<string, unknown> = {}): Promise<ChannelResponse<"op:sessions:fork">> =>
+export const forkSession = (id: string, label?: string, options: Record<string, unknown> = {}): Promise<ChannelResponse<"op:sessions:fork">> =>
   invokeOrThrow("op:sessions:fork", { params: { id }, body: { label, ...options } });
 
 // ============================================================================
@@ -213,6 +213,22 @@ export const rollbackPublishedArtifact = (publicationId: string): Promise<Channe
 
 export const compactAgentContext = (client: string, thread: string, instructions = ""): Promise<ChannelResponse<"op:agent:compact">> =>
   invokeOrThrow("op:agent:compact", { body: { client, thread, instructions } });
+
+/** 发送对话消息（ChatPanel.send：旧内联 fetch("/api/agent/prompt") → IPC 通道；admission 响应，后续状态走事件流）。 */
+export const sendAgentPrompt = (body: ChannelRequest<"op:agent:prompt">["body"]): Promise<ChannelResponse<"op:agent:prompt">> =>
+  invokeOrThrow("op:agent:prompt", { body });
+
+/** 中止当前运行（ChatPanel.stop：旧内联 fetch("/api/agent/abort") → IPC 通道；result.cancelled === false 语义由调用方判定）。 */
+export const abortAgent = (client: string, thread?: string): Promise<ChannelResponse<"op:agent:abort">> =>
+  invokeOrThrow("op:agent:abort", { body: { client, thread } });
+
+/** 切换模型（ChatPanel.changeModel：旧 api.js setAgentModel → POST /api/agent/model）。 */
+export const setAgentModel = (client: string, model: string, thread?: string): Promise<ChannelResponse<"op:agent:model:set">> =>
+  invokeOrThrow("op:agent:model:set", { body: { client, thread, model } });
+
+/** Pi 运行时上下文用量快照（ChatPanel 恢复/切换会话后回填：旧内联 fetch("/api/agent/runtime") → IPC 通道）。 */
+export const getAgentRuntime = (client: string, thread?: string): Promise<ChannelResponse<"op:agent:runtime">> =>
+  invokeOrThrow("op:agent:runtime", { query: { client, thread } });
 
 /** 控制面（原 apiControl 20s 超时）：桌面形态直通，超时由 main 转发器兜底（见文件头说明）。 */
 export const createAgentThread = (client: string, thread: string, cwd: string, options: Record<string, unknown> = {}): Promise<ChannelResponse<"op:agent:new">> =>

@@ -72,8 +72,6 @@ const EXEMPT_PREFIXES = [
 /** /api/agent/ 下尚未纳入通道清单的管理配置面逐条豁免（已入通道的移除，重叠测试即红）；chat 链路路由必须进通道清单。 */
 const EXEMPT_AGENT_MANAGEMENT_ROUTES = [
   "GET /api/agent/evaluations",
-  "POST /api/agent/model",
-  "GET /api/agent/runtime",
   "GET /api/agent/runtimes",
   "POST /api/agent/runtime/health",
   "POST /api/agent/runtime/restart",
@@ -108,7 +106,7 @@ const extracted = extractRoutes(source);
 describe("channels manifest 对账", () => {
   it("通道清单规约：op: 前缀、族:动作命名、数量钉住（扩清单需同步更新对账）", () => {
     const channelKeys = Object.keys(DESKTOP_CHANNELS);
-    expect(channelKeys.length).toBe(101);
+    expect(channelKeys.length).toBe(103);
     for (const key of channelKeys) {
       expect(key.startsWith("op:")).toBe(true);
     }

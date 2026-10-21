@@ -75,6 +75,8 @@ export const DESKTOP_CHANNELS = {
   // ---- Agent 交互族（对话链路核心） ----
   "op:agent:prompt": { method: "POST", path: "/api/agent/prompt" },
   "op:agent:abort": { method: "POST", path: "/api/agent/abort" },
+  "op:agent:model:set": { method: "POST", path: "/api/agent/model" },
+  "op:agent:runtime": { method: "GET", path: "/api/agent/runtime" },
   "op:agent:compact": { method: "POST", path: "/api/agent/compact" },
   "op:agent:new": { method: "POST", path: "/api/agent/new" },
   "op:agent:resume": { method: "POST", path: "/api/agent/resume" },
@@ -590,6 +592,25 @@ export interface AgentAbortResponse {
   [key: string]: unknown;
 }
 
+/** POST /api/agent/model：切换模型；运行中受理时 pending=true（排队到本轮结束）。 */
+export type AgentModelSetRequest = {
+  body: { client: string; thread?: string; model: string };
+};
+export interface AgentModelSetResponse {
+  ok?: boolean;
+  pending?: boolean;
+  model?: string;
+  current?: string;
+  [key: string]: unknown;
+}
+
+/** GET /api/agent/runtime：Pi 运行时上下文用量快照（恢复/切换会话后回填）。 */
+export type AgentRuntimeRequest = { query: { client: string; thread?: string } };
+export interface AgentRuntimeResponse {
+  usage?: Record<string, unknown> | null;
+  [key: string]: unknown;
+}
+
 export type AgentCompactRequest = {
   body: { client: string; thread?: string; instructions?: string };
 };
@@ -837,6 +858,8 @@ export interface DesktopChannelProtocol {
 
   "op:agent:prompt": { request: AgentPromptRequest; response: PromptAdmissionResponse };
   "op:agent:abort": { request: AgentAbortRequest; response: AgentAbortResponse };
+  "op:agent:model:set": { request: AgentModelSetRequest; response: AgentModelSetResponse };
+  "op:agent:runtime": { request: AgentRuntimeRequest; response: AgentRuntimeResponse };
   "op:agent:compact": { request: AgentCompactRequest; response: AgentCompactResponse };
   "op:agent:new": { request: AgentNewRequest; response: AgentThreadResponse };
   "op:agent:resume": { request: AgentResumeRequest; response: AgentThreadResponse };
