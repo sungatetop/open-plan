@@ -9,6 +9,7 @@ import XLSX from "xlsx";
 // 逐行等价迁移自 server/context.mjs（B6-5，agent 域直接上游，B2 收编时随域校正）。
 // 注意：当前仅对拍覆盖、未装配运行时；旧 JS 实现保留至域退役。
 import { PROJECT_DIR, getWorkspace, resolveExternalPath, resolvePath, listFileRoots } from "../workspace";
+import { atomicWriteFile } from "../persistence-utils";
 
 // 过渡桥：knowledge/template 分支仍动态引用旧 server 模块（kb.mjs / tpl.mjs 属独立域，
 // 待其 TS 化批次收编后替换为本域模块；模块未装配运行时，装配前必已替换）。
@@ -429,4 +430,18 @@ export async function readReference(input: unknown, query = "", range: Record<st
 
 export function contextSummary(resolved: ResolvedReference[] = []): string {
   return resolved.map((r) => `- ${r.id}: ${r.kind} ${r.target} → ${r.status}${r.metadata?.relativePath ? ` (${r.metadata.relativePath})` : ""}`).join("\n");
+}
+
+/**
+ * 初始化 agent 上下文文件（B6-6-4f，自 agent.mjs L4792-4800 转录）：
+ * 旧实现为模块加载期 IIFE；electron 侧函数化，由装配层（B2）启动时调用一次，
+ * 让 agent 首次能 read 到工作区根的 .agent-context.md。已存在则不覆盖。
+ */
+export function ensureContextFile(projectDir: string = PROJECT_DIR): void {
+  try {
+    const fp = path.join(projectDir, ".agent-context.md");
+    if (!fs.existsSync(fp)) {
+      atomicWriteFile(fp, "# Office Agent Workspace\n\n- 当前没有打开文档\n- 当前工作文件: (无)\n", "utf8");
+    }
+  } catch {}
 }

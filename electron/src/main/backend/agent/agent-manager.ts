@@ -10,17 +10,22 @@
  *     listModels/refreshModels/disposeAll（L4419-4653，类体收尾段）
  *   - 4d 已收口：_enqueuePrompt/上下文窗口解析/压缩策略/_maybeCompact 队列压缩族
  *     （L3578-3715）+ usageSnapshot（L4370-4401）
- *   - 4e 本批：_promptEntry 主链（L3717-4141）+ 模块级 prompt 链辅助（waitForAgentRetry/
+ *   - 4e 已收口：_promptEntry 主链（L3717-4141）+ 模块级 prompt 链辅助（waitForAgentRetry/
  *     waitForPiSessionIdle/promptWithFirstEventTimeout → prompt-chain.ts）
- *   - 4f：buildDynamicContext/writeContextFile + 模块级残余小函数族
+ *   - 4f 已收口：buildDynamicContext/writeContextFile 转正（L4260-4345）+ 模块级残余
+ *     小函数族（buildOutputPolicyLines→prompt-chain / findSessionFileForAgent 族→
+ *     session-store / toolFingerprint+noteRepeatedToolCall→tool-repeat / 预算接线→
+ *     budget-wiring / listAuth 族→provider-auth / ensureContextFile→context /
+ *     ASK_TIMEOUT_MS→pending-asks）
  *   - 4g：_create 中段工具定义工厂（managedBash/内置工具族）
  *   - 4h：createSubagentRunner 工厂
  *   - 4i：_create 主体收口（loader/review/mcp/emit/事件 switch/entry 组装）
  *
  * 依赖口径：已迁 TS 模块直接 import（normalizeWorkspace/getWorkspace/readPendingAsks/
  * resolvePendingAsk/emitChannelSafe/emitAbortedOnce/isAbortLikeError/configuredModelSpec/
- * AUTO_COMPACT_PROMPT_CHARS/turnBudgetPolicy/RUNTIME_FLAGS）；未迁域以 seam 注入
- * （piRuntimeManager 含 getContextUsage/getRun/memory-management 六函数/findSessionFileForAgent/
+ * AUTO_COMPACT_PROMPT_CHARS/turnBudgetPolicy/RUNTIME_FLAGS/readMemoryContext/
+ * findSessionFileForAgent）；未迁域以 seam 注入
+ * （piRuntimeManager 含 getContextUsage/getRun/memory-management 六函数/
  * contextTokensFromUsage/piCompactionPolicy），接线时由 B2 装配传入真实实现。
  * constructor 增收 deps 参数是唯一的结构性偏差（旧 JS 无参构造），行为不变。
  */
@@ -38,7 +43,10 @@ import { markRunTiming, attachRunTimingSpans } from "../../../shared/runtime/fir
 import { contextSummary } from "./context";
 import { readMemoryContext as readMemoryContextDefault } from "./memory-layers";
 import { waitForAgentRetry, waitForPiSessionIdle, promptWithFirstEventTimeout } from "./prompt-chain";
+import { findSessionFileForAgent as findSessionFileForAgentDefault } from "./session-store";
+import { atomicWriteFile } from "../persistence-utils";
 import path from "node:path";
+import fs from "node:fs";
 
 /** Pi Runtime 管理器 seam（server/pi-runtime-management.mjs 域未迁；随 B6 后续批扩员）。 */
 export interface AgentPiRuntimeSeam {
@@ -99,7 +107,7 @@ export interface AgentManagerDeps {
   consumeRecoveredAnswers?: (clientId: unknown) => any[];
   /** 记忆上下文拼接（agent.mjs L801，B6-6-4e 扩员；缺省 TS memory-layers 实现）。 */
   readMemoryContext?: (workspace: unknown) => any;
-  /** 会话文件定位（agent.mjs L173，B6-6-4f 批迁移；此前为 seam）。 */
+  /** 会话文件定位（agent.mjs L173，B6-6-4f 实体迁移；缺省 TS session-store 实现，测试注入切场景）。 */
   findSessionFileForAgent?: (sessionId: unknown) => any;
   /** 默认模型规格（缺省 TS model-spec 实现）。 */
   configuredModelSpec?: () => any;
@@ -531,11 +539,51 @@ export class AgentManager extends EventEmitter {
   }
 
   /**
-   * 动态上下文构建（agent.mjs L4260-4304）由 B6-6-4f 批接管；占位同 _create 口径。
-   * _promptEntry 调用点有 try/catch 吞错（L3868-3872），占位抛错不破坏主链。
+   * 动态上下文构建（agent.mjs L4260-4300，B6-6-4f 转正）：随每轮注入系统提示的动态
+   * 词条——工作区/当前文件/上下文文件名 + 按 mode（chat/review/其余）分支工具纪律 +
+   * 工作区记忆摘要（chat 截 800、其余 1500）。构建失败返回空串（调用方有 try/catch）。
    */
-  buildDynamicContext(_entry: any, _file: unknown, _sharedMemCtx: unknown = null): any {
-    throw new Error("B6-6-4f 未收口：buildDynamicContext 尚未迁移");
+  buildDynamicContext(entry: any, file: unknown, sharedMemCtx: any = null): string {
+    try {
+      const readMemoryContext = this.deps.readMemoryContext ?? readMemoryContextDefault;
+      const ws = entry?.workspace || getWorkspace();
+      const memCtx = sharedMemCtx ?? readMemoryContext(ws);
+      const mode = normalizeTaskMode(entry?.mode || "agent");
+      const ctxFile = entry?.threadId ? `.agent-context.${entry.threadId}.md` : ".agent-context.md";
+      const lines = [
+        "[动态上下文]",
+        `- 当前工作区（绝对路径）: ${ws}`,
+        `- 当前工作文件: ${file || "（无）"}`,
+        `- 工作区上下文文件: ${ctxFile}（权威版本；旧版 .agent-context.md 可能被其他会话覆盖，仅作兼容）`,
+      ];
+      if (mode === "chat") {
+        lines.push("- 当前为 Chat：只读检索、解释与引用；不得修改文件、执行脚本、调用 Office CLI 或写入长期记忆。");
+      } else if (mode === "review") {
+        lines.push(
+          "- 当前为 Review：先识别材料类型，再用 kb_search 查找候选规范；只有实际调用 kb_read 并成功返回全文的规范才能作为依据。",
+          "- 必须维护规范依据台账：读取规范后使用系统分配的 R-* 编号；每条问题使用 F-* 编号，并在报告中写明 R-* 依据。搜索命中但未 kb_read 的文件只能标记为候选/未采用。",
+          "- 审查默认生成审查报告和批注副本。优先用 review_copy 复制原文件，再对副本使用 officecli 添加批注；不得在用户明确确认前修改当前工作文件。",
+          "- 报告生成并回读验证后，必须调用 ask_user 询问是否写回原文件；只有用户明确确认后系统才会解除原文保护。拒绝或超时就保留报告/副本并说明未写回。",
+          "- 聊天收尾先用 1-3 句直接给审查结论（通过/有风险/受阻、关键影响、是否已写回），不要输出固定 Markdown 五段总结或重复过程；详细依据与审查问题写入报告/台账，用户需要时再展开。最后调用 complete_task。",
+          "- Review 禁止使用 bash、地图编辑、浏览器自动化和 memory_update；Office 文档一律用 officecli，文本报告用 write/edit。",
+        );
+      } else {
+        lines.push(
+        "- Office 文档一律用 officecli 工具操作；新建或修改文件必须写入当前工作区。",
+        "- 工具使用纪律：读取/编辑文件前先用 ls 或列目录确认真实文件名，不要凭记忆拼路径（实测 13 次 read/ls 因文件名不存在失败）；搜索、遍历、批量命令必须限定在当前工作区内，禁止从系统盘根目录全盘扫描；bash 默认 120 秒超时，长任务请显式传 timeout（最多 600 秒）或拆成小步执行。",
+        "- 同一个操作连续失败两次就停止重试：先看错误里的 code 与建议（例如 sharing violation 让用户关闭 WPS/Word，decompression_bomb 说明文件过大需要拆分），必要时用 ask_user 询问，而不是重复提交同一条命令。",
+        "- Word 批注必须先 get/query 找到真实 `/body/p[...]` 路径，再用 `add <file> /body/p[N] --type comment --prop author=\\\"规聚 Agent\\\" --prop initials=OA --prop text=\\\"...\\\" --json`，一次 get 只传一个路径，完成后 query comment 回读。sharing violation 或另一个进程占用才表示文件锁；Access denied、is denied、EPERM 或 EACCES 表示当前服务进程缺少系统写权限。",
+          "- 面向用户的进度与收尾总结先直说阶段/最终结论，默认 1-3 句自然语言；不要按 Markdown 的‘读取来源/修改文件/产物/假设/下一步’模板列项。只在影响用户判断时简要提及关键产物、未完成项或阻塞；详细过程留在任务记录中。收尾必须调用 complete_task 声明 success/partial/blocked/failed。",
+          "- 复杂任务先调用 todo 创建 2-6 项结构化待办；每完成一项就用完整快照更新 todo。只有稳定的新项目事实或偏好才提交 memory_update 建议。",
+          "- 计划触发条件（满足任一就必须先建计划再动手）：① 本轮会新增或修改文件；② 预计工具调用 ≥5 次；③ 涉及多份材料或多个相互依赖的步骤；④ 用户要求整理、审查、生成、批量处理。短问答与单次查询不要建计划。",
+          "- 收尾时若待办仍有未完成项，必须在 complete_task 的 incomplete 里逐条写明原因；系统会把未完成待办计入完成状态，不要用 success 掩盖半成品。",
+        );
+      }
+      if (memCtx) lines.push("- 工作区记忆摘要：\n" + memCtx.slice(0, mode === "chat" ? 800 : 1500));
+      return lines.join("\n");
+    } catch {
+      return "";
+    }
   }
 
   // ==================== B6-6-4e Prompt 主链批（自 agent.mjs L3717 起逐行转录） ====================
@@ -969,10 +1017,51 @@ export class AgentManager extends EventEmitter {
   }
 
   /**
-   * 上下文文件写入（agent.mjs L4307-4346）由 B6-6-4f 批接管；占位同 _create 口径。
+   * 上下文文件写入（agent.mjs L4302-4345，B6-6-4f 转正）：每次对话前刷新工作区
+   * 上下文文件——线程级 `.agent-context.<threadId>.md` 是权威版本（同工作区多会话
+   * 并发不互相覆盖），同时写旧文件名 `.agent-context.md` 兼容外部读取习惯；内容没变
+   * 不落盘（每轮同步磁盘写的成本护栏）。T3：sharedMemCtx 可由调用方传入，同一轮内
+   * 与 buildDynamicContext 共享一次记忆读取。整段失败静默吞错。
    */
-  writeContextFile(_entry: any, _file: unknown, _sharedMemCtx: unknown = null): any {
-    throw new Error("B6-6-4f 未收口：writeContextFile 尚未迁移");
+  writeContextFile(entry: any, file: unknown, sharedMemCtx: any = null): void {
+    try {
+      const readMemoryContext = this.deps.readMemoryContext ?? readMemoryContextDefault;
+      const ws = entry?.workspace || getWorkspace();
+      const memCtx = sharedMemCtx ?? readMemoryContext(ws);
+      const ctx = [
+        "# Open Plan（规聚）Workspace",
+        "",
+        `- **当前工作区（绝对路径）**: ${ws}`,
+        "- Office files live in the current workspace folder above. ALWAYS operate on office documents through the `officecli` tool — it resolves file names relative to the current workspace. NEVER try to run `officecli` via the bash tool.",
+        "- Word 批注：先 get/query 找真实 `/body/p[...]` 路径，再用 `add <file> /body/p[N] --type comment --prop author=\\\"规聚 Agent\\\" --prop initials=OA --prop text=\\\"...\\\" --json`，完成后 query comment 校验。仅在 sharing violation 或明确的进程占用错误时关闭 WPS/Word/OfficeCLI 预览；Access denied/is denied/EPERM/EACCES 应说明服务进程写权限受限。",
+        "- The bash tool may run inside WSL: Windows paths like `F:\\...` are not directly valid there; prefer the officecli tool for documents and `read`/`write` for text.",
+        "- **写文件规范**: 创建任何新文件（HTML/文档/图表等）时，必须写入当前工作区（绝对路径见上），禁止写入项目目录。否则产物不会被前端检测到。",
+        "- **临时文件**: 中间工作文件（脚本、JSON 片段、解包目录、备份等）请集中放在工作区内以点开头的临时目录（如 `.work/`），并在任务收尾时删除；不要把中间文件留在用户的工作区里（用户目录只应留交付产物）。",
+        "- **地图（GIS）**: 地图项目位于 `" + ws + "/maps/{project}/`（默认项目 zhejiang-map 浙江省交通地图）。用户在地图模式下对话时用 map_read/map_edit/map_import 工具。",
+        "",
+        "## 当前工作文件（用户正在查看/编辑的文档）",
+        file ? `- 当前工作文件: ${file}` : "- 当前没有打开文档",
+        file
+          ? "- 用户的操作默认针对此文件。修改它时直接用 officecli 操作（文件名相对工作区根目录，含子目录路径）。完成后告知用户已修改。"
+          : "- 如果用户提到要修改某个文档，先用 officecli view 确认内容再操作。",
+        "",
+        memCtx ? "## 工作区记忆（每次任务开始前阅读；沉淀新经验请用 memory_update 工具，勿直接写文件）\n" + memCtx : "",
+        "",
+        "- When the user asks to modify a document, make the changes, then confirm what changed. Files are auto-refreshed in the browser.",
+      ].join("\n");
+      // 线程级上下文文件是权威版本（同工作区多会话并发时不互相覆盖）；
+      // 同时写一份旧文件名兼容外部读取习惯。
+      const threadFile = entry?.threadId ? path.join(ws, `.agent-context.${entry.threadId}.md`) : null;
+      const compatFile = path.join(ws, ".agent-context.md");
+      // 内容没变就不要写：这是每轮都跑的同步磁盘写（两次原子写 ≈ 0.1–0.4 秒），
+      // 而绝大多数轮次的工作区/当前文件/记忆都没变。读两份小文件比写两份便宜得多。
+      const sameContent = (file: string) => {
+        try { return fs.existsSync(file) && fs.readFileSync(file, "utf8") === ctx; } catch { return false; }
+      };
+      if ((!threadFile || sameContent(threadFile)) && sameContent(compatFile)) return;
+      if (threadFile) atomicWriteFile(threadFile, ctx, "utf8");
+      atomicWriteFile(compatFile, ctx, "utf8");
+    } catch {}
   }
 
   // ==================== B6-6-4b 会话生命周期批（自 agent.mjs L3461 起逐行转录） ====================
@@ -1052,7 +1141,7 @@ export class AgentManager extends EventEmitter {
       const modelSpec = fallbackModel && fallbackModel !== failedModel
         ? fallbackModel
         : String(options.modelSpec || "").trim();
-      const findSessionFileForAgent = this.deps.findSessionFileForAgent!;
+      const findSessionFileForAgent = this.deps.findSessionFileForAgent ?? findSessionFileForAgentDefault;
       const found = findSessionFileForAgent(current.session?.sessionId || "");
       await this.restartRuntime(clientId, {
         threadId: options.threadId || current.threadId || null,

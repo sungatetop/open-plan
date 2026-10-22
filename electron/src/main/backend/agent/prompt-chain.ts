@@ -103,3 +103,23 @@ export async function promptWithFirstEventTimeout(piRuntimeManager: PromptChainR
     if (idleProbe) clearInterval(idleProbe);
   }
 }
+
+/**
+ * 输出策略（A03，B6-6-4f，自 server/agent.mjs L49-65 逐行转录）：Chat / Work / Review
+ * 共用同一套收尾口径，避免系统提示各要求一套收尾。
+ *   - 进度：始终短句、不复述工具、不用模板标签；
+ *   - 最终答复：纯问答/审阅用 1-3 句短结论；产生成果（文件/报告/数据/改动）时用
+ *     简洁 Markdown 讲清成果。
+ * 返回可直接铺进系统提示的词条数组（_create 系统提示组装消费，4g/4i 批接线）。
+ */
+export function buildOutputPolicyLines({ mode = "work" }: { mode?: unknown } = {}): string[] {
+  const normalized = String(mode || "work").toLowerCase();
+  const chatLike = normalized === "chat" || normalized === "review";
+  const finalLine = chatLike
+    ? "- **最终答复（重要）**: 完成任务后先直接说结论，用 1-3 句自然语言即可；不要输出固定的 Markdown 分段模板，也不要复述工具调用流水。只有用户明确要求详细展开时，才给出完整内容。"
+    : "- **最终答复（重要）**: 完成任务后先直接说结论。纯问答、闲聊或只读咨询用 1-3 句自然语言即可；**当本轮产生了文件、报告、数据、代码改动等成果时，用简洁但完整的 Markdown 把成果讲清楚**：可用小标题 + 要点列表，覆盖「做了什么 / 关键结果或发现 / 产物路径 / 如何验证 / 未完成项或风险」。不要把工具调用流水逐条复述，也不要用“读取来源 / 修改文件 / 产物 / 假设 / 下一步”这类固定模板标签，但成果本身要让用户不看任务详情也能明白。";
+  return [
+    "- **进度结论（重要）**: 长任务不要静默连续调用工具。每完成一个阶段（或收到系统进度提醒时），先用 1-3 句自然中文直接说明阶段结论、当前结果和下一步，再继续执行。第一句先说结论；不要输出 Markdown 标题、加粗、项目符号或“阶段总结/已完成/当前/下一步”模板标签，不要复述工具调用，也不要写“正在处理中”这类空话。",
+    finalLine,
+  ];
+}
