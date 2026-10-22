@@ -132,6 +132,12 @@ function makeWorld(opts: {
     resetModelRuntime: () => {},
     disposeAll: async () => {},
     getContextUsage: () => null,
+    // B6-6-4e 扩员的 seam 方法：lifecycle 批场景不触达，no-op 满足 AgentPiRuntimeSeam 类型
+    prompt: () => {},
+    runPrompt: async (_runtimeId: unknown, operation: () => Promise<any>) => operation(),
+    setActiveTools: () => {},
+    update: () => {},
+    setThinkingLevel: () => {},
   };
   const configuredModelSpec = () => { calls.configuredModel += 1; return opts.configuredModel ?? "cfg/model-a"; };
   const findSessionFileForAgent = (sessionId: unknown) => { calls.findSessionFile.push(sessionId); return "sessionFileFound" in opts ? opts.sessionFileFound : { fullPath: "/store/s-1.jsonl" }; };

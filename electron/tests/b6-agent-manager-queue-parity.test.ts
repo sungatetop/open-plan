@@ -146,6 +146,12 @@ function makeWorld(opts: {
     probeModel: async () => ({}),
     resetModelRuntime: () => {},
     disposeAll: async () => {},
+    // B6-6-4e 扩员的 seam 方法：queue 批场景不触达，no-op 满足 AgentPiRuntimeSeam 类型
+    prompt: () => {},
+    runPrompt: async (_runtimeId: unknown, operation: () => Promise<any>) => operation(),
+    setActiveTools: () => {},
+    update: () => {},
+    setThinkingLevel: () => {},
   };
   const piCompactionPolicy = opts.piCompaction ?? { reserveTokens: 16384, keepRecentTokens: 20000 };
   const contextTokensFromUsage = (usage: unknown) => {

@@ -8,9 +8,10 @@
  *     runtimeHealth/restartRuntime/listRuntimes
  *   - 4c 已收口：模型族 setModel/applyModelSpec/probeModel/fallbackModel/listModelCatalog/
  *     listModels/refreshModels/disposeAll（L4419-4653，类体收尾段）
- *   - 4d 本批：_enqueuePrompt/上下文窗口解析/压缩策略/_maybeCompact 队列压缩族
+ *   - 4d 已收口：_enqueuePrompt/上下文窗口解析/压缩策略/_maybeCompact 队列压缩族
  *     （L3578-3715）+ usageSnapshot（L4370-4401）
- *   - 4e：_promptEntry 主链
+ *   - 4e 本批：_promptEntry 主链（L3717-4141）+ 模块级 prompt 链辅助（waitForAgentRetry/
+ *     waitForPiSessionIdle/promptWithFirstEventTimeout → prompt-chain.ts）
  *   - 4f：buildDynamicContext/writeContextFile + 模块级残余小函数族
  *   - 4g：_create 中段工具定义工厂（managedBash/内置工具族）
  *   - 4h：createSubagentRunner 工厂
@@ -29,9 +30,15 @@ import { isAbortLikeError, AUTO_COMPACT_PROMPT_CHARS } from "./agent-errors";
 import { normalizeWorkspace as normalizeWorkspaceDefault, getWorkspace } from "../workspace";
 import { emitChannelSafe, emitAbortedOnce, type EmitDeps } from "./emit-helpers";
 import { configuredModelSpec as configuredModelSpecDefault, currentModelSpec, localModelProviders as localModelProvidersDefault, localStoredModels as localStoredModelsDefault } from "./model-spec";
-import { classifyAgentError, clearInvalidCredential, getCredentialErrors as getCredentialErrorsDefault } from "./agent-errors";
-import { readPendingAsks as readPendingAsksDefault, resolvePendingAsk as resolvePendingAskDefault } from "./pending-asks";
+import { classifyAgentError, clearInvalidCredential, createSettledAgentError, getCredentialErrors as getCredentialErrorsDefault, resolveThinkingLevel } from "./agent-errors";
+import { readPendingAsks as readPendingAsksDefault, resolvePendingAsk as resolvePendingAskDefault, consumeRecoveredAnswers as consumeRecoveredAnswersDefault } from "./pending-asks";
 import { turnBudgetPolicy } from "../../../shared/runtime/turn-budget";
+import { normalizeTaskMode, modeLabel, modeDescription, taskSummary, toolPolicyForMode } from "../../../shared/runtime/task";
+import { markRunTiming, attachRunTimingSpans } from "../../../shared/runtime/first-token-latency";
+import { contextSummary } from "./context";
+import { readMemoryContext as readMemoryContextDefault } from "./memory-layers";
+import { waitForAgentRetry, waitForPiSessionIdle, promptWithFirstEventTimeout } from "./prompt-chain";
+import path from "node:path";
 
 /** Pi Runtime 管理器 seam（server/pi-runtime-management.mjs 域未迁；随 B6 后续批扩员）。 */
 export interface AgentPiRuntimeSeam {
@@ -41,7 +48,7 @@ export interface AgentPiRuntimeSeam {
   navigateSessionTree(runtimeId: unknown, session: unknown, entryId: unknown, options: any): Promise<any>;
   abort(runtimeId: unknown, session: unknown): Promise<void>;
   compact(runtimeId: unknown, session: unknown, instructions: string): Promise<any>;
-  health(runtimeId: unknown, session: unknown, options: any): any;
+  health(runtimeId: unknown, session: unknown, options?: any): any;
   markRecovery(runtimeId: unknown, reason: unknown): void;
   listSnapshots(): any;
   schedulerSnapshot(): any;
@@ -51,6 +58,16 @@ export interface AgentPiRuntimeSeam {
   disposeAll(entries: unknown[]): Promise<void>;
   /** Pi SDK 精确上下文用量（同步快照；_maybeCompact U1 路径入口）。 */
   getContextUsage(runtimeId: unknown, session: unknown): any;
+  /** Pi 会话投递（B6-6-4e 扩员：promptWithFirstEventTimeout watchdog 内调用）。 */
+  prompt(runtimeId: unknown, session: unknown, text: unknown, options: any): any;
+  /** runPrompt 串行化门（B6-6-4e 扩员：_promptEntry 主链/收尾 nudge 依赖）。 */
+  runPrompt(runtimeId: unknown, operation: () => Promise<any>, options: any): Promise<any>;
+  /** 模式工具边界应用（B6-6-4e 扩员：_promptEntry modePolicy 段）。 */
+  setActiveTools(runtimeId: unknown, session: unknown, tools: unknown): void;
+  /** Runtime 元数据更新（B6-6-4e 扩员：工具策略/思考档位登记）。 */
+  update(runtimeId: unknown, patch: any): void;
+  /** 思考档位设置（B6-6-4e 扩员：_promptEntry thinkingChanged 分支）。 */
+  setThinkingLevel(runtimeId: unknown, session: unknown, level: unknown): void;
 }
 
 /** 本批消费的运行开关子集（宽容类型，真值语义与旧 JS 一致）。 */
@@ -78,6 +95,10 @@ export interface AgentManagerDeps {
   /** pending-asks（缺省 TS pending-asks 实现）。 */
   readPendingAsks?: () => any[];
   resolvePendingAsk?: (clientId: unknown, answer: unknown, status?: string) => any;
+  /** 恢复应答消费（agent.mjs L833，B6-6-4e 扩员；缺省 TS pending-asks 实现）。 */
+  consumeRecoveredAnswers?: (clientId: unknown) => any[];
+  /** 记忆上下文拼接（agent.mjs L801，B6-6-4e 扩员；缺省 TS memory-layers 实现）。 */
+  readMemoryContext?: (workspace: unknown) => any;
   /** 会话文件定位（agent.mjs L173，B6-6-4f 批迁移；此前为 seam）。 */
   findSessionFileForAgent?: (sessionId: unknown) => any;
   /** 默认模型规格（缺省 TS model-spec 实现）。 */
@@ -107,6 +128,24 @@ export const AUTO_COMPACT_COOLDOWN_MS = 10000;
 export const DEFAULT_CONTEXT_WINDOW = 1_000_000;
 /** 字符→token 保守估算系数。 */
 export const ESTIMATED_TOKENS_PER_CHAR = 3.5;
+
+// ==================== Prompt 主链常量（自 agent.mjs L339-345/L423 逐值转录，B6-6-4e） ====================
+// Pi 已经负责一次短重试；工作台再补一层：无工具副作用的失败回合按退避重放，
+// 并在连接类故障时按候选链切换模型。已开始工具执行的回合绝不重放，避免
+// Office 写入等副作用被重复执行。
+/** 工作台传输层重试退避表。 */
+export const APP_PROMPT_RETRY_DELAYS = [2000, 6000, 15000];
+/** settled 错误重放退避表。 */
+export const SETTLED_AGENT_RETRY_DELAYS = [1500, 5000, 12000];
+/** 模型回退候选链上限。 */
+export const MODEL_FALLBACK_LIMIT = 2;
+// 收尾强制完成声明：本轮确实调用过工具、但没有 complete_task 时，追加一个短回合
+// 让模型显式声明完成状态（否则 Run 只能靠推断，用户无法区分"回答完了"与"任务完成了"）。
+/** 收尾强制完成声明短回合提示词。 */
+export const COMPLETION_NUDGE_PROMPT =
+  "系统提醒：本轮工具执行已经结束，但还没有声明完成状态。请立即调用 complete_task，如实填写 status（success/partial/blocked/failed）、summary、未完成项 incomplete 或阻塞原因 blockers、以及验证方式 verification。不要再执行新的工具调用，也不要扩展任务范围。";
+/** Skills/上下文目录 reload 间隔（同回合内复用一次 reload，不阻塞首事件）。 */
+export const RESOURCE_RELOAD_INTERVAL_MS = 30000;
 
 /** Per-client agent sessions. Emits events to SSE subscribers. */
 export class AgentManager extends EventEmitter {
@@ -492,10 +531,441 @@ export class AgentManager extends EventEmitter {
   }
 
   /**
-   * Prompt 主链（agent.mjs L3717-4150）由 B6-6-4e 批接管；占位同 _create 口径。
+   * 动态上下文构建（agent.mjs L4260-4304）由 B6-6-4f 批接管；占位同 _create 口径。
+   * _promptEntry 调用点有 try/catch 吞错（L3868-3872），占位抛错不破坏主链。
    */
-  _promptEntry(_entry: any, _text?: unknown, _images?: any[], _effort?: unknown, _references?: unknown[], _runContext?: unknown): any {
-    throw new Error("B6-6-4e 未收口：_promptEntry 尚未迁移");
+  buildDynamicContext(_entry: any, _file: unknown, _sharedMemCtx: unknown = null): any {
+    throw new Error("B6-6-4f 未收口：buildDynamicContext 尚未迁移");
+  }
+
+  // ==================== B6-6-4e Prompt 主链批（自 agent.mjs L3717 起逐行转录） ====================
+
+  async _promptEntry(entry: any, text: any, images: any[] = [], effort?: unknown, references: unknown[] = [], runContext: any = null) {
+    const prologueStartedAt = Date.now();
+    const isStreaming = entry.busy;
+    entry.busy = true;
+    entry.busyStartedAt = Date.now();
+    entry.references = Array.isArray(references) ? references : [];
+    entry.activeRunId = runContext?.runId || null;
+    // 每轮独立计数：上一轮的完成声明、轮次预算与提醒标记都不能串到本轮
+    entry.pendingCompletion = null;
+    // 终稿缓存按 Run 隔离：新 Run 开始即清空，旧 Run 迟到文本不会串入本轮。
+    entry.lastFinalText = "";
+    entry.suppressFinalText = false;
+    entry.turnCount = 0;
+    entry.runToolCount = 0;
+    entry.runStartedAt = Date.now();
+    // 新一轮任务：取消标记与 Run 状态缓存都重置
+    entry.cancelRequested = false;
+    entry.abortRequestedAt = 0;
+    entry.abortedEmittedRunId = null;
+    entry.runStopCache = false;
+    entry.runStopCheckedAt = 0;
+    entry.completionNudgeSent = false;
+    entry.officeLockFailures = new Map();
+    entry.task = runContext?.task || null;
+    entry.mode = normalizeTaskMode(runContext?.task?.mode || entry.mode || "agent");
+    if (!isStreaming) {
+      entry.reviewConfirmed = false;
+      entry.reviewAwaitingConfirmation = false;
+      entry.reviewSources = [];
+      const reviewTargets = [
+        runContext?.task?.currentFile,
+        ...(Array.isArray(runContext?.task?.references) ? runContext.task.references.filter((item: any) => item?.kind === "file").map((item: any) => item.target) : []),
+      ].filter(Boolean);
+      entry.reviewProtectedPaths = new Set(reviewTargets.map((value: any) => {
+        try { return path.resolve(entry.workspace, String(value)).toLowerCase(); } catch { return String(value); }
+      }).filter(Boolean));
+      if (entry.mode === "review") {
+        const material = String(reviewTargets[0] || "附件材料");
+        const ext = path.extname(material).toLowerCase();
+        const materialType = ext === ".docx" || ext === ".doc" ? "Word 文档"
+          : [".xlsx", ".xls", ".csv"].includes(ext) ? "表格材料"
+            : ext === ".pptx" ? "演示文稿"
+              : [".md", ".markdown", ".txt"].includes(ext) ? "文字稿"
+                : ext === ".pdf" ? "PDF 材料" : "待确认材料";
+        emitChannelSafe(entry, "review_material_classified", {
+          runId: entry.activeRunId,
+          materialType,
+          confidence: materialType === "待确认材料" ? "medium" : "high",
+          targets: reviewTargets,
+        }, {}, this.deps.emitDeps);
+      }
+    }
+    entry.lastAgentError = null;
+    entry.lastSettledError = null;
+    entry.lastAssistantText = "";
+    entry.lastPiEventAt = Date.now();
+    // 只有尚未收到本轮模型/工具事件时，才允许对抛出的传输异常重放 prompt。
+    // 一旦已经开始工具调用，绝不重复提交，避免副作用被执行两次。
+    if (!isStreaming) {
+      entry.turnStarted = false;
+      entry.toolStarted = false;
+      entry.firstResponseReceived = false;
+      entry.activeToolCount = 0;
+    }
+    try {
+      // Skills/上下文目录在同一回合内不会变化；短时间内复用一次 reload，
+      // 仍保留每轮动态记忆注入，避免高频请求重复扫描本地目录拖慢首字节。
+      const nowMs = Date.now();
+      if (nowMs - (entry.lastResourceReloadAt || 0) >= RESOURCE_RELOAD_INTERVAL_MS && !entry.resourceReloadPromise) {
+        entry.lastResourceReloadAt = nowMs;
+        entry.resourceReloadPromise = Promise.resolve()
+          .then(() => entry.loader.reload())
+          .catch(() => {})
+          .finally(() => { entry.resourceReloadPromise = null; });
+      }
+      // reload 采用后台刷新，不阻塞本轮模型首事件。Agent 工具清单在会话创建时
+      // 已完成，动态上下文仍在本轮同步注入；这样长时间空闲后的第一条消息不会
+      // 因重新扫描资源目录额外等待。
+      // 按本轮模式收缩 Pi 的可用工具集合。该策略必须在 prompt 前应用，
+      // Chat/Office 发生异常时直接中止，避免以更宽权限继续执行。
+      const baseModePolicy = toolPolicyForMode(entry.mode);
+      const modeDynamicTools = entry.mode === "chat"
+        ? [...(entry.mcpReadOnlyToolNames || []), ...(entry.hasSubagent ? ["run_subagent"] : [])]
+        : entry.mode === "agent"
+          ? [...(entry.mcpToolNames || []), ...(entry.piExtensionToolNames || []), ...(entry.hasSubagent ? ["run_subagent"] : [])]
+          : [];
+      const modePolicy = { ...baseModePolicy, tools: [...new Set([...baseModePolicy.tools, ...modeDynamicTools])] };
+      // 从 _promptEntry 进入到工具边界之前的所有同步/异步准备（模式、review 目标、资源刷新登记）
+      entry.promptPrologueMs = Date.now() - prologueStartedAt;
+      const modePolicyStartedAt = Date.now();
+      let modePolicyApplied = 0;
+      try {
+        const modePolicyKey = `${modePolicy.mode}:${entry.task?.agentProfile || "通用 Agent"}:${modeDynamicTools.join(",")}`;
+        if (entry.modePolicyKey !== modePolicyKey) {
+          modePolicyApplied = 1;
+          this.deps.piRuntimeManager.setActiveTools(entry.runtimeId, entry.session, modePolicy.tools);
+          entry.modePolicy = modePolicy;
+          entry.modePolicyKey = modePolicyKey;
+          this.deps.piRuntimeManager.update(entry.runtimeId, {
+            profile: entry.task?.agentProfile || "通用 Agent",
+            toolPolicyVersion: "task-tool-policy-v1",
+            toolPolicy: { mode: modePolicy.mode, tools: [...modePolicy.tools] },
+          });
+          emitChannelSafe(entry, "mode_policy", {
+            runId: entry.activeRunId,
+            mode: modePolicy.mode,
+            label: modePolicy.label,
+            description: modePolicy.description,
+            tools: modePolicy.tools,
+          }, {}, this.deps.emitDeps);
+        }
+      } catch (error: any) {
+        entry.modePolicy = null;
+        emitChannelSafe(entry, "agent_error", {
+          message: `无法应用${modeLabel(entry.mode)}模式的工具边界：${error?.message || String(error)}`,
+          code: "MODE_POLICY_APPLY_FAILED",
+        }, {}, this.deps.emitDeps);
+        throw error;
+      }
+      // 刷新 .agent-context.md（当前工作区路径/记忆/当前文件动态注入）
+      // T3（首字优化）：同一轮内 writeContextFile 与 buildDynamicContext 只读一次记忆目录，
+      // 显式传参复用，消除每轮重复的 memory/*.md 目录扫描与文件拼接 IO。
+      const contextFileStartedAt = Date.now();
+      const readMemoryContext = this.deps.readMemoryContext ?? readMemoryContextDefault;
+      const sharedMemCtx = readMemoryContext(entry?.workspace || getWorkspace());
+      this.writeContextFile(entry, entry.currentFile, sharedMemCtx);
+      const contextFileMs = Date.now() - contextFileStartedAt;
+      // 按 Pi 模型目录归一化推理档位；不支持的 medium 优先降到 low，避免
+      // UI 显示标准但 SDK 实际沿用高延迟默认档位。
+      const requestedThinkingLevel = effort || "low";
+      const effectiveThinkingLevel = resolveThinkingLevel(entry.session?.model, requestedThinkingLevel);
+      const thinkingChanged = entry.requestedThinkingLevel !== requestedThinkingLevel || entry.effectiveThinkingLevel !== effectiveThinkingLevel;
+      if (thinkingChanged) {
+        try {
+          this.deps.piRuntimeManager.setThinkingLevel(entry.runtimeId, entry.session, effectiveThinkingLevel);
+          this.deps.piRuntimeManager.update(entry.runtimeId, { requestedThinkingLevel, thinkingLevel: effectiveThinkingLevel });
+          emitChannelSafe(entry, "thinking_level", { requested: requestedThinkingLevel, effective: effectiveThinkingLevel, model: entry.session?.model?.id || null }, {}, this.deps.emitDeps);
+        } catch {}
+      }
+      entry.requestedThinkingLevel = requestedThinkingLevel;
+      entry.effectiveThinkingLevel = effectiveThinkingLevel;
+      // 强制注入当前工作文件声明（兜底，防止 agent 不知道在改哪个文档）
+      if (entry.currentFile) {
+        const marker = `[当前工作文件: ${entry.currentFile}]\n`;
+        if (!text.includes("当前工作文件") && !text.includes(entry.currentFile)) {
+          text = marker + text;
+        }
+      }
+      // 每次对话前注入动态上下文（当前工作区绝对路径 + 记忆摘要）——直接进 prompt 文本，
+      // 不依赖 agent 主动 read .agent-context.md（agentsFiles 注入的是会话创建时的静态快照，会过时）
+      const dynamicContextStartedAt = Date.now();
+      let dynamicContextMs = 0;
+      try {
+        const dyn = this.buildDynamicContext(entry, entry.currentFile, sharedMemCtx);
+        dynamicContextMs = Date.now() - dynamicContextStartedAt;
+        if (dyn) text = dyn + "\n\n" + text;
+      } catch { dynamicContextMs = Date.now() - dynamicContextStartedAt; }
+      const consumeRecoveredAnswers = this.deps.consumeRecoveredAnswers ?? consumeRecoveredAnswersDefault;
+      const recoveredAnswers = consumeRecoveredAnswers(entry.clientId || "");
+      if (recoveredAnswers.length) {
+        text = `## 恢复的用户回答\n${recoveredAnswers.map((a: any) => `- ${a.question}: ${a.answer}`).join("\n")}\n请把这些回答视为对上次中断提问的确认，并继续原任务。\n\n${text}`;
+      }
+      if (entry.references.length) {
+        text = `## 本轮结构化引用\n${contextSummary(entry.references)}\n请使用 context_read(refId) 按需读取引用内容；若状态为 missing/deferred，应明确告诉用户。\n\n${text}`;
+      }
+      if (entry.task) text = `${taskSummary(entry.task)}\n- 当前对话边界：${modeDescription(entry.mode)}\n\n${text}`;
+      entry.promptChars += text.length;
+      // 首字延迟分项（方案 §3.5）：真正把请求交给 SDK 的时刻。
+      // 它在 runPrompt 之前，因此到首个 provider 事件之间的等待包含 SDK 准备、
+      // 网络与网关，不能整体算成 SSE 传输延迟。
+      markRunTiming(entry.activeRunId, "sdkRequestDispatchedAt");
+      // 派发阶段细分：排队等待 / 压缩检查 / 工具边界 / 上下文文件 / 动态上下文各占多少
+      attachRunTimingSpans(entry.activeRunId, {
+        queueWait: Number(entry.queueWaitMs || 0),
+        compactionCheck: Number(entry.compactionCheckMs || 0),
+        prologue: Number(entry.promptPrologueMs || 0),
+        modePolicy: Date.now() - modePolicyStartedAt,
+        modePolicyApplied,
+        contextFile: contextFileMs,
+        dynamicContext: dynamicContextMs,
+        dispatchTotal: runContext?.admissionReadyAt ? Date.now() - runContext.admissionReadyAt : undefined,
+      });
+      // 记录"本轮已派发"，供 provider 事件按 Run 幂等打点使用（见 session.subscribe）。
+      entry.sdkDispatchedRunId = entry.activeRunId;
+      entry.firstProviderEventRunId = null;
+      emitChannelSafe(entry, "model_request_started", {
+        runId: entry.activeRunId,
+        mode: entry.mode,
+        contextChars: text.length,
+      }, {}, this.deps.emitDeps);
+      const opts: any = {};
+      if (images && images.length) {
+        // pi-ai v0.83 ImageContent: { type: "image", data, mimeType }
+        opts.images = images.map((img: any) => ({
+          type: "image",
+          data: img.data,
+          mimeType: img.mediaType || "image/png",
+        }));
+      }
+      await this.deps.piRuntimeManager.runPrompt(entry.runtimeId, async () => {
+        if (isStreaming) {
+          // 打断当前回合并插入新指令（steer 在 agent 停止后生效，或中断当前工具调用）
+          opts.streamingBehavior = "steer";
+          emitChannelSafe(entry, "steer", { text: text.slice(0, 80) }, {}, this.deps.emitDeps);
+          await promptWithFirstEventTimeout(this.deps.piRuntimeManager, entry, text, opts);
+          return;
+        }
+        let transportAttempt = 0;
+        let settledReplayAttempt = 0;
+        const modelFallbackTried: string[] = [];
+        let modelFallbackAttempted = false;
+        let continuationAttempted = false;
+        while (true) {
+          try {
+            await promptWithFirstEventTimeout(this.deps.piRuntimeManager, entry, text, opts);
+            const settledError = entry.lastSettledError;
+            entry.lastSettledError = null;
+            if (settledError) {
+              const info = classifyAgentError(settledError);
+              const canReplay = info.retryable && !settledError?.noRetry && !entry.toolStarted && settledReplayAttempt < SETTLED_AGENT_RETRY_DELAYS.length;
+              if (!canReplay) throw createSettledAgentError(settledError);
+              const delayMs = SETTLED_AGENT_RETRY_DELAYS[settledReplayAttempt]!;
+              settledReplayAttempt += 1;
+              emitChannelSafe(entry, "agent_retry", {
+                message: info.message,
+                category: info.category,
+                code: info.code,
+                retryable: info.retryable,
+                attempt: settledReplayAttempt,
+                maxAttempts: SETTLED_AGENT_RETRY_DELAYS.length,
+                delayMs,
+                source: "workbench-settled",
+                willRetry: true,
+              }, {}, this.deps.emitDeps);
+              entry.lastAgentError = null;
+              entry.lastAssistantText = "";
+              entry.turnStarted = false;
+              entry.toolStarted = false;
+              entry.firstResponseReceived = false;
+              await waitForAgentRetry(delayMs);
+              continue;
+            }
+            if (settledReplayAttempt > 0) {
+              emitChannelSafe(entry, "agent_retry_end", {
+                success: true,
+                attempt: settledReplayAttempt,
+                message: "模型连接已恢复",
+                source: "workbench-settled",
+              }, {}, this.deps.emitDeps);
+            }
+            break;
+          } catch (e: any) {
+            // 竞态兜底：entry.busy=false 但 pi 内部仍在收尾（compaction/post-run），
+            // 此时 pi 的 isStreaming 仍为 true，重试走 steer 队列。
+            if (e && typeof e.message === "string" && e.message.includes("Agent is already processing")) {
+              emitChannelSafe(entry, "steer", { text: text.slice(0, 80) }, {}, this.deps.emitDeps);
+              await promptWithFirstEventTimeout(this.deps.piRuntimeManager, entry, text, { ...opts, streamingBehavior: "steer" });
+              break;
+            }
+
+            const info = classifyAgentError(e);
+            const canContinueFromPartialRun = !continuationAttempted
+              && info.retryable
+              && !entry.activeToolCount
+              && (entry.toolStarted || entry.turnStarted || Boolean(entry.lastAssistantText));
+            if (canContinueFromPartialRun) {
+              continuationAttempted = true;
+              emitChannelSafe(entry, "agent_retry", {
+                message: "模型连接中断，正在从当前会话继续",
+                attempt: 1,
+                maxAttempts: 1,
+                delayMs: 300,
+                source: "workbench-continuation",
+                willRetry: true,
+              }, {}, this.deps.emitDeps);
+              await waitForPiSessionIdle(entry);
+              entry.lastAgentError = null;
+              entry.lastSettledError = null;
+              entry.lastAssistantText = "";
+              entry.turnStarted = false;
+              entry.firstResponseReceived = false;
+              entry.lastPiEventAt = Date.now();
+              await waitForAgentRetry(300);
+              try {
+                await promptWithFirstEventTimeout(this.deps.piRuntimeManager, entry,
+                  "上一个回合的模型连接中断了。请基于当前会话中已经完成的步骤和工具结果，从中断位置继续原任务；不要重复已经成功的副作用操作，完成后给出完整结果。",
+                  {},
+                );
+                const continuationError = entry.lastSettledError;
+                entry.lastSettledError = null;
+                if (continuationError) throw createSettledAgentError(continuationError);
+                emitChannelSafe(entry, "agent_retry_end", {
+                  success: true,
+                  attempt: 1,
+                  message: "已从当前会话继续",
+                  source: "workbench-continuation",
+                }, {}, this.deps.emitDeps);
+                break;
+              } catch (continuationError: any) {
+                throw continuationError;
+              }
+            }
+            const currentSpec = entry.session?.model?.provider && entry.session?.model?.id
+              ? `${entry.session.model.provider}/${entry.session.model.id}`
+              : "";
+            const canFallbackModel = modelFallbackTried.length < MODEL_FALLBACK_LIMIT
+              && !entry.toolStarted
+              && !entry.firstResponseReceived
+              && info.retryable;
+            if (canFallbackModel) {
+              try {
+                // watchdog 会先 abort 当前 Pi 回合；等待其彻底收尾后再 setModel，
+                // 否则新的 provider 请求可能撞上旧的 isStreaming 状态。
+                if (entry.pendingAbortPromise) {
+                  await Promise.race([
+                    entry.pendingAbortPromise,
+                    waitForAgentRetry(3000),
+                  ]);
+                  entry.pendingAbortPromise = null;
+                }
+                if (currentSpec && !modelFallbackTried.includes(currentSpec)) modelFallbackTried.push(currentSpec);
+                const fallback = await this.fallbackModel(entry, modelFallbackTried);
+                if (fallback) {
+                  modelFallbackAttempted = true;
+                  entry.lastAgentError = null;
+                  entry.lastSettledError = null;
+                  entry.turnStarted = false;
+                  entry.toolStarted = false;
+                  entry.firstResponseReceived = false;
+                  emitChannelSafe(entry, "agent_model_fallback", {
+                    from: currentSpec,
+                    to: fallback,
+                    attempt: modelFallbackTried.length,
+                    message: `模型连接失败，已切换到 ${fallback}（第 ${modelFallbackTried.length} 次切换，最多 ${MODEL_FALLBACK_LIMIT} 次）`,
+                  }, {}, this.deps.emitDeps);
+                  await waitForAgentRetry(300);
+                  continue;
+                }
+              } catch (fallbackError: any) {
+                emitChannelSafe(entry, "agent_model_fallback_failed", {
+                  from: currentSpec,
+                  message: String(fallbackError?.message || fallbackError).slice(0, 300),
+                }, {}, this.deps.emitDeps);
+              }
+            }
+            const canReplay = info.retryable && !e?.noRetry && !entry.toolStarted && transportAttempt < APP_PROMPT_RETRY_DELAYS.length;
+            if (!canReplay) throw e;
+
+            const delayMs = APP_PROMPT_RETRY_DELAYS[transportAttempt]!;
+            transportAttempt += 1;
+            emitChannelSafe(entry, "agent_retry", {
+              message: info.message,
+              attempt: transportAttempt,
+              maxAttempts: APP_PROMPT_RETRY_DELAYS.length,
+              delayMs,
+              source: "workbench-transport",
+              willRetry: true,
+            }, {}, this.deps.emitDeps);
+            entry.firstResponseReceived = false;
+            await waitForAgentRetry(delayMs);
+          }
+        }
+      }, {
+        steer: isStreaming,
+        metadata: { clientId: entry.clientId, threadId: entry.threadId, runId: entry.activeRunId },
+      });
+      const settledError = entry.lastSettledError;
+      entry.lastSettledError = null;
+      if (settledError) throw createSettledAgentError(settledError);
+      // 收尾强制完成声明：本轮确实执行过工具、但没有调用 complete_task 时，追加一个
+      // 只做声明的短回合（每轮最多一次），让 Run 的完成语义可判定而不是靠推断。
+      if (!entry.pendingCompletion && entry.toolStarted && !entry.completionNudgeSent) {
+        entry.completionNudgeSent = true;
+        emitChannelSafe(entry, "completion_nudge", {
+          runId: entry.activeRunId,
+          message: "本轮工具执行已结束但未声明完成状态，已请求模型补充 complete_task",
+        }, {}, this.deps.emitDeps);
+        // 提醒回合只用于补 complete_task：不得覆盖主回合终稿，也不得产生第二份用户终稿。
+        const previousSuppressFinalText = entry.suppressFinalText;
+        entry.suppressFinalText = true;
+        try {
+          await this.deps.piRuntimeManager.runPrompt(entry.runtimeId, async () => {
+            await promptWithFirstEventTimeout(this.deps.piRuntimeManager, entry, COMPLETION_NUDGE_PROMPT, {});
+          }, { steer: false, metadata: { clientId: entry.clientId, threadId: entry.threadId, runId: entry.activeRunId, purpose: "completion_nudge" } });
+        } catch (nudgeError: any) {
+          emitChannelSafe(entry, "agent_error", {
+            runId: entry.activeRunId,
+            message: `补充完成状态失败：${String(nudgeError?.message || nudgeError).slice(0, 200)}`,
+            code: "COMPLETION_NUDGE_FAILED",
+            retryable: false,
+          }, {}, this.deps.emitDeps);
+        } finally {
+          entry.suppressFinalText = previousSuppressFinalText;
+        }
+      }
+    } finally {
+      const activeRunId = entry.activeRunId;
+      if (activeRunId) {
+        try { this.deps.emitDeps?.recordRunEvent?.(activeRunId, "runtime_health", this.deps.piRuntimeManager.health(entry.runtimeId, entry.session)); } catch {}
+      }
+      entry.busy = false;
+      entry.activeRunId = null;
+      // 排队中的模型切换在本轮结束后生效：运行中的任务始终用旧模型跑完，
+      // 结束后把用户选择的模型真正应用上，并广播一条 model_switched 供界面画分割线。
+      if (entry.pendingModelSpec) {
+        const pendingSpec = entry.pendingModelSpec;
+        entry.pendingModelSpec = "";
+        try {
+          const applied = await this.applyModelSpec(entry, pendingSpec);
+          emitChannelSafe(entry, "model_switched", {
+            from: applied.from || null,
+            to: applied.model,
+            reason: "queued",
+            effective: "now",
+          }, {}, this.deps.emitDeps);
+        } catch (error: any) {
+          emitChannelSafe(entry, "model_switched", {
+            from: null,
+            to: pendingSpec,
+            reason: "queued",
+            effective: "failed",
+            message: String(error?.message || error).slice(0, 200),
+          }, {}, this.deps.emitDeps);
+        }
+      }
+    }
   }
 
   /**

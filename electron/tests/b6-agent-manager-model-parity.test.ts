@@ -169,6 +169,12 @@ function makeWorld(opts: {
     disposeAll: async (entries: unknown[]) => { calls.disposeAll.push(entries); },
     // B6-6-4d 扩员的 seam 方法：本批场景不触达，no-op 满足 AgentPiRuntimeSeam 类型
     getContextUsage: () => null,
+    // B6-6-4e 扩员的 seam 方法：本批场景不触达，no-op 满足 AgentPiRuntimeSeam 类型
+    prompt: () => {},
+    runPrompt: async (_runtimeId: unknown, operation: () => Promise<any>) => operation(),
+    setActiveTools: () => {},
+    update: () => {},
+    setThinkingLevel: () => {},
   };
   (piRuntimeManager as any).__setModelAttempts = new Map();
   const localModelProviders = () => new Set(catalog.providers);
