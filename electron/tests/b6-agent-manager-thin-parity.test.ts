@@ -78,6 +78,15 @@ function makeWorld(opts: {
   const piRuntimeManager = {
     modelRuntime: async () => { calls.modelRuntime += 1; return opts.modelRuntime ?? { marker: "model-runtime" }; },
     dispose: (runtimeId: unknown, session: unknown) => { calls.dispose.push([runtimeId, session]); },
+    // B6-6-4b 扩员的 seam 方法：thin 批场景不触达，no-op 满足 AgentPiRuntimeSeam 类型
+    getSessionTree: () => null,
+    navigateSessionTree: async () => ({}),
+    abort: async () => {},
+    compact: async () => ({}),
+    health: () => null,
+    markRecovery: () => {},
+    listSnapshots: () => [],
+    schedulerSnapshot: () => ({}),
   };
   const getRun = (id: unknown) => {
     calls.getRun.push(id);
