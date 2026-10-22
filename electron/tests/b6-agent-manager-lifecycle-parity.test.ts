@@ -126,6 +126,11 @@ function makeWorld(opts: {
     markRecovery: (runtimeId: unknown, reason: unknown) => { calls.markRecovery.push([runtimeId, reason]); },
     listSnapshots: () => { calls.listSnapshots += 1; return opts.listSnapshots ?? [{ id: "rt1" }]; },
     schedulerSnapshot: () => opts.schedulerSnapshots ?? { queue: 0 },
+    // B6-6-4c 扩员的 seam 方法：lifecycle 批场景不触达，no-op 满足 AgentPiRuntimeSeam 类型
+    setModel: async () => {},
+    probeModel: async () => ({}),
+    resetModelRuntime: () => {},
+    disposeAll: async () => {},
   };
   const configuredModelSpec = () => { calls.configuredModel += 1; return opts.configuredModel ?? "cfg/model-a"; };
   const findSessionFileForAgent = (sessionId: unknown) => { calls.findSessionFile.push(sessionId); return "sessionFileFound" in opts ? opts.sessionFileFound : { fullPath: "/store/s-1.jsonl" }; };

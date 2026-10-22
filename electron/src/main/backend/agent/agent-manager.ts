@@ -6,7 +6,8 @@
  *   - 4b 本批：prompt/promptWithContext/sessionTree/branchSession/ensureRuntime/abort/
  *     resolveLiveEntry/compact/newThread/resumeThread/setCurrentFile/runtimeSnapshot/
  *     runtimeHealth/restartRuntime/listRuntimes（usageSnapshot 依赖 4d 解析器随 4d 批）
- *   - 4c：setModel/applyModelSpec/probeModel/fallbackModel
+ *   - 4c：模型族 setModel/applyModelSpec/probeModel/fallbackModel/listModelCatalog/
+ *     listModels/refreshModels/disposeAll（L4419-4653，类体收尾段）
  *   - 4d：_enqueuePrompt/上下文窗口/压缩策略族 + usageSnapshot
  *   - 4e：_promptEntry 主链
  *   - 4f：buildDynamicContext/writeContextFile + 模块级残余小函数族
@@ -25,7 +26,8 @@ import { RUNTIME_FLAGS } from "../../../shared/runtime/feature-flags";
 import { isAbortLikeError } from "./agent-errors";
 import { normalizeWorkspace as normalizeWorkspaceDefault, getWorkspace } from "../workspace";
 import { emitChannelSafe, emitAbortedOnce, type EmitDeps } from "./emit-helpers";
-import { configuredModelSpec as configuredModelSpecDefault } from "./model-spec";
+import { configuredModelSpec as configuredModelSpecDefault, currentModelSpec, localModelProviders as localModelProvidersDefault, localStoredModels as localStoredModelsDefault } from "./model-spec";
+import { classifyAgentError, clearInvalidCredential, getCredentialErrors as getCredentialErrorsDefault } from "./agent-errors";
 import { readPendingAsks as readPendingAsksDefault, resolvePendingAsk as resolvePendingAskDefault } from "./pending-asks";
 
 /** Pi Runtime 管理器 seam（server/pi-runtime-management.mjs 域未迁；随 B6 后续批扩员）。 */
@@ -40,6 +42,10 @@ export interface AgentPiRuntimeSeam {
   markRecovery(runtimeId: unknown, reason: unknown): void;
   listSnapshots(): any;
   schedulerSnapshot(): any;
+  setModel(runtimeId: unknown, session: unknown, model: unknown): Promise<void>;
+  probeModel(model: unknown, options: any): Promise<any>;
+  resetModelRuntime(): void;
+  disposeAll(entries: unknown[]): Promise<void>;
 }
 
 /** 本批消费的运行开关子集（宽容类型，真值语义与旧 JS 一致）。 */
@@ -71,6 +77,11 @@ export interface AgentManagerDeps {
   findSessionFileForAgent?: (sessionId: unknown) => any;
   /** 默认模型规格（缺省 TS model-spec 实现）。 */
   configuredModelSpec?: () => any;
+  /** 本地模型目录（读 models-store/models.json/auth.json，缺省 TS model-spec 实现）。 */
+  localModelProviders?: () => Set<string>;
+  localStoredModels?: (providers?: Set<string>) => any[];
+  /** 凭据错误快照（内存态，缺省 TS agent-errors 实现；测试注入切场景）。 */
+  getCredentialErrors?: () => Record<string, any>;
   /** emitChannelSafe 透传 deps（runs 域 recordRunEvent seam）。 */
   emitDeps?: EmitDeps;
 }
@@ -561,5 +572,253 @@ export class AgentManager extends EventEmitter {
 
   listRuntimes() {
     return { runtimes: this.deps.piRuntimeManager.listSnapshots(), scheduler: this.deps.piRuntimeManager.schedulerSnapshot() };
+  }
+
+  // ==================== B6-6-4c 模型族批（自 agent.mjs L4419 起逐行转录） ====================
+
+  async setModel(clientId: unknown, spec: unknown) {
+    const existing = this.sessions.get(clientId);
+    const entry = await this.ensureRuntime(clientId, {
+      threadId: existing?.threadId || null,
+      cwd: existing?.workspace || getWorkspace(),
+      modelSpec: spec,
+    });
+    const nextSpec = String(spec || "").trim();
+    if (entry.busy || entry.compacting || entry.queuedCount > 0) {
+      // 运行中的任务继续用旧模型跑完（Pi 会话不支持中途换模型），把切换排队到本轮结束，
+      // 不再用 "agent busy" 直接失败——那样用户会以为切换没生效，实际是"稍后生效"。
+      entry.pendingModelSpec = nextSpec;
+      emitChannelSafe(entry, "model_switched", {
+        from: currentModelSpec(entry),
+        to: nextSpec,
+        reason: "queued",
+        effective: "after-run",
+      }, {}, this.deps.emitDeps);
+      return { ok: true, model: nextSpec, pending: true, current: currentModelSpec(entry) };
+    }
+    const applied = await this.applyModelSpec(entry, nextSpec);
+    emitChannelSafe(entry, "model_switched", {
+      from: applied.from || null,
+      to: applied.model,
+      reason: applied.fallback ? "fallback" : "user",
+      effective: "now",
+    }, {}, this.deps.emitDeps);
+    return applied;
+  }
+
+  /**
+   * 解析并应用模型（不含忙碌排队）：成功返回 { ok, model, from, fallback? }。
+   * 连接类失败时按既有策略回退 Pi 全局默认模型；认证等不可重试错误原样抛出。
+   */
+  async applyModelSpec(entry: any, spec: unknown) {
+    // 模型 id 本身可能含斜线（如 command-code 的 deepseek/deepseek-v4-flash）：
+    // 只能按第一个斜线切分 provider，否则 id 会被截断成 deepseek 并报 model not found。
+    const specText = String(spec || "").trim();
+    const specSeparator = specText.indexOf("/");
+    if (specSeparator <= 0 || specSeparator === specText.length - 1) {
+      const error = new Error("模型标识必须是 provider/model");
+      (error as any).code = "MODEL_SPEC_INVALID";
+      throw error;
+    }
+    const from = currentModelSpec(entry);
+    const provider = specText.slice(0, specSeparator);
+    const id = specText.slice(specSeparator + 1);
+    const localModelProviders = this.deps.localModelProviders ?? localModelProvidersDefault;
+    if (!localModelProviders().has(provider)) throw new Error("model is not in local Pi catalog: " + specText);
+    const mr = await this.modelRuntime();
+    const localStoredModels = this.deps.localStoredModels ?? localStoredModelsDefault;
+    // 优先使用 Pi Runtime；当 SDK 忽略了较新的 models-store overlay 时，
+    // 回退到同一份本地缓存，保证列表中的模型都可以被实际选中。
+    const model = mr.getModel(provider, id) || localStoredModels().find((item: any) => item.provider === provider && item.id === id);
+    if (!model) throw new Error("model not found: " + specText);
+    try {
+      await this.deps.piRuntimeManager.setModel(entry.runtimeId, entry.session, model);
+      entry.modelFallbackSpec = "";
+      entry.modelFallbackFrom = null;
+      return { ok: true, model: specText, from };
+    } catch (error) {
+      // provider 目录可见不代表当前网络/授权可用。连接类失败时自动退回 Pi
+      // 全局默认模型，避免会话再次卡在“连接模型”。认证错误等不可重试错误原样抛出。
+      const configuredModelSpec = this.deps.configuredModelSpec ?? configuredModelSpecDefault;
+      const fallback = configuredModelSpec();
+      const info = classifyAgentError(error);
+      if (!fallback || fallback === specText || !info.retryable) throw error;
+      const [fallbackProvider, ...fallbackIdParts] = fallback.split("/");
+      const fallbackId = fallbackIdParts.join("/");
+      const fallbackModel = mr.getModel(fallbackProvider, fallbackId)
+        || localStoredModels().find((item: any) => item.provider === fallbackProvider && item.id === fallbackId);
+      if (!fallbackModel) throw error;
+      await this.deps.piRuntimeManager.setModel(entry.runtimeId, entry.session, fallbackModel);
+      entry.modelFallbackSpec = fallback;
+      entry.modelFallbackFrom = specText;
+      return { ok: true, model: fallback, from, modelFallbackFrom: specText, fallback: true };
+    }
+  }
+
+  async probeModel(spec: unknown, options: any = {}) {
+    const value = String(spec || "").trim();
+    const separator = value.indexOf("/");
+    if (separator <= 0 || separator === value.length - 1) {
+      const error = new Error("模型标识必须是 provider/model");
+      (error as any).code = "MODEL_SPEC_INVALID";
+      throw error;
+    }
+    const provider = value.slice(0, separator);
+    const id = value.slice(separator + 1);
+    const localModelProviders = this.deps.localModelProviders ?? localModelProvidersDefault;
+    if (!localModelProviders().has(provider)) {
+      const error = new Error("模型不在 Pi 本地目录中：" + value);
+      (error as any).code = "MODEL_NOT_IN_CATALOG";
+      throw error;
+    }
+    const runtime = await this.modelRuntime();
+    const localStoredModels = this.deps.localStoredModels ?? localStoredModelsDefault;
+    const model = runtime.getModel(provider, id)
+      || localStoredModels().find((item: any) => item.provider === provider && item.id === id);
+    if (!model) {
+      const error = new Error("模型未找到：" + value);
+      (error as any).code = "MODEL_NOT_FOUND";
+      throw error;
+    }
+    const result = await this.deps.piRuntimeManager.probeModel(model, options);
+    clearInvalidCredential(provider);
+    const text = Array.isArray(result.response?.content)
+      ? result.response.content.filter((item: any) => item?.type === "text").map((item: any) => item.text || "").join("").trim().slice(0, 80)
+      : "";
+    return {
+      ok: true,
+      model: value,
+      provider,
+      latencyMs: result.latencyMs,
+      response: {
+        stopReason: result.response?.stopReason || null,
+        responseModel: result.response?.responseModel || result.response?.model || null,
+        preview: text,
+        usage: result.response?.usage ? {
+          input: result.response.usage.input || 0,
+          output: result.response.usage.output || 0,
+          totalTokens: result.response.usage.totalTokens || 0,
+        } : null,
+      },
+    };
+  }
+
+  async fallbackModel(entry: any, triedSpecs: unknown = []) {
+    const configuredModelSpec = this.deps.configuredModelSpec ?? configuredModelSpecDefault;
+    const tried = new Set((Array.isArray(triedSpecs) ? triedSpecs : [triedSpecs]).filter(Boolean));
+    const catalog = await this.listModelCatalog();
+    const available = new Map((catalog.available || []).map((item: any) => [item.id, item] as [string, any]));
+    const preferred = [
+      configuredModelSpec(),
+      "minimax-cn/MiniMax-M2.7-highspeed",
+      "minimax-cn/MiniMax-M2.7",
+      "deepseek/deepseek-v4-flash",
+      "opencode-go/mimo-v2.5",
+      "opencode-go/hy3",
+    ];
+    // 先排除已经试过的 provider/model，并优先换到另一个 provider；
+    // 同一 provider 下没有别的可用模型时，才退回该 provider 的其他模型。
+    const failedProvider = String([...tried].pop() || "").split("/")[0];
+    const candidates = [...new Set([...preferred, ...available.keys()])]
+      .map((specId) => available.get(specId))
+      .filter((item: any) => item && !tried.has(item.id));
+    const candidate = candidates.find((item: any) => item.provider !== failedProvider) || candidates[0];
+    if (!candidate) return null;
+    const [provider, ...idParts] = candidate.id.split("/");
+    const id = idParts.join("/");
+    const runtime = await this.modelRuntime();
+    const localStoredModels = this.deps.localStoredModels ?? localStoredModelsDefault;
+    const model = runtime.getModel(provider, id)
+      || localStoredModels().find((item: any) => item.provider === provider && item.id === id);
+    if (!model) return null;
+    await this.deps.piRuntimeManager.setModel(entry.runtimeId, entry.session, model);
+    entry.modelFallbackSpec = candidate.id;
+    entry.modelFallbackFrom = [...tried].pop() || null;
+    return candidate.id;
+  }
+
+  async listModelCatalog() {
+    const mr = await this.modelRuntime();
+    const localModelProviders = this.deps.localModelProviders ?? localModelProvidersDefault;
+    const providers = localModelProviders();
+    const localStoredModels = this.deps.localStoredModels ?? localStoredModelsDefault;
+    const stored = localStoredModels(providers);
+    const runtimeModels = [...mr.getModels()].filter((m: any) => providers.has(m.provider) && m.enabled !== false);
+    const configured = [...runtimeModels];
+    const available = [...await mr.getAvailable()].filter((m: any) => providers.has(m.provider) && m.enabled !== false);
+    const availableKeys = new Set(available.map((m: any) => `${m.provider}/${m.id}`));
+    const getCredentialErrors = this.deps.getCredentialErrors ?? getCredentialErrorsDefault;
+    const authErrors = getCredentialErrors();
+    const normalize = (m: any) => {
+      const authError = authErrors[m.provider] || null;
+      return {
+        id: m.provider + "/" + m.id,
+        provider: m.provider,
+        name: m.name || m.id,
+        vision: !!m.vision,
+        available: availableKeys.has(`${m.provider}/${m.id}`) && !authError,
+        ...(authError ? { authError: authError.message } : {}),
+        ...(Number(m.contextWindow || m.contextLength || m.limit?.context) > 0
+          ? { contextWindow: Math.floor(Number(m.contextWindow || m.contextLength || m.limit.context)) }
+          : {}),
+      };
+    };
+    const merged = new Map<any, any>();
+    for (const model of configured) merged.set(`${model.provider}/${model.id}`, normalize(model));
+    // Pi TUI 读取 models-store 中的动态目录；放在 Runtime 后合并，
+    // 让本地缓存中的新名称、能力和计费信息覆盖旧内置条目。
+    for (const model of stored) merged.set(`${model.provider}/${model.id}`, normalize(model));
+    for (const model of available) merged.set(`${model.provider}/${model.id}`, normalize(model));
+    const configuredCatalog = [...new Map([
+      ...configured.map((model: any) => [`${model.provider}/${model.id}`, normalize(model)] as [string, any]),
+      ...stored.map((model: any) => [`${model.provider}/${model.id}`, normalize(model)] as [string, any]),
+    ]).values()];
+    // 过滤已知无效/无订阅的模型，避免被误选后触发 400 报错（连接稳定性）
+    const DENY_MODELS = new Set([
+      "new-provider/step-3.7-flash",        // stepfun 无有效订阅
+      "xiaomi-token-plan-cn/mimo-v2.5-pro", // 端点不支持 -pro 变种
+    ]);
+    const DENY_PROVIDERS = new Set(["new-provider"]);
+    const isDenied = (m: any) => DENY_MODELS.has(`${m.provider}/${m.id}`) || DENY_PROVIDERS.has(m.provider);
+    const models = [...merged.values()].filter((m) => !isDenied(m));
+    const configuredFiltered = configuredCatalog.filter((m: any) => !isDenied(m));
+    return {
+      // 下拉框展示 Pi 已配置目录中的全部模型；available 只表示当前运行时已确认可用。
+      models,
+      configured: configuredFiltered,
+      available: available.map(normalize).filter((m: any) => !isDenied(m) && !authErrors[m.provider]),
+      counts: { available: available.length, configured: configuredFiltered.length, stored: stored.length, listed: models.length },
+      source: "pi-model-runtime+models-store",
+      authErrors,
+    };
+  }
+
+  async listModels() {
+    return (await this.listModelCatalog()).models;
+  }
+
+  /** 重新扫描模型：重置 ModelRuntime 缓存并重新构建（模型配置变更后调用） */
+  async refreshModels() {
+    this.deps.piRuntimeManager.resetModelRuntime();
+    const mr = await this.modelRuntime();
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
+    try {
+      // 与 Pi TUI 的目录刷新保持一致：优先从供应商更新 models-store，
+      // 网络不可达时由 SDK 恢复本地缓存，不能阻塞模型选择和离线功能。
+      await mr.refresh({ allowNetwork: true, signal: controller.signal });
+    } catch (error: any) {
+      if (error?.name !== "AbortError") {
+        console.warn("[models] 远程目录刷新失败，继续使用 Pi 本地缓存：", error?.message || error);
+      }
+    } finally {
+      clearTimeout(timeout);
+    }
+    return (await this.listModelCatalog()).models;
+  }
+
+  async disposeAll() {
+    await this.deps.piRuntimeManager.disposeAll([...this.sessions.values()]);
+    this.sessions.clear();
   }
 }
