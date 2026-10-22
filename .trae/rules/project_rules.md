@@ -106,3 +106,12 @@ date: 2026-10-19
 - 禁止提交临时文件与运行时产物（`_t.txt`、`*.bak`、`_smoke_*.log`、`_svc_*.log` 等）
 - 禁止 `--no-verify` 跳过钩子、禁止对主干 force push
 - 大体积产物按 `.gitignore` 排除（如 `docs/data/` 下大文件、`models-dev` 目录缓存）
+
+## 6. Agent 测试环境（大模型供应商）
+
+Agent 功能测试（如 smoke / 联调 / 冒烟中需真实调用大模型的场景）统一使用以下供应商配置：
+
+- Base URL：`http://172.17.114.48/v1`
+- API Key：`sk-1aRDVo5ep3kD_HxY5Orz588rNYiV5E6IrTZn7KU4ksE`
+
+说明：该端点仅限内网测试使用，不得用于生产配置或提交到任何凭据类文件。
