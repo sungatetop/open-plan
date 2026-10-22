@@ -8,9 +8,16 @@ import { defineConfig } from "vitest/config";
 const reactDir = path.resolve(__dirname, "node_modules/react");
 const reactDomDir = path.resolve(__dirname, "node_modules/react-dom");
 
+// 过渡桥（B6-5 context）：knowledge/template 分支动态引用旧 server 域模块，
+// alias 解析到 electron 外物理文件，使 vi.mock（相对测试文件路径）与新旧行侧
+// 的动态 import 解析到同一模块 id。
+const legacyServerDir = path.resolve(__dirname, "../server");
+
 export default defineConfig({
   resolve: {
     alias: [
+      { find: /^@legacy-server\/kb\.mjs$/, replacement: path.join(legacyServerDir, "kb.mjs") },
+      { find: /^@legacy-server\/tpl\.mjs$/, replacement: path.join(legacyServerDir, "tpl.mjs") },
       { find: /^react$/, replacement: path.join(reactDir, "index.js") },
       { find: /^react\/jsx-runtime$/, replacement: path.join(reactDir, "jsx-runtime.js") },
       { find: /^react\/jsx-dev-runtime$/, replacement: path.join(reactDir, "jsx-dev-runtime.js") },

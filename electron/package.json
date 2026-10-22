@@ -39,6 +39,7 @@
     "remark-gfm": "^4.0.1",
     "remark-math": "^6.0.0",
     "remark-toc": "^9.0.0",
-    "undici": "8.10.2"
+    "undici": "8.10.2",
+    "xlsx": "^0.18.5"
   }
 }

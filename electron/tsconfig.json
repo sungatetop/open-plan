@@ -17,7 +17,11 @@
     "isolatedModules": true,
     "allowJs": true,
     "checkJs": false,
-    "noEmit": true
+    "noEmit": true,
+    "baseUrl": ".",
+    "paths": {
+      "@legacy-server/*": ["../server/*"]
+    }
   },
   "include": ["src", "tests", "electron.vite.config.ts"]
 }
