@@ -3,12 +3,13 @@
  *
  * 拆批口径（绞杀者逐小批，类体逐批生长，agent.mjs 保持不动）：
  *   - 4a 已收口：L843-1018 薄方法（构造/看门狗/状态快照/ask_user 应答/记忆族/getOrCreate 单飞）
- *   - 4b 本批：prompt/promptWithContext/sessionTree/branchSession/ensureRuntime/abort/
+ *   - 4b 已收口：prompt/promptWithContext/sessionTree/branchSession/ensureRuntime/abort/
  *     resolveLiveEntry/compact/newThread/resumeThread/setCurrentFile/runtimeSnapshot/
- *     runtimeHealth/restartRuntime/listRuntimes（usageSnapshot 依赖 4d 解析器随 4d 批）
- *   - 4c：模型族 setModel/applyModelSpec/probeModel/fallbackModel/listModelCatalog/
+ *     runtimeHealth/restartRuntime/listRuntimes
+ *   - 4c 已收口：模型族 setModel/applyModelSpec/probeModel/fallbackModel/listModelCatalog/
  *     listModels/refreshModels/disposeAll（L4419-4653，类体收尾段）
- *   - 4d：_enqueuePrompt/上下文窗口/压缩策略族 + usageSnapshot
+ *   - 4d 本批：_enqueuePrompt/上下文窗口解析/压缩策略/_maybeCompact 队列压缩族
+ *     （L3578-3715）+ usageSnapshot（L4370-4401）
  *   - 4e：_promptEntry 主链
  *   - 4f：buildDynamicContext/writeContextFile + 模块级残余小函数族
  *   - 4g：_create 中段工具定义工厂（managedBash/内置工具族）
@@ -17,18 +18,20 @@
  *
  * 依赖口径：已迁 TS 模块直接 import（normalizeWorkspace/getWorkspace/readPendingAsks/
  * resolvePendingAsk/emitChannelSafe/emitAbortedOnce/isAbortLikeError/configuredModelSpec/
- * RUNTIME_FLAGS）；未迁域以 seam 注入（piRuntimeManager/getRun/memory-management 六函数/
- * findSessionFileForAgent），接线时由 B2 装配传入真实实现。constructor 增收 deps 参数是
- * 唯一的结构性偏差（旧 JS 无参构造），行为不变。
+ * AUTO_COMPACT_PROMPT_CHARS/turnBudgetPolicy/RUNTIME_FLAGS）；未迁域以 seam 注入
+ * （piRuntimeManager 含 getContextUsage/getRun/memory-management 六函数/findSessionFileForAgent/
+ * contextTokensFromUsage/piCompactionPolicy），接线时由 B2 装配传入真实实现。
+ * constructor 增收 deps 参数是唯一的结构性偏差（旧 JS 无参构造），行为不变。
  */
 import { EventEmitter } from "node:events";
 import { RUNTIME_FLAGS } from "../../../shared/runtime/feature-flags";
-import { isAbortLikeError } from "./agent-errors";
+import { isAbortLikeError, AUTO_COMPACT_PROMPT_CHARS } from "./agent-errors";
 import { normalizeWorkspace as normalizeWorkspaceDefault, getWorkspace } from "../workspace";
 import { emitChannelSafe, emitAbortedOnce, type EmitDeps } from "./emit-helpers";
 import { configuredModelSpec as configuredModelSpecDefault, currentModelSpec, localModelProviders as localModelProvidersDefault, localStoredModels as localStoredModelsDefault } from "./model-spec";
 import { classifyAgentError, clearInvalidCredential, getCredentialErrors as getCredentialErrorsDefault } from "./agent-errors";
 import { readPendingAsks as readPendingAsksDefault, resolvePendingAsk as resolvePendingAskDefault } from "./pending-asks";
+import { turnBudgetPolicy } from "../../../shared/runtime/turn-budget";
 
 /** Pi Runtime 管理器 seam（server/pi-runtime-management.mjs 域未迁；随 B6 后续批扩员）。 */
 export interface AgentPiRuntimeSeam {
@@ -46,6 +49,8 @@ export interface AgentPiRuntimeSeam {
   probeModel(model: unknown, options: any): Promise<any>;
   resetModelRuntime(): void;
   disposeAll(entries: unknown[]): Promise<void>;
+  /** Pi SDK 精确上下文用量（同步快照；_maybeCompact U1 路径入口）。 */
+  getContextUsage(runtimeId: unknown, session: unknown): any;
 }
 
 /** 本批消费的运行开关子集（宽容类型，真值语义与旧 JS 一致）。 */
@@ -82,9 +87,26 @@ export interface AgentManagerDeps {
   localStoredModels?: (providers?: Set<string>) => any[];
   /** 凭据错误快照（内存态，缺省 TS agent-errors 实现；测试注入切场景）。 */
   getCredentialErrors?: () => Record<string, any>;
+  /** Pi 压缩策略常量（pi-runtime-management.mjs PI_COMPACTION_POLICY；缺省同值冻结副本，B2 装配绑定原对象）。 */
+  piCompactionPolicy?: { reserveTokens: number; keepRecentTokens: number };
+  /** Pi usage → 上下文 token 纯函数（pi 域未迁，无 TS 缺省实现；装配层绑定 pi-runtime-management 同名导出）。 */
+  contextTokensFromUsage: (usage: unknown) => number | null;
   /** emitChannelSafe 透传 deps（runs 域 recordRunEvent seam）。 */
   emitDeps?: EmitDeps;
 }
+
+// ==================== 队列压缩族常量（自 agent.mjs L425-430 逐值转录） ====================
+/** 未知模型自动压缩输入 token 阈值（U1 前旧基线）。 */
+export const UNKNOWN_MODEL_AUTO_COMPACT_INPUT_TOKENS = 26000;
+/** Pi 压缩策略缺省副本（pi-runtime-management.mjs L37 PI_COMPACTION_POLICY 冻结常量同值；pi 域迁移后收敛为单一事实源）。 */
+export const PI_COMPACTION_POLICY_DEFAULT: Readonly<{ reserveTokens: number; keepRecentTokens: number }> =
+  Object.freeze({ reserveTokens: 16384, keepRecentTokens: 20000 });
+/** 自动压缩冷却窗口：压缩成功后 10s 内不重复触发。 */
+export const AUTO_COMPACT_COOLDOWN_MS = 10000;
+/** 未知模型兜底上下文窗口（known=false 时不代表模型真实能力）。 */
+export const DEFAULT_CONTEXT_WINDOW = 1_000_000;
+/** 字符→token 保守估算系数。 */
+export const ESTIMATED_TOKENS_PER_CHAR = 3.5;
 
 /** Per-client agent sessions. Emits events to SSE subscribers. */
 export class AgentManager extends EventEmitter {
@@ -291,11 +313,189 @@ export class AgentManager extends EventEmitter {
     throw new Error("B6-6-4i 未收口：_create 尚未迁移");
   }
 
+  // ==================== B6-6-4d 队列压缩批（自 agent.mjs L3578-3715 + L4370-4401 逐行转录） ====================
+
+  _enqueuePrompt(entry: any, payload: any): any {
+    const wasOccupied = entry.busy || entry.compacting || entry.queuedCount > 0;
+    if (wasOccupied) {
+      const position = entry.queuedCount + 1;
+      emitChannelSafe(entry, "agent_queued", {
+        runId: payload.runContext?.runId || null,
+        position,
+        queued: entry.queuedCount,
+      });
+    }
+    entry.queuedCount += 1;
+    const queuedAt = Date.now();
+    const operation = entry.promptChain.then(async () => {
+      entry.queuedCount = Math.max(0, entry.queuedCount - 1);
+      // 排队等待时长：上一轮还没收尾（或正在压缩）时，这段时间会直接叠加到本轮首字延迟上。
+      entry.queueWaitMs = Date.now() - queuedAt;
+      // 手动压缩不在 promptChain 内执行；新消息必须等它完成后再进入 Runtime。
+      if (entry.compactionPromise) await entry.compactionPromise.catch(() => {});
+      const compactionStartedAt = Date.now();
+      await this._maybeCompact(entry, payload.runContext);
+      entry.compactionCheckMs = Date.now() - compactionStartedAt;
+      return this._promptEntry(entry, payload.text, payload.images, payload.effort, payload.references, payload.runContext);
+    });
+    // 保留链路继续执行，同时不让前一个失败阻断后续排队请求。
+    entry.promptChain = operation.catch(() => {});
+    return operation;
+  }
+
   /**
-   * 入队主流程（agent.mjs L3578-3609）由 B6-6-4d 批接管；占位同 _create 口径。
+   * 解析当前模型的实际上下文窗口。
+   * known=false 时不能把默认值当成模型真实能力，只能启用未知模型兜底。
    */
-  _enqueuePrompt(_entry: any, _payload: any): any {
-    throw new Error("B6-6-4d 未收口：_enqueuePrompt 尚未迁移");
+  resolveEntryContextWindowInfo(entry: any) {
+    const fromSession = Number(entry?.session?.model?.contextWindow || entry?.session?.model?.contextLength || 0);
+    if (fromSession > 0) return { contextWindow: fromSession, known: true, source: "session_model" };
+    const modelId = String(entry?.session?.model?.id || "").trim();
+    if (modelId) {
+      const localStoredModels = this.deps.localStoredModels ?? localStoredModelsDefault;
+      const match = localStoredModels().find((item: any) => String(item?.id) === modelId || String(item?.id).split("/").pop() === modelId);
+      const fromCatalog = Number(match?.contextWindow || match?.contextLength || 0);
+      if (fromCatalog > 0) return { contextWindow: fromCatalog, known: true, source: "model_catalog" };
+    }
+    return { contextWindow: DEFAULT_CONTEXT_WINDOW, known: false, source: "default_fallback" };
+  }
+
+  resolveEntryContextWindow(entry: any) {
+    return this.resolveEntryContextWindowInfo(entry).contextWindow;
+  }
+
+  resolveCompactionPolicy(entry: any) {
+    const piCompactionPolicy = this.deps.piCompactionPolicy ?? PI_COMPACTION_POLICY_DEFAULT;
+    const windowInfo = this.resolveEntryContextWindowInfo(entry);
+    const piAutoCompactionEnabled = entry?.session?.autoCompactionEnabled !== false;
+    if (windowInfo.known && piAutoCompactionEnabled) {
+      return {
+        mode: "pi-native",
+        source: "pi-sdk",
+        enabled: true,
+        contextWindow: windowInfo.contextWindow,
+        threshold: Math.max(0, windowInfo.contextWindow - piCompactionPolicy.reserveTokens),
+        reserveTokens: piCompactionPolicy.reserveTokens,
+      };
+    }
+    if (!piAutoCompactionEnabled) {
+      return {
+        mode: "manual",
+        source: "disabled",
+        enabled: false,
+        contextWindow: windowInfo.contextWindow,
+        threshold: null,
+        reserveTokens: null,
+      };
+    }
+    return {
+      mode: "app-fallback",
+      source: windowInfo.source,
+      enabled: true,
+      contextWindow: windowInfo.contextWindow,
+      threshold: UNKNOWN_MODEL_AUTO_COMPACT_INPUT_TOKENS,
+      reserveTokens: null,
+    };
+  }
+
+  async _maybeCompact(entry: any, runContext: any = null) {
+    if (entry.compacting || !entry.promptChars) return;
+    if (entry.lastCompactionAt && Date.now() - entry.lastCompactionAt < AUTO_COMPACT_COOLDOWN_MS) return;
+    const contextTokensFromUsage = this.deps.contextTokensFromUsage;
+    const windowInfo = this.resolveEntryContextWindowInfo(entry);
+    // 已知模型交给 Pi SDK：它会在安全的回合边界按 contextWindow 自动压缩，
+    // 并在真正溢出时负责恢复/重试。工作台不能再用固定 2.6 万 token 抢先压缩。
+    if (windowInfo.known && entry?.session?.autoCompactionEnabled !== false) return;
+    // 用户显式关闭 Pi 自动压缩时，不用工作台偷偷改回自动模式。
+    if (entry?.session?.autoCompactionEnabled === false) return;
+    // U1：优先用 Pi SDK 精确上下文用量（getContextUsage + calculateContextTokens），
+    // 取不到时回落到既有 usage 观测/字符估算（历史 fallback 行为保持不变）。
+    const preciseUsage = this.deps.piRuntimeManager.getContextUsage(entry.runtimeId, entry.session);
+    const preciseContextTokens = contextTokensFromUsage(preciseUsage?.usage ?? preciseUsage);
+    const inputTokens = Number(entry.lastUsage?.inputTokens ?? entry.lastUsage?.input ?? 0);
+    const cacheReadTokens = Number(entry.lastUsage?.cacheReadTokens ?? entry.lastUsage?.cacheRead ?? entry.lastUsage?.cache_read ?? 0);
+    const cacheWriteTokens = Number(entry.lastUsage?.cacheWriteTokens ?? entry.lastUsage?.cacheWrite ?? entry.lastUsage?.cache_write ?? 0);
+    // Pi 的 usage.input 只包含未命中缓存的 token；长会话的大部分上下文会
+    // 出现在 cacheRead 中。只看 input 会让 4 万 token 的会话误判为很短。
+    const observedContextTokens = preciseContextTokens ?? (inputTokens + cacheReadTokens + cacheWriteTokens);
+    // usage 可能只覆盖最近一次请求，服务重启后甚至暂时没有 usage；用累计
+    // prompt 字符数作保守下限，避免把恢复后的长 JSONL 会话误判为空。
+    const estimatedContextTokens = Math.ceil(Number(entry.promptChars || 0) / ESTIMATED_TOKENS_PER_CHAR);
+    const estimatedFallbackThreshold = Math.min(
+      UNKNOWN_MODEL_AUTO_COMPACT_INPUT_TOKENS,
+      Math.ceil(AUTO_COMPACT_PROMPT_CHARS / ESTIMATED_TOKENS_PER_CHAR),
+    );
+    const shouldCompact = observedContextTokens >= estimatedFallbackThreshold || estimatedContextTokens >= estimatedFallbackThreshold;
+    if (!shouldCompact) return;
+    entry.compacting = true;
+    entry.autoCompacting = true;
+    entry.compactionKind = "automatic";
+    const runId = runContext?.runId || entry.activeRunId || null;
+    entry.compactionRunId = runId;
+    let compacted = false;
+    try {
+      const compactPromise = this.deps.piRuntimeManager.compact(entry.runtimeId, entry.session, "保留当前项目事实、用户偏好、已完成产物路径、未完成任务和下一步；删除重复的工具输出与旧过程细节。");
+      entry.compactionPromise = compactPromise;
+      await compactPromise;
+      compacted = true;
+      // 不依赖某个 Pi 版本是否发出 compaction_end；成功的 Promise 本身就是
+      // 本地计数器的权威边界，防止下一轮再次按旧预算触发压缩。
+      entry.promptChars = 0;
+      entry.lastUsage = null;
+    } catch (error: any) {
+      // 自动压缩失败不阻断任务；下一轮仍会保留预算告警并可手动压缩。
+      emitChannelSafe(entry, "context_compact_warning", { runId, message: String(error?.message || error).slice(0, 300) });
+      // U6：压缩失败显式落盘（compaction_failed），跨会话回放可审计，不再只靠瞬时 warning。
+      emitChannelSafe(entry, "compaction_failed", { runId, reason: "automatic", aborted: false, errorMessage: String(error?.message || error).slice(0, 300) });
+    } finally {
+      if (compacted) entry.lastCompactionAt = Date.now();
+      entry.compactionPromise = null;
+      entry.compactionRunId = null;
+      entry.compactionKind = null;
+      entry.autoCompacting = false;
+      entry.compacting = false;
+    }
+  }
+
+  usageSnapshot(clientId: unknown) {
+    const entry = this.sessions.get(clientId);
+    if (!entry) return null;
+    const usage = entry.lastUsage ? { ...entry.lastUsage } : null;
+    const contextChars = Number(entry.promptChars || 0);
+    const usageContextBase = usage ? Number(usage.contextTokens ?? usage.context ?? 0) : 0;
+    const usageContextTokens = usageContextBase > 0
+      ? usageContextBase
+      : usage
+        ? Number(usage.inputTokens ?? usage.input ?? 0)
+          + Number(usage.cacheReadTokens ?? usage.cacheRead ?? usage.cache_read ?? 0)
+          + Number(usage.cacheWriteTokens ?? usage.cacheWrite ?? usage.cache_write ?? 0)
+        : 0;
+    const estimatedContextTokens = Math.ceil(contextChars / ESTIMATED_TOKENS_PER_CHAR);
+    const contextWindow = this.resolveEntryContextWindow(entry);
+    const compactionPolicy = this.resolveCompactionPolicy(entry);
+    const piCompactionPolicy = this.deps.piCompactionPolicy ?? PI_COMPACTION_POLICY_DEFAULT;
+    return {
+      usage,
+      contextChars,
+      estimatedContextTokens,
+      contextTokens: Math.max(usageContextTokens, estimatedContextTokens),
+      contextWindow,
+      compactThreshold: compactionPolicy.threshold,
+      compactThresholdSource: compactionPolicy.source,
+      compactionMode: compactionPolicy.mode,
+      compactionEnabled: compactionPolicy.enabled,
+      compactionReserveTokens: compactionPolicy.reserveTokens,
+      compactionKeepRecentTokens: compactionPolicy.mode === "pi-native" ? piCompactionPolicy.keepRecentTokens : null,
+      // 轮次预算策略（进度播报间隔 + 25/45 关键点），设置页/诊断可直接读取
+      turnBudget: turnBudgetPolicy(),
+    };
+  }
+
+  /**
+   * Prompt 主链（agent.mjs L3717-4150）由 B6-6-4e 批接管；占位同 _create 口径。
+   */
+  _promptEntry(_entry: any, _text?: unknown, _images?: any[], _effort?: unknown, _references?: unknown[], _runContext?: unknown): any {
+    throw new Error("B6-6-4e 未收口：_promptEntry 尚未迁移");
   }
 
   /**

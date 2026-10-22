@@ -91,6 +91,8 @@ function makeWorld(opts: {
     probeModel: async () => ({}),
     resetModelRuntime: () => {},
     disposeAll: async () => {},
+    // B6-6-4d 扩员的 seam 方法：本批场景不触达，no-op 满足 AgentPiRuntimeSeam 类型
+    getContextUsage: () => null,
   };
   const getRun = (id: unknown) => {
     calls.getRun.push(id);
@@ -120,6 +122,8 @@ function makeWorld(opts: {
     normalizeWorkspace: normalize,
     readPendingAsks,
     resolvePendingAsk,
+    // B6-6-4d 必填 deps：本批场景不触达，恒 null stub
+    contextTokensFromUsage: () => null,
     emitDeps,
   };
   return { deps, calls, emitDeps, normalize };

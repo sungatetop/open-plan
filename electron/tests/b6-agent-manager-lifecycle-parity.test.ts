@@ -126,11 +126,12 @@ function makeWorld(opts: {
     markRecovery: (runtimeId: unknown, reason: unknown) => { calls.markRecovery.push([runtimeId, reason]); },
     listSnapshots: () => { calls.listSnapshots += 1; return opts.listSnapshots ?? [{ id: "rt1" }]; },
     schedulerSnapshot: () => opts.schedulerSnapshots ?? { queue: 0 },
-    // B6-6-4c 扩员的 seam 方法：lifecycle 批场景不触达，no-op 满足 AgentPiRuntimeSeam 类型
+    // B6-6-4c/4d 扩员的 seam 方法：lifecycle 批场景不触达，no-op 满足 AgentPiRuntimeSeam 类型
     setModel: async () => {},
     probeModel: async () => ({}),
     resetModelRuntime: () => {},
     disposeAll: async () => {},
+    getContextUsage: () => null,
   };
   const configuredModelSpec = () => { calls.configuredModel += 1; return opts.configuredModel ?? "cfg/model-a"; };
   const findSessionFileForAgent = (sessionId: unknown) => { calls.findSessionFile.push(sessionId); return "sessionFileFound" in opts ? opts.sessionFileFound : { fullPath: "/store/s-1.jsonl" }; };
@@ -156,6 +157,8 @@ function makeWorld(opts: {
     normalizeWorkspace: normalize,
     findSessionFileForAgent,
     configuredModelSpec,
+    // B6-6-4d 必填 deps：本批场景不触达，恒 null stub
+    contextTokensFromUsage: () => null,
     emitDeps,
   };
   return { deps, calls, emitDeps, normalize, isAbortLikeError };

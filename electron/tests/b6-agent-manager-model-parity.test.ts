@@ -167,6 +167,8 @@ function makeWorld(opts: {
     probeModel: async (model: unknown, options: any) => { calls.probeModel.push([model, options]); return opts.probeOut ?? {}; },
     resetModelRuntime: () => { calls.resetModelRuntime += 1; },
     disposeAll: async (entries: unknown[]) => { calls.disposeAll.push(entries); },
+    // B6-6-4d 扩员的 seam 方法：本批场景不触达，no-op 满足 AgentPiRuntimeSeam 类型
+    getContextUsage: () => null,
   };
   (piRuntimeManager as any).__setModelAttempts = new Map();
   const localModelProviders = () => new Set(catalog.providers);
@@ -196,6 +198,8 @@ function makeWorld(opts: {
     localModelProviders,
     localStoredModels,
     getCredentialErrors,
+    // B6-6-4d 必填 deps：本批场景不触达，恒 null stub
+    contextTokensFromUsage: () => null,
     emitDeps,
   };
   return { deps, calls, emitDeps, normalize, catalog, mr };
