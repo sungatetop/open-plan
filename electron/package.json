@@ -31,12 +31,14 @@
     "docx": "^9.13.0",
     "highlight.js": "^11.12.0",
     "katex": "^0.18.11",
+    "open-plan": "file:..",
     "react-markdown": "^10.1.0",
     "rehype-highlight": "^7.0.2",
     "rehype-katex": "^7.0.1",
     "rehype-slug": "^6.0.0",
     "remark-gfm": "^4.0.1",
     "remark-math": "^6.0.0",
-    "remark-toc": "^9.0.0"
+    "remark-toc": "^9.0.0",
+    "undici": "8.10.2"
   }
 }
