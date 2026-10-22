@@ -6,6 +6,7 @@ import type {
   InvokeResult
 } from "../../shared/protocol/channels";
 import type {
+  AgentEventWatchRequest,
   EventWatchResult,
   OpDesktopApi,
   ServerStatusPayload,
@@ -118,4 +119,24 @@ export async function stopMemoryEvents(): Promise<void> {
   const api = getDesktopApi();
   if (!api) return;
   await api.stopMemoryEvents().catch(() => undefined);
+}
+
+/**
+ * 订阅全局 Agent 事件流（main 侧消费 legacy SSE → op:event，帧类型 op:agent-event）。
+ * 无桥（web 形态）返回 ok:false。
+ */
+export async function watchAgentEvents(request: AgentEventWatchRequest): Promise<EventWatchResult> {
+  const api = getDesktopApi();
+  if (!api) return { ok: false, error: "桌面桥未就绪" };
+  return api.watchAgentEvents(request).catch((error: unknown) => ({
+    ok: false,
+    error: error instanceof Error ? error.message : String(error)
+  }));
+}
+
+/** 停止全局 Agent 事件流订阅；无桥时为空操作。 */
+export async function stopAgentEvents(request?: { client?: string }): Promise<void> {
+  const api = getDesktopApi();
+  if (!api) return;
+  await api.stopAgentEvents(request).catch(() => undefined);
 }

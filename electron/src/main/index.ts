@@ -6,6 +6,7 @@ import { startLegacyServer, type LegacyServerHandle, type ServerStatusSnapshot }
 import { channelRoutes, forwardHttpRequest } from "./ipc/http-forward";
 import { createEventStreamBridge } from "./ipc/events-bridge";
 import { createMemoryEventsBridge } from "./ipc/memory-events-bridge";
+import { createGlobalEventsBridge } from "./ipc/global-events-bridge";
 import type { InvokeEnvelope, DesktopEvent } from "../shared/protocol/channels";
 import { createSplashWindow } from "./splash";
 
@@ -126,6 +127,24 @@ function registerMemoryBridgeHandlers(): void {
   });
 }
 
+/**
+ * 全局 Agent 事件桥（F3 批7b）：main 侧消费 legacy /api/agent/events SSE → op:event 推送。
+ * 生命周期由渲染层经 op:agent-events:watch / op:agent-events:unwatch 控制。
+ */
+function registerGlobalEventsBridgeHandlers(): void {
+  const bridge = createGlobalEventsBridge({
+    getPort: () => (server && server.status.phase === "ready" ? server.port : null),
+    send: (event) => broadcastEvent(event)
+  });
+  ipcMain.handle("op:agent-events:watch", (_event, request: Parameters<typeof bridge.watch>[0]) =>
+    bridge.watch(request)
+  );
+  ipcMain.handle("op:agent-events:unwatch", (_event, request?: { client?: string }) => {
+    bridge.stop(request);
+    return { ok: true };
+  });
+}
+
 async function bootstrap(): Promise<void> {
   let port: number;
   try {
@@ -205,6 +224,7 @@ if (!gotLock) {
     registerChannelForwarders();
     registerEventBridgeHandlers();
     registerMemoryBridgeHandlers();
+    registerGlobalEventsBridgeHandlers();
     mainWindow = createSplashWindow(PRELOAD_PATH);
     void bootstrap();
   });

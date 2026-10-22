@@ -44,6 +44,15 @@ export interface OpDesktopApi {
   watchMemoryEvents(): Promise<EventWatchResult>;
   /** 停止记忆变更流订阅。 */
   stopMemoryEvents(): Promise<void>;
+  /**
+   * 订阅全局 Agent 事件流（main 侧消费 legacy /api/agent/events SSE → op:event，
+   * 帧类型 op:agent-event，data 为事件本体 { seq, type, threadId, ... }）。
+   * 桥内部断线重连自持游标续传；after 只作用于 watch 建流起点（渲染层冷启动
+   * 未知游标时先拉 events/state 再带参 watch）。同 client 幂等。ok=false 表示请求被拒。
+   */
+  watchAgentEvents(request: AgentEventWatchRequest): Promise<EventWatchResult>;
+  /** 停止全局 Agent 事件流订阅（省略参数 = 停当前订阅）。 */
+  stopAgentEvents(request?: { client?: string }): Promise<void>;
 }
 
 /** 对话流事件订阅请求（对齐 /api/agent/stream 查询参数）。 */
@@ -64,4 +73,14 @@ export interface ThreadEventWatchRequest {
 export interface EventWatchResult {
   ok: boolean;
   error?: string;
+}
+
+/** 全局 Agent 事件流订阅请求（对齐 /api/agent/events 查询参数）。 */
+export interface AgentEventWatchRequest {
+  client: string;
+  /**
+   * 续传游标（对齐 after 查询参数，0/省略 = 从服务端最早可回放处开始）。
+   * 桥内部断线重连自持游标；该字段只作用于 watch 建流起点。
+   */
+  after?: number;
 }

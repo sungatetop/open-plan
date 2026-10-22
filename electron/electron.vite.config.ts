@@ -16,6 +16,12 @@ export default defineConfig({
   },
   renderer: {
     root: path.resolve(__dirname, "src/renderer"),
+    server: {
+      fs: {
+        // workbench.tsx 跨根引入 client/src/styles.css（迁移期版式对齐旧客户端），放开项目根
+        allow: [path.resolve(__dirname, "..")]
+      }
+    },
     build: {
       outDir: "out/renderer",
       rollupOptions: {

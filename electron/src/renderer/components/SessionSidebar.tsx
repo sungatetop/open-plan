@@ -159,7 +159,7 @@ type OpenResult = { opened?: string };
 type CancelPickResult = { cancelled?: boolean };
 
 export interface SessionRecordPlus extends SessionRecord {
-  projectId?: string;
+  projectId?: string | null;
 }
 
 interface ContextMenuState { x: number; y: number; items: ContextMenuItem[] }

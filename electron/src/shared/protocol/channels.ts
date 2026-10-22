@@ -106,7 +106,8 @@ export const DESKTOP_CHANNELS = {
   "op:memory:proposals:history": { method: "GET", path: "/api/memory/proposals/:id/history" },
   "op:memory:proposals:merge": { method: "POST", path: "/api/memory/proposals/:id/merge" },
 
-  // ---- 文件族（F3 批5b-2：SessionSidebar 文件树/上传/搜索） ----
+  // ---- 文件族（F3 批5b-2：SessionSidebar 文件树/上传/搜索；批7b：App 工作区文件列表） ----
+  "op:files:list": { method: "GET", path: "/api/files" },
   "op:files:search": { method: "GET", path: "/api/files/search" },
   "op:files:upload": { method: "POST", path: "/api/files/upload" },
   "op:files:delete": { method: "POST", path: "/api/files/delete" },
@@ -155,7 +156,8 @@ export const DESKTOP_CHANNELS = {
   "op:map:settings:get": { method: "GET", path: "/api/map/settings" },
   "op:map:settings:save": { method: "POST", path: "/api/map/settings" },
 
-  // ---- 项目族（SettingsPanel 项目管理分节） ----
+  // ---- 项目族（SettingsPanel 项目管理分节；批7b：App 项目列表） ----
+  "op:projects:list": { method: "GET", path: "/api/projects" },
   "op:projects:create": { method: "POST", path: "/api/projects" },
   "op:projects:classify": { method: "POST", path: "/api/projects/classify" },
   "op:projects:update": { method: "PATCH", path: "/api/projects/:id" },
@@ -163,7 +165,9 @@ export const DESKTOP_CHANNELS = {
   "op:projects:archive": { method: "POST", path: "/api/projects/:id/archive" },
   "op:projects:settings:update": { method: "PATCH", path: "/api/projects/:id/settings" },
 
-  // ---- 工作区族（SessionSidebar 工作区切换/验证/系统选择器） ----
+  // ---- 工作区族（SessionSidebar 工作区切换/验证/系统选择器；批7b：App 工作区列表与切换） ----
+  "op:workspaces:list": { method: "GET", path: "/api/workspaces" },
+  "op:workspace:switch": { method: "POST", path: "/api/workspace/switch" },
   "op:workspace:validate": { method: "POST", path: "/api/workspace/validate" },
   "op:workspace:pick": { method: "POST", path: "/api/workspace/pick" },
   "op:workspace:pick:cancel": { method: "POST", path: "/api/workspace/pick/cancel" },
@@ -748,8 +752,15 @@ export type MemoryProposalHistoryResponse = {
   [key: string]: unknown;
 };
 
-// ---- 文件族（F3 批5b-2） ----
+// ---- 文件族（F3 批5b-2；批7b 增列表） ----
 
+export type FileListRequest = { query?: { dir?: string; workspace?: string } };
+export type FileListResponse = {
+  files?: Array<Record<string, unknown>>;
+  dir?: string;
+  workspace?: string;
+  [key: string]: unknown;
+};
 export type FileSearchRequest = { query: { q: string; limit: number; workspace?: string } };
 export type FileSearchResponse = {
   workspace?: string;
@@ -800,6 +811,11 @@ export type MapSettingsSaveRequest = { body: { basemaps: unknown } };
 
 // ---- 项目族 ----
 
+export type ProjectListRequest = { query?: { type?: string; status?: string; sort?: string; pinned?: string } };
+export type ProjectListResponse = {
+  projects?: Array<Record<string, unknown>>;
+  [key: string]: unknown;
+};
 export type ProjectCreateRequest = { body?: Record<string, unknown> };
 export type ProjectClassifyRequest = { body: { apply: boolean } };
 export type ProjectUpdateRequest = { params: { id: string }; body?: Record<string, unknown> };
@@ -809,6 +825,18 @@ export type ProjectSettingsUpdateRequest = { params: { id: string }; body?: Reco
 
 // ---- 工作区族 ----
 
+export type WorkspaceListRequest = Record<string, never>;
+export type WorkspaceListResponse = {
+  workspaces?: Array<{ name?: string; path?: string }>;
+  [key: string]: unknown;
+};
+export type WorkspaceSwitchRequest = { body: { path: string } };
+export type WorkspaceSwitchResponse = {
+  ok?: boolean;
+  workspace?: string;
+  files?: Array<Record<string, unknown>>;
+  [key: string]: unknown;
+};
 export type WorkspaceValidateRequest = { body: { path: string } };
 export type WorkspacePickRequest = { body: Record<string, never> };
 export type WorkspacePickCancelRequest = { body: Record<string, never> };
@@ -887,6 +915,7 @@ export interface DesktopChannelProtocol {
   "op:memory:proposals:history": { request: MemoryProposalHistoryRequest; response: MemoryProposalHistoryResponse };
   "op:memory:proposals:merge": { request: MemoryProposalMergeRequest; response: MemoryProposalOpResult };
 
+  "op:files:list": { request: FileListRequest; response: FileListResponse };
   "op:files:search": { request: FileSearchRequest; response: FileSearchResponse };
   "op:files:upload": { request: FileUploadRequest; response: Record<string, unknown> };
   "op:files:delete": { request: FileDeleteRequest; response: Record<string, unknown> };
@@ -930,6 +959,7 @@ export interface DesktopChannelProtocol {
   "op:map:settings:get": { request: Record<string, never>; response: Record<string, unknown> };
   "op:map:settings:save": { request: MapSettingsSaveRequest; response: Record<string, unknown> };
 
+  "op:projects:list": { request: ProjectListRequest; response: ProjectListResponse };
   "op:projects:create": { request: ProjectCreateRequest; response: Record<string, unknown> };
   "op:projects:classify": { request: ProjectClassifyRequest; response: Record<string, unknown> };
   "op:projects:update": { request: ProjectUpdateRequest; response: Record<string, unknown> };
@@ -937,6 +967,8 @@ export interface DesktopChannelProtocol {
   "op:projects:archive": { request: ProjectArchiveRequest; response: Record<string, unknown> };
   "op:projects:settings:update": { request: ProjectSettingsUpdateRequest; response: Record<string, unknown> };
 
+  "op:workspaces:list": { request: WorkspaceListRequest; response: WorkspaceListResponse };
+  "op:workspace:switch": { request: WorkspaceSwitchRequest; response: WorkspaceSwitchResponse };
   "op:workspace:validate": { request: WorkspaceValidateRequest; response: Record<string, unknown> };
   "op:workspace:pick": { request: WorkspacePickRequest; response: Record<string, unknown> };
   "op:workspace:pick:cancel": { request: WorkspacePickCancelRequest; response: Record<string, unknown> };

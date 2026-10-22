@@ -1,23 +1,27 @@
 /**
- * 界面状态持久化（localStorage）
- * 固化：打开的文档 tabs、激活 tab、统一模块入口（知识库/模版库/地图/设置等）、
- *       当前工作区、子目录、侧栏开关、最后会话 id。
- * 刷新/重开浏览器后恢复到上次界面。
- *
- * 与 client/src/persist-ui.js 逐函数等价（tests/f1-persist-ui-parity.test.ts 对拍强制）。
+ * 界面状态持久化（localStorage）——App.jsx 的 loadUIState/saveUIState 逐行等价迁移。
+ * 固化：当前工作区、子目录、侧栏开关、统一模块入口等。
+ * 刷新/重开后恢复到上次界面（会话恢复例外：已批准规则不自动恢复旧会话，见 workbench）。
  */
+
 const KEY = "oaw_ui_state_v1";
 
-export function loadUIState(): unknown {
+export interface UIState {
+  [key: string]: unknown;
+}
+
+export function loadUIState(): UIState | null {
   try {
-    const s: unknown = JSON.parse(localStorage.getItem(KEY) as string);
+    const raw = localStorage.getItem(KEY);
+    const s: unknown = raw ? JSON.parse(raw) : null;
     if (!s || typeof s !== "object") return null;
-    return s;
+    return s as UIState;
   } catch {
     return null;
   }
 }
 
+/** 旧实现不校验入参（undefined/null 也会被 String 化写入），对拍测试覆盖该行为。 */
 export function saveUIState(state: unknown): void {
   try {
     localStorage.setItem(KEY, JSON.stringify(state));
@@ -29,5 +33,7 @@ export function saveUIState(state: unknown): void {
 export function clearUIState(): void {
   try {
     localStorage.removeItem(KEY);
-  } catch {}
+  } catch {
+    /* 忽略 */
+  }
 }

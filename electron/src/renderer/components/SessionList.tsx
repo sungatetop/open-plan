@@ -26,6 +26,7 @@ export interface SessionRecord {
   artifactCount?: number;
   threadId?: string;
   cwd?: string;
+  projectId?: string | null;
   pinned?: boolean;
   frozen?: boolean;
   parentSessionId?: string;

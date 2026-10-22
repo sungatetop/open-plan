@@ -8,6 +8,7 @@ import {
   type InvokeResult
 } from "../shared/protocol/channels";
 import type {
+  AgentEventWatchRequest,
   EventWatchResult,
   OpDesktopApi,
   ServerStatusPayload,
@@ -37,7 +38,11 @@ const api: OpDesktopApi = {
   stopThreadEvents: (request?: { client?: string; thread?: string }): Promise<void> =>
     ipcRenderer.invoke("op:events:unwatch", request ?? {}),
   watchMemoryEvents: (): Promise<EventWatchResult> => ipcRenderer.invoke("op:memory:watch"),
-  stopMemoryEvents: (): Promise<void> => ipcRenderer.invoke("op:memory:unwatch")
+  stopMemoryEvents: (): Promise<void> => ipcRenderer.invoke("op:memory:unwatch"),
+  watchAgentEvents: (request: AgentEventWatchRequest): Promise<EventWatchResult> =>
+    ipcRenderer.invoke("op:agent-events:watch", request),
+  stopAgentEvents: (request?: { client?: string }): Promise<void> =>
+    ipcRenderer.invoke("op:agent-events:unwatch", request ?? {})
 };
 
 contextBridge.exposeInMainWorld("opDesktop", api);

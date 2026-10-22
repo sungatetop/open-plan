@@ -250,6 +250,10 @@ export const setApprovalMode = (mode: string): Promise<ChannelResponse<"op:agent
 export const markAgentEventsRead = (client: string, seq: number): Promise<ChannelResponse<"op:agent:events-read">> =>
   invokeOrThrow("op:agent:events-read", { body: { client, seq } });
 
+/** 全局事件游标状态（App.jsx 冷启动游标引导：GET /api/agent/events/state → IPC 通道）。 */
+export const agentEventsState = (client: string): Promise<ChannelResponse<"op:agent:events-state">> =>
+  invokeOrThrow("op:agent:events-state", { query: { client } });
+
 /** 提交工具审批决策（PendingActionBar/ApprovalBlock：旧组件内联 fetch("/api/agent/approval") → IPC 通道）。 */
 export const submitAgentApproval = (id: string, decision: "allow" | "always" | "deny"): Promise<ChannelResponse<"op:agent:approval">> =>
   invokeOrThrow("op:agent:approval", { body: { id, decision } });
@@ -298,8 +302,16 @@ export const memoryProposalHistory = (id: string): Promise<ChannelResponse<"op:m
   invokeOrThrow("op:memory:proposals:history", { params: { id } });
 
 // ============================================================================
-// 文件族（F3 批5b-2：SessionSidebar 文件树/上传/搜索；对齐 client/src/api.js）
+// 文件族（F3 批5b-2：SessionSidebar 文件树/上传/搜索；批7b：App 工作区文件列表）
 // ============================================================================
+
+/** listFiles（App.jsx 启动加载/目录导航）：旧 api.js 空值参数不进查询串（转发器同口径再剔除）。 */
+export function listFiles(dir = "", workspace = ""): Promise<ChannelResponse<"op:files:list">> {
+  const query: NonNullable<ChannelRequest<"op:files:list">["query"]> = {};
+  if (dir) query.dir = dir;
+  if (workspace) query.workspace = workspace;
+  return invokeOrThrow("op:files:list", { query });
+}
 
 export function searchFiles(query: string, limit = 200, workspace = ""): Promise<ChannelResponse<"op:files:search">> {
   const reqQuery: NonNullable<ChannelRequest<"op:files:search">["query"]> = { q: query, limit };
@@ -449,6 +461,17 @@ export const mapSettingsSave = (basemaps: unknown): Promise<ChannelResponse<"op:
 // 项目族
 // ============================================================================
 
+/** listProjects（App.jsx 项目列表加载）：旧 api.js 空值参数不进查询串。 */
+export function listProjects(options: { type?: string; status?: string; sort?: string; pinned?: boolean | string } = {}): Promise<ChannelResponse<"op:projects:list">> {
+  const query: NonNullable<ChannelRequest<"op:projects:list">["query"]> = {};
+  if (options.type) query.type = options.type;
+  if (options.status) query.status = options.status;
+  if (options.sort) query.sort = options.sort;
+  // 对齐旧实现 params.set(String(...))：值原样字符串化
+  if (options.pinned !== undefined && options.pinned !== null) query.pinned = String(options.pinned);
+  return invokeOrThrow("op:projects:list", { query });
+}
+
 export const createProject = (payload: Record<string, unknown>): Promise<ChannelResponse<"op:projects:create">> =>
   invokeOrThrow("op:projects:create", { body: payload || {} });
 
@@ -470,6 +493,12 @@ export const updateProjectSettings = (id: string, settings: Record<string, unkno
 // ============================================================================
 // 工作区族
 // ============================================================================
+
+export const listWorkspaces = (): Promise<ChannelResponse<"op:workspaces:list">> =>
+  invokeOrThrow("op:workspaces:list");
+
+export const switchWorkspace = (path: string): Promise<ChannelResponse<"op:workspace:switch">> =>
+  invokeOrThrow("op:workspace:switch", { body: { path } });
 
 export const validateWorkspace = (path: string): Promise<ChannelResponse<"op:workspace:validate">> =>
   invokeOrThrow("op:workspace:validate", { body: { path } });
