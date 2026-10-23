@@ -99,6 +99,11 @@ function makeWorld(opts: {
     setActiveTools: () => {},
     update: () => {},
     setThinkingLevel: () => {},
+    // B6-6-4i 扩员的 seam 方法：thin 批场景不触达，no-op 满足 AgentPiRuntimeSeam 类型
+    beginRuntime: (args: any) => ({ runtimeId: "rt_thin", ...args }),
+    markFailure: () => {},
+    createSession: async () => ({}),
+    bindSession: () => {},
   };
   const getRun = (id: unknown) => {
     calls.getRun.push(id);
