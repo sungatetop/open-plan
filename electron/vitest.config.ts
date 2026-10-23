@@ -18,6 +18,8 @@ export default defineConfig({
     alias: [
       { find: /^@legacy-server\/kb\.mjs$/, replacement: path.join(legacyServerDir, "kb.mjs") },
       { find: /^@legacy-server\/tpl\.mjs$/, replacement: path.join(legacyServerDir, "tpl.mjs") },
+      // B6-6-4g create-tools：office/map 族动态 legacy 模块通配解析（生产 electron.vite.config.ts main 段 alias 待装配时补齐）。
+      { find: /^@legacy-server\/(.+\.mjs)$/, replacement: path.join(legacyServerDir, "$1") },
       { find: /^react$/, replacement: path.join(reactDir, "index.js") },
       { find: /^react\/jsx-runtime$/, replacement: path.join(reactDir, "jsx-runtime.js") },
       { find: /^react\/jsx-dev-runtime$/, replacement: path.join(reactDir, "jsx-dev-runtime.js") },
