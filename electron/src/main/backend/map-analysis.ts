@@ -1,0 +1,166 @@
+/**
+ * B2-11：地图分析演示数据与轻量适配器。
+ * 没有真实数据时明确返回 source=demo，保证演示链路可验证且不会伪装成生产数据。
+ *
+ * 逐行等价迁移自 server/map-analysis.mjs（B2-11）。零依赖纯函数域：无 env 锚点、
+ * 无文件 IO、输出确定性（伪随机来自索引运算），对拍可逐字段深比较。
+ * 装配面：legacyTools.createDemoAnalysis（assembly.ts 直绑，旧 agent.mjs 工具消费点）；
+ * getCambodiaOD/getXinchangBus 为旧 server HTTP 路由消费（迁移期共存，导出面完整保留）。
+ */
+
+const CENTERS: Record<string, [number, number]> = {
+  "义乌市": [120.075, 29.306],
+  "金华市": [119.647, 29.079],
+  "杭州市": [120.155, 30.274],
+  "新昌县": [120.903, 29.499],
+  "台州市": [121.4208, 28.6564],
+  "玉环市": [121.2323, 28.1284],
+  "椒江区": [121.444, 28.673],
+  "黄岩区": [121.262, 28.65],
+  "路桥区": [121.372, 28.58],
+  "三门县": [121.395, 29.104],
+  "天台县": [121.008, 29.144],
+  "仙居县": [120.735, 28.849],
+  "温岭市": [121.385, 28.372],
+  "临海市": [121.114, 28.858],
+  "暹粒市": [103.856, 13.363],
+};
+
+const TAIZHOU_COUNTIES = ["椒江区", "黄岩区", "路桥区", "三门县", "天台县", "仙居县", "温岭市", "临海市", "玉环市"];
+
+const centerOf = (region: string = "义乌市"): [number, number] => CENTERS[region] || CENTERS["义乌市"]!;
+const point = (lon: number, lat: number, properties: Record<string, any> = {}) => ({ type: "Feature", properties, geometry: { type: "Point", coordinates: [lon, lat] } });
+const line = (a: number[], b: number[], properties: Record<string, any> = {}) => ({ type: "Feature", properties, geometry: { type: "LineString", coordinates: [a, b] } });
+
+export interface DemoAnalysisOptions {
+  analysis?: string;
+  region?: string;
+  project?: string;
+  count?: number | string;
+}
+
+export function createDemoAnalysis({ analysis = "heatmap", region = "义乌市", project = "zhejiang-map", count = 36 }: DemoAnalysisOptions = {}) {
+  const center = centerOf(region);
+  if (analysis === "od") {
+    const targets = region === "玉环市" || region === "台州市" ? TAIZHOU_COUNTIES.filter((name) => name !== region) : ["台州市"];
+    const origin = centerOf(region);
+    const lines = targets.map((name, index) => line(origin, centerOf(name), {
+      origin: region,
+      destination: name,
+      flow: 180 + ((index * 97) % 620),
+      direction: "outbound",
+    }));
+    const points = [point(origin[0], origin[1], { name: region, role: "origin", value: 0 })]
+      .concat(targets.map((name, index) => {
+        const c = centerOf(name);
+        return point(c[0], c[1], { name, role: "destination", value: lines[index]!.properties.flow });
+      }));
+    return {
+      action: "show_analysis",
+      analysis: "od",
+      type: "od",
+      id: "agent-od-analysis",
+      project,
+      region,
+      source: "demo",
+      title: `${region}—台州市各县市区出行 OD`,
+      fitBounds: true,
+      geojson: { type: "FeatureCollection", features: points },
+      lines: { type: "FeatureCollection", features: lines },
+      stats: { demo: true, region, targetCount: targets.length, totalFlow: lines.reduce((sum, f) => sum + f.properties.flow, 0) },
+    };
+  }
+  if (analysis === "isochrone") {
+    const ranges = [15, 30, 45];
+    const features = ranges.map((range, index) => {
+      const radius = 0.0045 * range;
+      const ring = Array.from({ length: 48 }, (_, i) => {
+        const angle = (Math.PI * 2 * i) / 48;
+        const wobble = 1 + 0.12 * Math.sin(i * 2.7 + index);
+        return [center[0] + Math.cos(angle) * radius * wobble, center[1] + Math.sin(angle) * radius * 0.72 * wobble];
+      });
+      ring.push(ring[0]!);
+      return { type: "Feature", properties: { range, color: ["#c4b5fd", "#8b5cf6", "#6d28d9"][index] }, geometry: { type: "Polygon", coordinates: [ring] } };
+    });
+    return { action: "show_analysis", analysis, type: analysis, id: "agent-analysis", project, region, source: "demo", title: `${region}可达性等时圈`, fitBounds: true, geojson: { type: "FeatureCollection", features }, stats: { demo: true, region, ranges } };
+  }
+  const total = Math.min(120, Math.max(12, Math.round(Number(count) || 36)));
+  const features = Array.from({ length: total }, (_, i) => {
+    const angle = i * 2.39996;
+    const radius = 0.008 + ((i * 17) % 29) / 1000;
+    const value = 20 + ((i * 37) % 180);
+    return point(center[0] + Math.cos(angle) * radius, center[1] + Math.sin(angle) * radius * 0.72, { name: `${region}演示点-${String(i + 1).padStart(2, "0")}`, value, category: i % 3 === 0 ? "枢纽" : i % 3 === 1 ? "商贸" : "居住" });
+  });
+  return { action: "show_analysis", analysis: "heatmap", type: "heatmap", id: "agent-analysis", project, region, source: "demo", title: `${region}点位热力图`, fitBounds: true, geojson: { type: "FeatureCollection", features }, stats: { demo: true, region, count: total } };
+}
+
+function demoCambodiaRows() {
+  const places = ["吴哥窟", "老市场", "皇家花园", "机场", "酒吧街", "暹粒车站", "Wat Bo", "Chreav"];
+  return Array.from({ length: 42 }, (_, i) => {
+    const o = i % places.length;
+    const d = (i * 3 + 2) % places.length;
+    const a: [number, number] = [103.80 + (o % 4) * 0.018, 13.32 + Math.floor(o / 4) * 0.018];
+    const b: [number, number] = [103.80 + (d % 4) * 0.018, 13.32 + Math.floor(d / 4) * 0.018];
+    return { start: places[o]!, dest: places[d]!, start_lon: a[0], start_lat: a[1], dest_lon: b[0], dest_lat: b[1], flow: 80 + ((i * 47) % 620) };
+  }).filter((r) => r.start !== r.dest);
+}
+
+export function getCambodiaOD({ minFlow = 0 }: { minFlow?: number | string } = {}) {
+  const threshold = Math.max(0, Number(minFlow) || 0);
+  const rows = demoCambodiaRows().filter((r) => r.flow >= threshold);
+  const origins = new Map<string, number>();
+  const destinations = new Map<string, number>();
+  const points: Record<string, any>[] = [];
+  const lines: Record<string, any>[] = [];
+  for (const row of rows) {
+    origins.set(row.start, (origins.get(row.start) || 0) + row.flow);
+    destinations.set(row.dest, (destinations.get(row.dest) || 0) + row.flow);
+    const o: [number, number] = [row.start_lon, row.start_lat];
+    const d: [number, number] = [row.dest_lon, row.dest_lat];
+    points.push(point(o[0], o[1], { name: row.start, value: row.flow, role: "origin" }));
+    lines.push(line(o, d, { origin: row.start, destination: row.dest, flow: row.flow }));
+  }
+  const top = (map: Map<string, number>) => [...map.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8).map(([name, flow]) => ({ name, flow }));
+  const totalFlow = rows.reduce((sum, r) => sum + r.flow, 0);
+  return {
+    error: null,
+    source: "siem-reap-od-demo.csv",
+    status: "demo",
+    stats: { records: rows.length, totalFlow, averageFlow: rows.length ? Number((totalFlow / rows.length).toFixed(2)) : 0, originCount: origins.size, destinationCount: destinations.size, minFlow: threshold },
+    topOrigins: top(origins),
+    topDestinations: top(destinations),
+    topPairs: rows.slice().sort((a, b) => b.flow - a.flow).slice(0, 8).map((r) => ({ name: `${r.start} → ${r.dest}`, flow: r.flow })),
+    points: { type: "FeatureCollection", features: points },
+    lines: { type: "FeatureCollection", features: lines },
+  };
+}
+
+function busStops() {
+  return Array.from({ length: 48 }, (_, i) => {
+    const col = i % 8;
+    const row = Math.floor(i / 8);
+    return { name: `新昌站点${String(i + 1).padStart(2, "0")}`, lng: 120.88 + col * 0.009, lat: 29.46 + row * 0.009, flow: 50 + ((i * 83) % 760) };
+  });
+}
+
+function busRoutes() {
+  const colors: Record<string, string> = { "城市公交": "#2563eb", "城乡公交": "#16a34a", "城际公交": "#f97316" };
+  return Array.from({ length: 12 }, (_, i) => {
+    const type = i % 3 === 0 ? "城乡公交" : i % 4 === 0 ? "城际公交" : "城市公交";
+    const start: [number, number] = [120.87 + (i % 4) * 0.025, 29.45 + Math.floor(i / 4) * 0.025];
+    const coords = Array.from({ length: 8 }, (_, j) => [start[0] + j * 0.012, start[1] + Math.sin(j / 2 + i) * 0.006]);
+    return { type: "Feature", properties: { name: type === "城市公交" ? `${i + 1}路` : type === "城乡公交" ? `G${i + 3}` : `5${i}`, route_type: type, route_color: colors[type]!, length_km: 6 + i * 1.7 }, geometry: { type: "LineString", coordinates: coords } };
+  });
+}
+
+export function getXinchangBus(kind: string = "all") {
+  const stops = busStops();
+  const routes = busRoutes();
+  const od = routes.slice(0, 10).map((r, i) => ({ origin: r.properties.name, dest: routes[(i + 3) % routes.length]!.properties.name, flow: 120 + i * 47, o: r.geometry.coordinates[0]!, d: routes[(i + 3) % routes.length]!.geometry.coordinates.at(-1)! }));
+  const totalFlow = stops.reduce((s, x) => s + x.flow, 0);
+  const byType = ["城市公交", "城乡公交", "城际公交"].map((type) => ({ type, color: type === "城市公交" ? "#2563eb" : type === "城乡公交" ? "#16a34a" : "#f97316", count: routes.filter((r) => r.properties.route_type === type).length, length: Math.round(routes.filter((r) => r.properties.route_type === type).reduce((s, r) => s + r.properties.length_km, 0)) }));
+  if (kind === "routes") return { type: "FeatureCollection", features: routes, source: "xinchang-bus-demo", stats: { routeCount: routes.length, featureCount: routes.length, totalLength: routes.reduce((s, r) => s + r.properties.length_km, 0), byType } };
+  if (kind === "stations") return { geojson: { type: "FeatureCollection", features: stops.map((s) => point(s.lng, s.lat, { name: s.name, flow: s.flow })) }, source: "xinchang-bus-demo", stats: { stationCount: stops.length, totalFlow, avgFlow: Math.round(totalFlow / stops.length), maxFlow: Math.max(...stops.map((s) => s.flow)), highCount: stops.filter((s) => s.flow > 500).length, mediumCount: stops.filter((s) => s.flow > 100 && s.flow <= 500).length, lowCount: stops.filter((s) => s.flow <= 100).length }, top20: stops.slice().sort((a, b) => b.flow - a.flow).slice(0, 20).map((s) => ({ name: s.name, flow: s.flow })) };
+  if (kind === "od") return { geojson: { type: "FeatureCollection", features: od.map((x) => line(x.o, x.d, { origin: x.origin, dest: x.dest, flow: x.flow })) }, source: "xinchang-bus-demo", stats: { totalPairs: od.length, displayPairs: od.length, totalFlow: od.reduce((s, x) => s + x.flow, 0), maxFlow: Math.max(...od.map((x) => x.flow)), avgFlow: Math.round(od.reduce((s, x) => s + x.flow, 0) / od.length) } };
+  return { source: "xinchang-bus-demo", status: "demo", stats: { routeCount: routes.length, totalRouteLength: Math.round(routes.reduce((s, r) => s + r.properties.length_km, 0)), avgRouteLength: Number((routes.reduce((s, r) => s + r.properties.length_km, 0) / routes.length).toFixed(1)), stationCount: stops.length, totalFlow, odPairs: od.length, byType, lengthDist: [{ range: "< 5km", count: 0 }, { range: "5-10km", count: 4 }, { range: "10-15km", count: 5 }, { range: "> 15km", count: 3 }], longestRoutes: routes.slice().sort((a, b) => b.properties.length_km - a.properties.length_km).slice(0, 5).map((r) => ({ name: r.properties.name, type: r.properties.route_type, length: Number(r.properties.length_km.toFixed(1)) })) } };
+}
