@@ -1,0 +1,1428 @@
+/**
+ * Run 领域存储（B2-2，逐行等价迁移自 server/runs.mjs）。
+ *
+ * 依赖全部为 TS 已迁件：workspace / event-storage（B1-1）/ persistence-utils /
+ * first-token-latency + run-trace + feature-flags（shared/runtime，R2 阶段）/
+ * write-coordination（B6-2）/ artifact-verification（B1-1）。
+ * PROJECT_DIR 经 ./workspace 锚定（bundle 态上跳三级，session-store 先例）。
+ * 注意：当前仅对拍覆盖、未接入运行时（assembly.ts 仍动态 import 旧 server/runs.mjs）；
+ * 旧 JS 实现保留至域退役。
+ */
+import fs from "node:fs";
+import fsp from "node:fs/promises";
+import path from "node:path";
+import crypto from "node:crypto";
+import { PROJECT_DIR, getWorkspace } from "./workspace";
+import { appendEvent } from "./event-storage";
+import { atomicWriteJson, ensureDirectory } from "./persistence-utils";
+import { attachRunTimingSpans } from "../../shared/runtime/first-token-latency";
+import { RUNTIME_FLAGS } from "../../shared/runtime/feature-flags";
+import {
+  discardStagedRun,
+  ensureRunStaging,
+  isTempWorkPath,
+  listStagedFilesForValidation,
+  publishStagedRun,
+  reclaimStaleWriteLocks,
+  releaseRunLocks,
+  withWriteLock,
+} from "./agent/write-coordination";
+import { validateArtifactFile } from "./artifact-verification";
+import { applyObjectiveDowngrade } from "../../shared/runtime/run-trace";
+
+// Run 记录是跨版本持久化的动态结构，历史文件里字段可有可无，保持动态面。
+type RunRecord = Record<string, any>;
+
+const RUNS_DIR = process.env.OAW_RUNS_DIR || path.join(PROJECT_DIR, ".oaw", "runs");
+// 工作区快照上限：工作区可能很大（本项目实测 11GB / 7.5 万文件）。快照用于回滚与
+// 变更检测，但绝不能因为"只看了前 1200 个文件"就报告"没有变更"。触顶时标记 truncated，
+// 并由运行窗口内的 mtime 扫描补齐产物检测（见 detectRecentWorkspaceFiles）。
+const MAX_FILES = Math.max(1200, Number(process.env.OAW_RUN_SNAPSHOT_MAX_FILES) || 3000);
+const SNAPSHOT_SKIP_DIRS = new Set([
+  "node_modules", "tiles", "dist", "build", "out", "coverage", ".next", ".nuxt", ".svelte-kit",
+  "__pycache__", ".venv", "venv", ".git", ".oaw", ".cache", ".pytest_cache", "dist-info",
+  ".turbo", ".parcel-cache", ".mypy_cache", ".ruff_cache",
+]);
+const RECENT_SCAN_LIMIT = Math.max(200, Number(process.env.OAW_RUN_RECENT_LIMIT) || 2000);
+const RECENT_SCAN_TIME_BUDGET_MS = Math.max(500, Number(process.env.OAW_RUN_RECENT_SCAN_MS) || 4000);
+const MAX_BLOB_BYTES = 4 * 1024 * 1024;
+const MAX_BLOB_TOTAL = 80 * 1024 * 1024;
+const ACTIVE_RUN_STATUSES = new Set(["running", "queued", "waiting_user", "recovering", "cancel_requested"]);
+// 进入"取消中"但还没终结的 Run：runId → { cancelRequestedAt, lastEventAt }。
+// 中断后 SDK 若因工具卡住等原因迟迟不回来，看门狗据此强制收尾。
+const pendingCancellations = new Map<string, RunRecord>();
+const TODO_STATUS_ALIASES: Readonly<Record<string, string>> = Object.freeze({
+  pending: "planned",
+  todo: "planned",
+  ready: "planned",
+  planned: "planned",
+  running: "in_progress",
+  active: "in_progress",
+  in_progress: "in_progress",
+  "in-progress": "in_progress",
+  completed: "completed",
+  complete: "completed",
+  done: "completed",
+  skipped: "skipped",
+  blocked: "blocked",
+  failed: "failed",
+});
+const TODO_STATUSES = new Set(["planned", "in_progress", "completed", "skipped", "blocked", "failed"]);
+const MAX_TODO_ITEMS = 12;
+const MAX_TODO_TITLE = 300;
+const MAX_TODO_NOTE = 500;
+
+function ensureDir(dir: string) {
+  return ensureDirectory(dir);
+}
+
+function safeJsonWrite(file: string, value: unknown) {
+  ensureDir(path.dirname(file));
+  atomicWriteJson(file, value);
+}
+
+function runFile(id: unknown) {
+  return path.join(RUNS_DIR, `${String(id).replace(/[^a-zA-Z0-9_-]/g, "_")}.json`);
+}
+
+function hashFile(file: string) {
+  const h = crypto.createHash("sha1");
+  const fd = fs.openSync(file, "r");
+  try {
+    const buf = Buffer.allocUnsafe(64 * 1024);
+    let n = 0;
+    do {
+      n = fs.readSync(fd, buf, 0, buf.length, null);
+      if (n) h.update(buf.subarray(0, n));
+    } while (n);
+  } finally {
+    fs.closeSync(fd);
+  }
+  return h.digest("hex");
+}
+
+/**
+ * 工作区快照的哈希缓存（进程内，按工作区根路径）。
+ *
+ * 每次发送都要拍一次快照，用来判断本轮改了什么；哈希是其中的大头——真实工作区
+ * 4.7GB / 581 个文件时，读 120MB 做 sha1 要 1.2 秒，而两次发送之间绝大多数文件
+ * 根本没变。这里按 (size, mtimeMs) 复用上次的哈希：不变的文件只 stat 不读盘，
+ * 于是同一工作区第二次快照从 ~1.2s 降到 ~0.1s（实测 1231ms → 110ms）。
+ * 口径与已有的"大文件用 size:mtime 近似"一致：内容变了但大小与 mtime 都没变
+ * 属于极端情况，不值得每轮全量重读。
+ */
+const snapshotHashCache = new Map<string, Map<string, { size: number; mtime: number; hash: string }>>();
+
+function hashCacheFor(root: string, rel: string) {
+  const bucket = snapshotHashCache.get(root);
+  if (!bucket) return null;
+  return bucket.get(rel) || null;
+}
+
+function rememberHash(root: string, rel: string, size: number, mtime: number, hash: string) {
+  let bucket = snapshotHashCache.get(root);
+  if (!bucket) { bucket = new Map(); snapshotHashCache.set(root, bucket); }
+  bucket.set(rel, { size, mtime, hash });
+}
+
+export function clearSnapshotHashCache(root: string | null = null) {
+  if (root) snapshotHashCache.delete(path.resolve(root));
+  else snapshotHashCache.clear();
+}
+
+function walk(dir: string, root: string, out: any, budget: { remaining: number }) {
+  if (out.size >= MAX_FILES) { out.truncated = true; return; }
+  let entries: fs.Dirent[] = [];
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+  // 固定遍历顺序：readdir 顺序在 exFAT/网络盘上不稳定，会导致同一工作区每次快照
+  // 覆盖的文件集合不同（表现就是"以前有产物、现在突然没有"）。
+  entries.sort((a, b) => a.name.localeCompare(b.name));
+  for (const entry of entries) {
+    if (out.size >= MAX_FILES) { out.truncated = true; break; }
+    if (entry.name.startsWith(".") || SNAPSHOT_SKIP_DIRS.has(entry.name)) continue;
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      walk(full, root, out, budget);
+      continue;
+    }
+    try {
+      const st = fs.statSync(full);
+      const rel = path.relative(root, full).replace(/\\/g, "/");
+      const item = { path: rel, size: st.size, mtime: st.mtimeMs, hash: null as string | null, reversible: false };
+      const cached = hashCacheFor(out.root, rel);
+      if (cached && cached.size === st.size && cached.mtime === st.mtimeMs && cached.hash) {
+        item.hash = cached.hash;
+      } else if (st.size <= 16 * 1024 * 1024 && budget.remaining > st.size) {
+        item.hash = hashFile(full);
+        budget.remaining -= st.size;
+        rememberHash(out.root, rel, st.size, st.mtimeMs, item.hash);
+      } else {
+        item.hash = `${st.size}:${st.mtimeMs}`;
+      }
+      out.files[rel] = item;
+      out.size += 1;
+    } catch {}
+  }
+}
+
+export function snapshotWorkspace(root: string = getWorkspace() as string) {
+  const out = { root: path.resolve(root), capturedAt: new Date().toISOString(), files: {} as Record<string, any>, size: 0, truncated: false };
+  walk(out.root, out.root, out, { remaining: 120 * 1024 * 1024 });
+  return out;
+}
+
+async function copyBeforeBlobs(runId: string, snapshot: any) {
+  const dir = ensureDir(path.join(RUNS_DIR, runId, "before"));
+  let remaining = MAX_BLOB_TOTAL;
+  for (const item of Object.values<any>(snapshot.files)) {
+    if (remaining <= 0 || item.size > MAX_BLOB_BYTES) continue;
+    const source = path.join(snapshot.root, item.path);
+    const target = path.join(dir, item.path);
+    try {
+      ensureDir(path.dirname(target));
+      // 用异步复制：同步 copyFileSync 即使放进 Promise 也会占满事件循环，
+      // 把"后台复制"变成"换个位置阻塞"。await 逐文件让出，让准入/派发继续推进。
+      await fsp.copyFile(source, target);
+      item.reversible = true;
+      remaining -= item.size;
+    } catch {}
+  }
+}
+
+/**
+ * 收尾清理本轮产生的中间文件（临时目录 / 备份后缀），返回被删除的相对路径。
+ *
+ * 证据链：路径必须 (1) 命中临时目录或备份后缀规则，(2) 不在本轮运行前快照里（= 本轮新建），
+ * (3) 当前确实存在于工作区。三条都满足才删——用户原有的内容一律不碰。
+ */
+function cleanupRunTempArtifacts(run: RunRecord, onEvent?: (type: string, data: unknown) => void) {
+  const root = path.resolve(run.cwd || "");
+  const before = run.before?.files || {};
+  if (!root || !fs.existsSync(root)) return [];
+  const candidates = new Set<string>();
+  for (const item of run.artifacts || []) candidates.add(String(item.path || ""));
+  for (const item of run.staging?.files || []) candidates.add(String(item.path || ""));
+  for (const item of run.touchedPaths || []) candidates.add(String(item || ""));
+  const removed: string[] = [];
+  for (const rel of candidates) {
+    const normalized = String(rel || "").replace(/\\/g, "/").replace(/^\.\//, "");
+    if (!normalized || !isTempWorkPath(normalized)) continue;
+    if (before[normalized]) continue;
+    const target = path.resolve(root, normalized);
+    if (target === root || !target.startsWith(root + path.sep)) continue;
+    try {
+      if (!fs.existsSync(target)) continue;
+      fs.rmSync(target, { recursive: true, force: true });
+      removed.push(normalized);
+    } catch {}
+  }
+  // 顺带清掉空掉的临时目录
+  const dirs = new Set(removed.map((rel) => path.dirname(rel)).filter((dir) => dir && dir !== "."));
+  for (const dir of dirs) {
+    try {
+      const abs = path.resolve(root, dir);
+      if (abs.startsWith(root + path.sep) && fs.existsSync(abs) && fs.readdirSync(abs).length === 0) fs.rmdirSync(abs);
+    } catch {}
+  }
+  if (removed.length) {
+    try { onEvent?.("write_cleaned", { paths: removed }); } catch {}
+  }
+  return removed;
+}
+
+/** 回滚底稿是否已落地（后台复制可能仍在进行，按磁盘实际状态判断）。 */
+function beforeBlobExists(runId: string, relPath: string) {
+  if (!runId || !relPath) return false;
+  try {
+    const target = path.resolve(path.join(RUNS_DIR, runId, "before", relPath));
+    const base = path.resolve(path.join(RUNS_DIR, runId, "before"));
+    if (target !== base && !target.startsWith(base + path.sep)) return false;
+    return fs.existsSync(target);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 回滚底稿改为后台复制。
+ *
+ * 它必须覆盖整个工作区（Agent 可能用 bash 直接改文件，不走暂存区），所以在几百个文件的
+ * 真实工作区上是 0.6–1.4 秒的纯 I/O——放在"发送到模型首个事件"之前等于每轮都先等一遍磁盘。
+ * 现在改为后台进行：本轮照常发给模型，回滚/收尾/验收前用 awaitBeforeBlobs 等它落地。
+ * 覆盖范围不变（仍是全量快照），只是不再挡在首字前面。
+ */
+const beforeBlobsTasks = new Map<string, Promise<void>>();
+
+function startBeforeBlobs(runId: string, snapshot: any) {
+  // setImmediate：让复制排到当前这一轮的微任务之后，不挡准入→派发的主路径。
+  const task = new Promise<void>((resolve) => setImmediate(resolve))
+    .then(() => copyBeforeBlobs(runId, snapshot))
+    .catch((error) => {
+      console.warn(`[runs] 回滚底稿复制失败（回滚能力降级）：${String(error?.message || error).slice(0, 200)}`);
+    })
+    .finally(() => { beforeBlobsTasks.delete(runId); });
+  beforeBlobsTasks.set(runId, task);
+  return task;
+}
+
+/** 等本轮的回滚底稿复制完成（没有任务时立即返回）。 */
+export async function awaitBeforeBlobs(runId: unknown) {
+  const task = beforeBlobsTasks.get(String(runId || ""));
+  if (task) await task;
+}
+
+// Run JSON 解析缓存：按 mtime+size 指纹失效。
+// 会话列表、任务中心、线程切换都会高频遍历 400+ 个 Run 文件，
+// 无缓存时每次全量 JSON.parse（含 before/after 快照）需要数秒。
+const RUN_CACHE_LIMIT = 500;
+const runCache = new Map<string, { fingerprint: string; data: RunRecord }>();
+
+// Run 列表元数据索引：列表/会话/项目只依赖少量字段，没必要每次都把
+// 全部 Run（含 events/steps/快照）重新 JSON.parse。索引按文件指纹增量维护，
+// 写入时用内存里的最新 Run 直接刷新，外部改动/删除则按指纹自动回退重建。
+const runIndex = new Map<string, { fingerprint: string; meta: RunRecord }>();
+
+// 与 listRuns 的 query 过滤保持一致的检索文本（小写）。
+function runSearchText(run: RunRecord) {
+  const steps = Array.isArray(run.steps) ? run.steps : [];
+  const todos = Array.isArray(run.todos) ? run.todos : [];
+  return [run.error, run.summary, run.task?.goal, run.currentStep?.error, ...steps.map((step: any) => step.error), ...todos.map((item: any) => `${item.title} ${item.note || ""}`)]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+}
+
+function buildRunMeta(run: RunRecord) {
+  return {
+    id: run.id,
+    threadId: run.threadId,
+    sessionId: run.sessionId,
+    cwd: run.cwd,
+    projectId: run.projectId,
+    status: run.status,
+    mode: run.task?.mode,
+    startedAt: run.startedAt,
+    finishedAt: run.finishedAt,
+    artifactCount: Array.isArray(run.artifacts) ? run.artifacts.length : 0,
+    search: runSearchText(run),
+  };
+}
+
+function runIndexEntry(id: string) {
+  const file = runFile(id);
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(file);
+  } catch {
+    runIndex.delete(id);
+    return null;
+  }
+  const fingerprint = `${stat.mtimeMs}:${stat.size}`;
+  const cached = runIndex.get(id);
+  if (cached?.fingerprint === fingerprint) return cached.meta;
+  const run = loadRun(id);
+  if (!run) return null;
+  return runIndex.get(id)?.meta || buildRunMeta(run);
+}
+
+function loadRun(id: string): RunRecord | null {
+  const file = runFile(id);
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(file);
+  } catch {
+    runCache.delete(id);
+    runIndex.delete(id);
+    return null;
+  }
+  const fingerprint = `${stat.mtimeMs}:${stat.size}`;
+  const cached = runCache.get(id);
+  if (cached?.fingerprint === fingerprint) return cached.data;
+  let data: RunRecord | null = null;
+  try {
+    data = JSON.parse(fs.readFileSync(file, "utf8")) as RunRecord;
+  } catch {
+    runIndex.delete(id);
+    return null;
+  }
+  runCache.set(id, { fingerprint, data });
+  runIndex.set(id, { fingerprint, meta: buildRunMeta(data) });
+  while (runCache.size > RUN_CACHE_LIMIT) {
+    const oldest = runCache.keys().next().value;
+    if (oldest === undefined) break;
+    runCache.delete(oldest);
+  }
+  return data;
+}
+
+function saveRun(run: RunRecord) {
+  run.updatedAt = new Date().toISOString();
+  safeJsonWrite(runFile(run.id), run);
+  // 写后失效缓存：下次读取以磁盘为准，避免缓存与持久化状态分叉
+  runCache.delete(run.id);
+  // 列表索引直接用内存里的最新 Run 刷新，列表无需等到下次全量解析才更新。
+  try {
+    const st = fs.statSync(runFile(run.id));
+    runIndex.set(run.id, { fingerprint: `${st.mtimeMs}:${st.size}`, meta: buildRunMeta(run) });
+  } catch {
+    runIndex.delete(run.id);
+  }
+  return run;
+}
+
+function stepTitleForTool(name: unknown) {
+  const labels: Record<string, string> = {
+    read: "读取资料",
+    grep: "检索项目内容",
+    find: "查找文件",
+    ls: "检查工作区",
+    officecli: "处理 Office 文档",
+    map_read: "读取地图项目",
+    map_edit: "修改地图样式",
+    map_import: "导入地图数据",
+    map_analyze: "生成地图分析",
+    map_save_analysis: "保存地图分析",
+    map_clear_analysis: "清理地图分析",
+    kb_search: "检索知识库",
+    kb_read: "读取知识内容",
+    context_read: "读取上下文",
+    memory_update: "整理记忆建议",
+    todo: "更新任务清单",
+  };
+  return labels[String(name || "")] || (name ? `执行 ${name}` : "执行 Agent 任务");
+}
+
+function normalizeTodoStatus(value: unknown, done: unknown = false) {
+  if (done === true) return "completed";
+  const normalized = TODO_STATUS_ALIASES[String(value || "").trim().toLowerCase()];
+  return normalized && TODO_STATUSES.has(normalized) ? normalized : "planned";
+}
+
+function todoIdFor(title: string, index: number) {
+  const digest = crypto.createHash("sha1").update(`${index}:${title}`).digest("hex").slice(0, 10);
+  return `todo-${index + 1}-${digest}`;
+}
+
+export function normalizeTodoItems(items: unknown = []) {
+  if (!Array.isArray(items)) return [];
+  const seen = new Set<string>();
+  return items.slice(0, MAX_TODO_ITEMS).flatMap((item: any, index: number) => {
+    const title = String(item?.title ?? item?.name ?? item?.text ?? "").trim().slice(0, MAX_TODO_TITLE);
+    if (!title) return [];
+    let id = String(item?.id || "").trim().replace(/[^a-zA-Z0-9_-]/g, "-").slice(0, 80) || todoIdFor(title, index);
+    while (seen.has(id)) id = `${id}-${index + 1}`;
+    seen.add(id);
+    const dependsOn = Array.isArray(item?.dependsOn)
+      ? [...new Set(item.dependsOn.map((value: unknown) => String(value || "").trim()).filter(Boolean) as string[])].slice(0, 8)
+      : [];
+    return [{
+      id,
+      index,
+      title,
+      status: normalizeTodoStatus(item?.status, item?.done),
+      note: String(item?.note ?? item?.details ?? "").trim().slice(0, MAX_TODO_NOTE),
+      dependsOn,
+    }];
+  });
+}
+
+function todoSignature(items: unknown = []) {
+  return JSON.stringify(normalizeTodoItems(items).map(({ id, title, status, note, dependsOn }) => ({ id, title, status, note, dependsOn })));
+}
+
+/**
+ * 持久化 Agent 的结构化 Todo。Todo 是“计划事实”，和 steps 的底层工具执行事实分开。
+ * 事件只在这里写入一次；调用方可以再通过会话 SSE 把同一快照推给前端。
+ */
+export function updateRunTodo(id: string, items: unknown = [], { source = "agent" }: { source?: string } = {}) {
+  const run = loadRun(id);
+  if (!run) return null;
+  const next = normalizeTodoItems(items);
+  if (todoSignature(run.todos || []) === todoSignature(next) && run.todoVersion === 1) return getRun(id);
+  const updatedAt = new Date().toISOString();
+  run.todoVersion = 1;
+  run.todos = next;
+  run.todoUpdatedAt = updatedAt;
+  run.events = Array.isArray(run.events) ? run.events : [];
+  const data = { source: String(source || "agent"), todos: next };
+  const seq = Number(run.eventSeq || run.events[run.events.length - 1]?.seq || run.events.length || 0) + 1;
+  run.eventSeq = seq;
+  run.events.push({ seq, type: "todo_updated", data, at: updatedAt });
+  const saved = saveRun(run);
+  appendEvent({ clientId: run.clientId, threadId: run.threadId, runId: run.id, type: "todo_updated", data });
+  return getRun(saved.id);
+}
+
+function ensureStep(run: RunRecord, stepId: string | null, name: unknown, status = "pending") {
+  run.steps = Array.isArray(run.steps) ? run.steps : [];
+  let step = run.steps.find((item: any) => item.id === stepId);
+  if (!step) {
+    step = {
+      id: stepId || `${run.id}:event-${run.steps.length + 1}`,
+      index: run.steps.length,
+      name: name || "执行 Agent 任务",
+      status,
+      attempts: 0,
+      startedAt: null,
+      finishedAt: null,
+      error: null,
+    };
+    run.steps.push(step);
+  }
+  return step;
+}
+
+function updateStepFromEvent(run: RunRecord, type: string, data: RunRecord = {}) {
+  const toolName = data.name || data.toolName;
+  const toolCallId = data.toolCallId || data.id || "";
+  const stepId = data.stepId || (toolName ? `${run.id}:tool:${toolCallId || toolName}` : null);
+  if (type === "step_started" || type === "tool_start") {
+    const existing = run.steps?.find((item: any) => item.id === stepId);
+    const step = ensureStep(run, stepId, data.name ? stepTitleForTool(data.name) : data.name, "running");
+    const wasRunning = existing?.status === "running";
+    step.status = "running";
+    step.startedAt ||= new Date().toISOString();
+    if (!wasRunning) step.attempts = Number(step.attempts || 0) + 1;
+    run.currentStepId = step.id;
+  } else if (type === "step_finished" || type === "tool_end") {
+    const step = ensureStep(run, stepId, data.name ? stepTitleForTool(data.name) : data.name, "completed");
+    step.status = data.isError ? "failed" : (data.status || "completed");
+    step.error = data.isError ? String(data.error || data.result || "工具执行失败").slice(0, 500) : null;
+    step.finishedAt = new Date().toISOString();
+  } else if (type === "agent_error") {
+    const step = run.currentStepId ? ensureStep(run, run.currentStepId, undefined) : ensureStep(run, null, "执行 Agent 任务", "failed");
+    step.status = "failed";
+    step.error = String(data.message || "Agent 执行失败").slice(0, 500);
+    step.finishedAt = new Date().toISOString();
+  }
+}
+
+function normalizeTrackedPath(run: RunRecord, value: unknown) {
+  const raw = String(value || "").trim().replace(/\\/g, "/");
+  if (!raw || raw === ".") return ".";
+  if (path.isAbsolute(raw)) {
+    const relative = path.relative(run.cwd, raw).replace(/\\/g, "/");
+    if (relative && !relative.startsWith("../") && relative !== "..") return relative;
+    return ".";
+  }
+  return raw.replace(/^\.\//, "").replace(/\/+$/, "") || ".";
+}
+
+// 临时/调试类噪音文件：不进入工作产物列表（agent 执行过程中的脚本、日志、缓存等）
+const NOISE_ARTIFACT_PATTERNS = [
+  /(^|\/)(node_modules|__pycache__|\.venv|venv|\.git|\.oaw|\.cache|\.pytest_cache|dist-info)(\/|$)/i,
+  /(^|\/)\./,                                   // 隐藏文件与目录（含 .agent-context.md）
+  /(^|\/)~\$/,                                  // Office 锁文件（~$xxx.docx/xlsx/pptx）
+  /(^|\/)_agent_write_test\./i,                 // 写入探针测试文件
+  /_log\d*\.(txt|json|md|log)$/i,               // 调试日志
+  /(^|\/)(tmp|temp|test)_[^/]*\.(py|js|mjs|cjs|ts|sh|bat|ps1|txt|log|json)$/i,
+  /(^|\/)debug[^/]*\.(py|js|mjs|txt|log|json)$/i,
+  /\.(tmp|temp|log|bak|old|orig|pyc|pyo|swp|swo)$/i,
+];
+// 根目录/任意目录的前导下划线脚本类临时文件：_head.py、_jscheck.txt、_mapdata_run.txt
+const SCRATCH_SCRIPT_BASENAME = /^_[^/]*\.(py|js|mjs|cjs|ts|sh|bat|ps1|txt|log|json)$/i;
+
+/** 临时/调试文件判定：用于产物列表过滤，避免糟糕的中间文件混入“工作产物”。 */
+export function isNoiseArtifactPath(relativePath: unknown) {
+  const value = String(relativePath || "").replace(/\\/g, "/").trim();
+  if (!value) return false;
+  for (const pattern of NOISE_ARTIFACT_PATTERNS) {
+    if (pattern.test(value)) return true;
+  }
+  const basename = value.split("/").pop() || "";
+  return SCRATCH_SCRIPT_BASENAME.test(basename);
+}
+
+function trackedPathMatches(tracked: string, candidate: string) {
+  if (tracked === ".") return true;
+  return candidate === tracked || candidate.startsWith(`${tracked}/`);
+}
+
+/**
+ * 只保留本 Run 明确触碰过的文件。
+ * 工作区快照仍用于发现 Office CLI/Bash 的直接写入，但并行 Run 的文件不能
+ * 因为恰好在同一时间发布而被错误归入当前产物。
+ */
+export function filterRunChanges(run: RunRecord | null, changes: unknown = []) {
+  if (!run || !Array.isArray(changes)) return [];
+  const tracked = [...new Set((run.touchedPaths || []).map((value: unknown) => normalizeTrackedPath(run, value)).filter(Boolean) as string[])];
+  return changes.filter((item: any) => {
+    // 兼容两种输入：字符串路径（waitForFlush/diffWorkspace）与对象（changedFiles）
+    const pathValue = typeof item === "string" ? item : item?.path;
+    if (isNoiseArtifactPath(pathValue)) return false;
+    if (typeof item === "string") {
+      if (!tracked.length) return true;
+      const candidate = normalizeTrackedPath(run, item);
+      return tracked.some((prefix) => trackedPathMatches(prefix, candidate));
+    }
+    if (!tracked.length) return true;
+    const candidates = [item?.path, item?.from].map((value) => normalizeTrackedPath(run, value)).filter(Boolean);
+    return candidates.some((candidate) => tracked.some((prefix) => trackedPathMatches(prefix, candidate)));
+  });
+}
+
+export function beginRun({ clientId, threadId, sessionId = null, cwd = getWorkspace(), task = null, references = [], workflow = null, projectId = null, capabilityPlan = null, runtimeSnapshot = null, recoveryChain = [], snapshotMode = "full", beforeSnapshot = null, model = null, branchOfRunId = null, branchPointEntryId = null }: RunRecord = {}): RunRecord {
+  const id = `run_${crypto.randomUUID()}`;
+  const staging = ensureRunStaging(id, String(cwd));
+  const normalizedSnapshotMode = snapshotMode === "none" ? "none" : "full";
+  // Chat 是只读边界，不应为每轮问答扫描并复制整个工作区。仍保留 Run、事件和
+  // 会话追溯记录；真正可能写文件的 Agent / Office Run 继续使用完整可回滚快照。
+  const before = normalizedSnapshotMode === "none"
+    ? { root: path.resolve(String(cwd)), capturedAt: new Date().toISOString(), files: {}, size: 0 }
+    : (beforeSnapshot?.root === path.resolve(String(cwd)) && beforeSnapshot?.files && typeof beforeSnapshot.files === "object"
+      ? beforeSnapshot
+      : snapshotWorkspace(String(cwd)));
+  // beginRun 的内部构成：回滚底稿复制已改为后台任务，这里只记录"启动"耗时（应当≈0）。
+  const blobsStartedAt = Date.now();
+  if (normalizedSnapshotMode === "full") startBeforeBlobs(id, before);
+  const blobsMs = Date.now() - blobsStartedAt;
+  const run: RunRecord = {
+    id,
+    version: 1,
+    status: "running",
+    clientId: clientId || null,
+    threadId: threadId || null,
+    sessionId,
+    projectId: projectId || null,
+    // U3：分支溯源（可选字段，缺省 null 向后兼容）——该 Run 是否由某次会话树导航
+    // （session-branch）继续而来；branchPointEntryId 指向 Pi 会话树的目标节点。
+    branchOfRunId: branchOfRunId || null,
+    branchPointEntryId: branchPointEntryId || null,
+    cwd: before.root,
+    // 本轮实际使用的模型（provider/model）：会话里按轮显示"由谁执行"、以及
+    // 模型切换分割线都读这一份记录，不再用"当前选择"冒充历史。
+    model: model ? String(model) : null,
+    task: task || null,
+    capabilityPlan: capabilityPlan || task?.capabilityPlan || null,
+    runtime: runtimeSnapshot || null,
+    recoveryChain: Array.isArray(recoveryChain) ? recoveryChain : [],
+    checkpoint: {
+      version: 1,
+      type: "jsonl_reopen",
+      status: sessionId ? "available" : "unavailable",
+      native: false,
+      sessionId: sessionId || null,
+      note: "当前使用 JSONL 会话重开 + 恢复提示词；Pi token 级 checkpoint 尚未接入。",
+      updatedAt: new Date().toISOString(),
+    },
+    workflow: workflow ? { id: workflow.id, name: workflow.name, valid: workflow.valid, missing: workflow.missing || [] } : null,
+    todoVersion: 1,
+    todos: [],
+    steps: Array.isArray(workflow?.steps) ? workflow.steps.map((name: string, index: number) => ({ id: `${workflow.id}:step-${index + 1}`, index, name, status: index === 0 ? "ready" : "pending", attempts: 0, startedAt: null, finishedAt: null, error: null })) : [],
+    references: references || [],
+    // 由 write_started/artifact_staged 事件记录本 Run 的写入边界。
+    // 没有触碰文件时保持空数组，兼容只读 Agent 和旧 Run。
+    touchedPaths: [],
+    events: [{ seq: 1, type: "run_started", data: {}, at: new Date().toISOString() }],
+    before,
+    artifacts: [],
+    snapshotMode: normalizedSnapshotMode,
+    staging: { directory: path.relative(PROJECT_DIR, staging.directory).replace(/\\/g, "/"), status: "open", files: [] },
+    startedAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    finishedAt: null,
+  };
+  if (!run.steps.length) {
+    run.steps.push({ id: `${id}:main`, index: 0, name: "执行 Agent 任务", status: "running", attempts: 1, startedAt: run.startedAt, finishedAt: null, error: null });
+    run.currentStepId = `${id}:main`;
+  }
+  const saveStartedAt = Date.now();
+  const saved = saveRun(run);
+  const saveMs = Date.now() - saveStartedAt;
+  const appendStartedAt = Date.now();
+  appendEvent({ clientId: run.clientId, threadId: run.threadId, runId: run.id, type: "run_started", data: { status: run.status, task: run.task, projectId: run.projectId } });
+  const appendMs = Date.now() - appendStartedAt;
+  try { attachRunTimingSpans(id, { blobs: blobsMs, saveRun: saveMs, appendEvent: appendMs, beforeFiles: Object.keys(before.files || {}).length }); } catch {}
+  return saved;
+}
+
+export function updateRunStep(id: string, stepId: unknown, patch: RunRecord = {}) {
+  const run = loadRun(id);
+  if (!run || !Array.isArray(run.steps)) return null;
+  const step = run.steps.find((item: any) => item.id === stepId || String(item.index) === String(stepId));
+  if (!step) return null;
+  const nextStatus = patch.status || step.status;
+  Object.assign(step, patch, { status: nextStatus });
+  if (nextStatus === "running") { step.startedAt ||= new Date().toISOString(); step.attempts = Number(step.attempts || 0) + 1; }
+  if (["completed", "failed", "skipped"].includes(nextStatus)) step.finishedAt = new Date().toISOString();
+  run.events = Array.isArray(run.events) ? run.events : [];
+  const seq = Number(run.eventSeq || run.events.length || 0) + 1;
+  run.eventSeq = seq;
+  run.events.push({ seq, type: "step_updated", data: { stepId: step.id, status: step.status }, at: new Date().toISOString() });
+  const saved = saveRun(run);
+  appendEvent({ clientId: run.clientId, threadId: run.threadId, runId: run.id, type: "step_updated", data: { stepId: step.id, status: step.status } });
+  return saved;
+}
+
+/**
+ * 权威终稿单写入：每个 runId 至多一条用户可见的 assistant_final。
+ * - 相同文本重复写入 → 幂等 no-op（重连 / 回放 / 收尾兜底不追加第二份）
+ * - 文本被修正 → 更新同一条事件（保留 seq 与位置），version 递增，不新增气泡
+ * 所有 assistant_final 写入都必须经过这里，实现“唯一归属”。
+ */
+export function recordRunFinalText(id: string, text: unknown, { source = "agent", messageId = null }: { source?: string; messageId?: string | null } = {}) {
+  const run = loadRun(id);
+  if (!run) return null;
+  const value = String(text || "").trim();
+  run.events = Array.isArray(run.events) ? run.events : [];
+  const stableMessageId = messageId || run.finalMessageId || `final_${run.id}`;
+  if (!value) return { changed: false, event: null, run: getRun(id) };
+  const index = run.events.findIndex((item: any) => item?.type === "assistant_final");
+  if (index >= 0) {
+    const existing = run.events[index];
+    if (String(existing?.data?.text || "").trim() === value) return { changed: false, event: existing, run: getRun(id) };
+    const version = Number(existing?.data?.version || 1) + 1;
+    const data = { ...(existing.data || {}), text: value, source, messageId: stableMessageId, version, updatedAt: new Date().toISOString() };
+    existing.data = data;
+    run.finalText = value;
+    run.finalMessageId = stableMessageId;
+    run.finalTextVersion = version;
+    const saved = saveRun(run);
+    appendEvent({ clientId: run.clientId, threadId: run.threadId, runId: run.id, type: "assistant_final", data });
+    return { changed: true, event: existing, run: saved };
+  }
+  const seq = Number(run.eventSeq || run.events[run.events.length - 1]?.seq || run.events.length || 0) + 1;
+  run.eventSeq = seq;
+  const data = { text: value, source, messageId: stableMessageId, version: 1, at: new Date().toISOString() };
+  const event = { seq, type: "assistant_final", data, at: data.at };
+  if (run.events.length < 800) run.events.push(event);
+  run.finalText = value;
+  run.finalMessageId = stableMessageId;
+  run.finalTextVersion = 1;
+  const saved = saveRun(run);
+  appendEvent({ clientId: run.clientId, threadId: run.threadId, runId: run.id, type: "assistant_final", data });
+  return { changed: true, event, run: saved };
+}
+
+export function recordRunEvent(id: string, type: string, data: RunRecord = {}) {
+  // 终稿有唯一写入点：任何 assistant_final 都走幂等路径，避免同 Run 双终稿。
+  if (type === "assistant_final") {
+    return recordRunFinalText(id, data?.text, { source: data?.source || "agent", messageId: data?.messageId || null })?.run || null;
+  }
+  const run = loadRun(id);
+  if (!run) return null;
+  run.events = Array.isArray(run.events) ? run.events : [];
+  if (["write_started", "artifact_staged", "artifact_materialized"].includes(type) && data && typeof data === "object" && data.path) {
+    run.touchedPaths = Array.isArray(run.touchedPaths) ? run.touchedPaths : [];
+    const trackedPath = normalizeTrackedPath(run, data.path);
+    if (!run.touchedPaths.includes(trackedPath)) run.touchedPaths.push(trackedPath);
+  }
+  updateStepFromEvent(run, type, data);
+  if (type === "runtime_health" && data && typeof data === "object") {
+    run.runtimeHealth = data;
+    run.runtime = { ...(run.runtime || {}), ...data };
+  }
+  if (type === "runtime_error" && data && typeof data === "object") {
+    run.runtimeHealth = { status: "failed", ...data };
+    if (data.runtime && typeof data.runtime === "object") run.runtime = { ...(run.runtime || {}), ...data.runtime };
+    run.recovery = { required: true, reason: data.message || "Pi Runtime 异常", detectedAt: new Date().toISOString() };
+  }
+  const seq = Number(run.eventSeq || run.events[run.events.length - 1]?.seq || run.events.length || 0) + 1;
+  run.eventSeq = seq;
+  if (run.events.length < 800) run.events.push({ seq, type, data, at: new Date().toISOString() });
+  const saved = saveRun(run);
+  appendEvent({ clientId: run.clientId, threadId: run.threadId, runId: run.id, type, data });
+  return saved;
+}
+
+/** 幂等更新 Run 检查点；相同状态重复上报不会追加重复事件。 */
+export function updateRunCheckpoint(id: string, patch: RunRecord = {}) {
+  const run = loadRun(id);
+  if (!run) return null;
+  const next = { ...(run.checkpoint || {}), ...(patch || {}) };
+  const comparable = (value: unknown) => JSON.stringify(value);
+  if (comparable(next) === comparable(run.checkpoint || {})) return getRun(id);
+  next.updatedAt = new Date().toISOString();
+  run.checkpoint = next;
+  run.events = Array.isArray(run.events) ? run.events : [];
+  const seq = Number(run.eventSeq || run.events.length || 0) + 1;
+  run.eventSeq = seq;
+  run.events.push({ seq, type: "run_checkpoint_updated", data: next, at: next.updatedAt });
+  const saved = saveRun(run);
+  appendEvent({ clientId: run.clientId, threadId: run.threadId, runId: run.id, type: "run_checkpoint_updated", data: next });
+  return getRun(saved.id);
+}
+
+/** 变更稳定标识：同一 Run 内同一路径恒定，供差异接口按 id 解析（不接受任意路径）。 */
+export function changeIdForPath(relativePath: unknown) {
+  return `change_${crypto.createHash("sha1").update(String(relativePath || "").replace(/\\/g, "/")).digest("hex").slice(0, 12)}`;
+}
+
+function normalizeChangeTypeOf(change: any) {
+  const status = String(change?.status || "").toLowerCase();
+  if (change?.from) return "renamed";
+  if (["added", "created", "new"].includes(status)) return "added";
+  if (["deleted", "removed"].includes(status)) return "deleted";
+  if (status === "renamed") return "renamed";
+  if (["modified", "changed", "updated"].includes(status)) return "modified";
+  return "unclassified";
+}
+
+/**
+ * C01：把变更补全为可审计的 FileChange，并剔除“没有内容差异”的疑似变更。
+ *   - 归属分层（source）：write-ledger（台账给了具体路径）> run-window（本轮确有写入 +
+ *     运行窗口内变更）> unattributed（本轮没有任何写入证据，只能算线索）
+ *   - detectedBy 保留检测机制（snapshot / recent-mtime / write-ledger），便于解释来源
+ *   - 只有 before blob 可用、且当前内容与 Run.after 一致时才可回滚（blobs 字段交给前端判断）
+ */
+function finalizeFileChanges(run: RunRecord, changes: unknown, after: any) {
+  const touchedAll = (run.touchedPaths || [])
+    .map((value: unknown) => normalizeTrackedPath(run, value))
+    .filter(Boolean);
+  const touched = new Set<string>(touchedAll.filter((value: string) => value !== "."));
+  const toolCallIdByPath = new Map<string, string>();
+  for (const event of Array.isArray(run.events) ? run.events : []) {
+    if (event?.type !== "write_started") continue;
+    const trackedPath = normalizeTrackedPath(run, event?.data?.path);
+    const callId = event?.data?.toolCallId || event?.data?.callId || null;
+    if (trackedPath && trackedPath !== "." && callId && !toolCallIdByPath.has(trackedPath)) toolCallIdByPath.set(trackedPath, String(callId));
+  }
+  const out: any[] = [];
+  // 台账可能只知道“写过工作区”（bash / officecli 不回报具体路径，touchedPaths 只有 "."）。
+  // 此时还能救：本轮确有写入 + 文件在运行窗口内发生变化，两条证据合起来足以把变更归到本轮，
+  // 只是不如精确台账可靠（共享工作区里并行 Run 的写入同样落在窗口内）——记为 run-window（待确认）。
+  // 完全没有写入证据（纯读取的一轮）时，快照差异只能算“未归属线索”，不自动宣告交付。
+  const workspaceWrite = touchedAll.includes(".");
+  const writeEvidence = touched.size > 0 || workspaceWrite;
+  for (const change of Array.isArray(changes) ? changes : []) {
+    const relativePath = String((change as any)?.path || (change as any)?.relativePath || "").replace(/\\/g, "/");
+    if (!relativePath) continue;
+    const changeType = normalizeChangeTypeOf(change);
+    const viaLedger = touched.has(relativePath);
+    const source = viaLedger ? "write-ledger" : (writeEvidence ? "run-window" : "unattributed");
+    const confidence = viaLedger ? "confirmed" : "suspected";
+    // 疑似变更再核对一次：大小与修改时间都一致时视为“只是被 touch”，不算修改
+    if (confidence === "suspected" && changeType === "modified") {
+      const beforeItem = run.before?.files?.[relativePath];
+      const afterItem = after?.files?.[relativePath];
+      if (beforeItem && afterItem && beforeItem.size === afterItem.size
+        && Math.abs(Number(beforeItem.mtime || 0) - Number(afterItem.mtime || 0)) < 1) continue;
+    }
+    const beforeReversible = Boolean((change as any).before?.reversible) || beforeBlobExists(run.id, relativePath);
+    const afterAvailable = Boolean((change as any).after?.reversible) || Boolean(after?.files?.[relativePath]);
+    out.push({
+      ...(change as Record<string, unknown>),
+      changeId: changeIdForPath(relativePath),
+      relativePath,
+      changeType,
+      workspaceId: run.projectId || null,
+      cwd: run.cwd || null,
+      source,
+      confidence,
+      // 未归属线索不得自动成为交付物；仍需显式验收/固定才升级为 deliverable。
+      autoDeliverable: source !== "unattributed",
+      toolCallId: toolCallIdByPath.get(relativePath) || (change as any).toolCallId || null,
+      detectedBy: viaLedger ? "write-ledger" : ((change as any).detectedBy || (workspaceWrite ? "run-window" : "unattributed")),
+      detectable: changeType !== "deleted" || beforeReversible,
+      blobs: { before: beforeReversible, after: afterAvailable },
+    });
+  }
+  return out;
+}
+
+function changedFiles(before: any, after: any) {
+  const a = before?.files || {};
+  const b = after?.files || {};
+  const deleted: any[] = [];
+  const added: any[] = [];
+  for (const rel of Object.keys(a)) if (!b[rel]) deleted.push({ path: rel, status: "deleted", before: a[rel], after: null });
+  for (const rel of Object.keys(b)) if (!a[rel]) added.push({ path: rel, status: "added", before: null, after: b[rel] });
+  const renames: Array<{ from: string; to: string }> = [];
+  for (const oldItem of deleted) {
+    const match = added.find((item) => item.after?.hash && item.after.hash === oldItem.before?.hash && !renames.some((r) => r.from === oldItem.path || r.to === item.path));
+    if (match) renames.push({ from: oldItem.path, to: match.path });
+  }
+  const paths = new Set([...Object.keys(a), ...Object.keys(b)]);
+  const changed: any[] = [...paths].sort().flatMap((rel) => {
+    const oldItem = a[rel];
+    const newItem = b[rel];
+    if (!oldItem && newItem) return [{ path: rel, status: "added", before: null, after: newItem }];
+    if (oldItem && !newItem) return [{ path: rel, status: "deleted", before: oldItem, after: null }];
+    if (oldItem.hash !== newItem.hash || oldItem.size !== newItem.size) return [{ path: rel, status: "modified", before: oldItem, after: newItem }];
+    return [];
+  });
+  for (const rename of renames) {
+    const oldItem = a[rename.from];
+    const newItem = b[rename.to];
+    changed.push({ path: rename.to, status: "renamed", from: rename.from, before: oldItem, after: newItem });
+  }
+  return changed.filter((item) => !renames.some((r) => (item.status === "deleted" && item.path === r.from) || (item.status === "added" && item.path === r.to))).sort((x, y) => x.path.localeCompare(y.path));
+}
+
+/** Run 明确触碰过的具体文件（"." 代表只知道"写过但不知道写到哪"，不参与精确过滤）。 */
+function concreteTouchedPaths(run: RunRecord) {
+  return [...new Set((run.touchedPaths || []).map((value: unknown) => normalizeTrackedPath(run, value)).filter((value: string) => value && value !== "."))];
+}
+
+/**
+ * 运行窗口内的 mtime 变更扫描（产物检测兜底）。
+ *
+ * 存在的意义：
+ *   1. 工作区大于快照上限时，快照 diff 会漏掉新产物（"产物完全看不到"的根因）；
+ *   2. bash / officecli 写入无法回报具体文件（touchedPaths 只有 "."），快照又不可靠时，
+ *      至少能按"运行期间被改动的文件"把产物找回来。
+ * 只深入"运行期间自身有变动"的子目录，避免遍历整棵大树（本项目 7.5 万文件）。
+ */
+export function detectRecentWorkspaceFiles(root: string, sinceMs: number, { limit = RECENT_SCAN_LIMIT, timeBudgetMs = RECENT_SCAN_TIME_BUDGET_MS }: { limit?: number; timeBudgetMs?: number } = {}) {
+  const found: Array<{ path: string; size: number; mtime: number }> = [];
+  if (!Number.isFinite(sinceMs) || sinceMs <= 0) return found;
+  const deadline = Date.now() + timeBudgetMs;
+  const stack = [root];
+  while (stack.length && found.length < limit && Date.now() < deadline) {
+    const dir = stack.pop()!;
+    let entries: fs.Dirent[] = [];
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { continue; }
+    let parentChanged = false;
+    try { parentChanged = fs.statSync(dir).mtimeMs >= sinceMs; } catch {}
+    for (const entry of entries) {
+      if (found.length >= limit || Date.now() >= deadline) break;
+      if (entry.name.startsWith(".") || SNAPSHOT_SKIP_DIRS.has(entry.name)) continue;
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        // 目录自身在窗口内有变动（新增/删除子项）才继续深入。
+        let dirMtime = 0;
+        try { dirMtime = fs.statSync(full).mtimeMs; } catch { continue; }
+        if (parentChanged || dirMtime >= sinceMs) stack.push(full);
+        continue;
+      }
+      try {
+        const st = fs.statSync(full);
+        if (st.mtimeMs >= sinceMs) found.push({ path: path.relative(root, full).replace(/\\/g, "/"), size: st.size, mtime: st.mtimeMs });
+      } catch {}
+    }
+  }
+  return found;
+}
+
+/** 合并两种变更来源：快照 diff（带 before/after，可回滚）优先，mtime 扫描补齐缺失项。 */
+export function mergeChangeLists(snapshotChanges: unknown[] = [], recentChanges: unknown[] = []) {
+  const byPath = new Map<string, any>();
+  for (const item of snapshotChanges) byPath.set(String((item as any)?.path || ""), { ...(item as any), detectedBy: "snapshot" });
+  for (const item of recentChanges) {
+    const key = String((item as any)?.path || "");
+    if (!key || byPath.has(key)) continue;
+    byPath.set(key, { path: key, status: (item as any).status || "modified", before: null, after: null, detectedBy: "recent-mtime" });
+  }
+  return [...byPath.values()].sort((x, y) => String(x.path).localeCompare(String(y.path)));
+}
+
+function copyAfterBlobs(run: RunRecord, artifacts: any[], after: any) {
+  const dir = ensureDir(path.join(RUNS_DIR, run.id, "after"));
+  for (const artifact of artifacts) {
+    if (!artifact.after || artifact.after.size > MAX_BLOB_BYTES) continue;
+    const source = path.join(after.root, artifact.path);
+    const target = path.join(dir, artifact.path);
+    try {
+      ensureDir(path.dirname(target));
+      fs.copyFileSync(source, target);
+      artifact.after.reversible = true;
+    } catch {}
+  }
+}
+
+export function finishRun(id: string, { status = "completed", error = null, summary = "", sessionId = null, validations = [], publishPaths = null, completion = null }: RunRecord = {}): RunRecord | null {
+  const run = loadRun(id);
+  if (!run) return null;
+  // 并发收尾（例如 SSE 重放、后台异常兜底、取消请求同时到达）只能落一次终态。
+  // 否则第二次会重复发布/丢失产物并再次追加 run_finished，前端恢复时就会出现两条结论。
+  if (["completed", "failed", "cancelled", "aborted"].includes(run.status) && run.finishedAt) return run;
+  const persistWriteEvent = (type: string, data: unknown) => appendEvent({
+    clientId: run.clientId,
+    threadId: run.threadId,
+    runId: run.id,
+    type,
+    data,
+  });
+  let finalStatus: string = status;
+  let finalError: string | null = error;
+  let validationList: any[] = Array.isArray(validations) ? validations : [];
+  // 发布前自动验收：对暂存产物做一次结构校验（非空、Office/PDF 容器签名、JSON 可解析），
+  // 结果并入 run.validations。这样"产物是否可用"不再只依赖模型自觉声明：
+  // 校验失败的文件不会发布，全部失败时 Run 落为 failed（下面的既有逻辑处理）。
+  if (finalStatus === "completed") {
+    try {
+      const keyOf = (value: unknown) => String(value || "").replace(/\\/g, "/");
+      const already = new Set(validationList.map((item) => keyOf(item?.path)));
+      const prechecks = listStagedFilesForValidation(run.id)
+        .filter((item) => !already.has(keyOf(item.path)))
+        .map((item) => ({ ...validateArtifactFile(item.file, item.root, item.path), source: "publish_precheck" }));
+      if (prechecks.length) validationList = [...validationList, ...prechecks];
+    } catch { /* 预检失败不阻断发布流程，交给原有校验体系 */ }
+  }
+  const effectivePublishPaths: string[] | null = publishPaths ?? (validationList.some((item) => item?.status === "failed")
+    ? validationList.filter((item) => item?.status !== "failed").map((item) => item?.path).filter(Boolean)
+    : null);
+  // 混合场景跳过失败文件继续发布；但如果所有待发布文件都校验失败，
+  // 没有任何可发布内容，Run 必须落为失败而不是伪装完成。
+  const hasFailedValidation = validationList.some((item) => item?.status === "failed");
+  const hasPublishable = !hasFailedValidation || (Array.isArray(effectivePublishPaths) && effectivePublishPaths.length > 0);
+  if (finalStatus === "completed" && hasFailedValidation && !hasPublishable) {
+    finalStatus = "failed";
+    finalError ||= "产物校验失败，未发布临时产物";
+  }
+  if (finalStatus === "completed") {
+    try {
+      const staged = publishStagedRun(run.id, run.cwd, { threadId: run.threadId, onEvent: persistWriteEvent, paths: effectivePublishPaths });
+      run.staging = { ...(run.staging || {}), status: "published", files: staged };
+    } catch (publishError: any) {
+      const publishMessage = `临时产物发布失败：${publishError?.message || publishError}`;
+      discardStagedRun(run.id, { reason: "publish_failed", onEvent: persistWriteEvent });
+      run.staging = { ...(run.staging || {}), status: "discarded", files: [] };
+      run.publishError = publishMessage;
+      try { persistWriteEvent("write_rejected", { path: ".", kind: "artifact_publish", code: "PUBLISH_FAILED", message: publishMessage }); } catch {}
+      // 交付文件已经落在工作区（officecli/直接写盘）且通过校验时，不要因为"收尾搬移失败"把整轮判成失败——
+      // 如实降为部分完成并把原因写进结论（用户反馈的"干完了却显示失败"就包含这一类）。
+      const deliverablesOnDisk = (run.artifacts || []).length > 0
+        || validationList.some((item) => item?.status === "passed");
+      if (deliverablesOnDisk) finalStatus = "completed";
+      else { finalStatus = "failed"; finalError = publishMessage; }
+    }
+  } else {
+    discardStagedRun(run.id, { reason: finalStatus || "run_not_completed", onEvent: persistWriteEvent });
+    run.staging = { ...(run.staging || {}), status: "discarded", files: [] };
+  }
+  // 收尾清理本轮自己造出来的中间文件：只删"运行前快照里没有 + 落在临时目录/备份后缀"的文件，
+  // 有据可依，不碰用户原有内容。Agent 的自清理经常被别的步骤覆盖（实测：删了又被发布回来）。
+  try {
+    const cleaned = cleanupRunTempArtifacts(run, persistWriteEvent);
+    if (cleaned.length) run.tempCleaned = cleaned;
+  } catch {}
+  try {
+    const shouldTrackWorkspace = run.snapshotMode !== "none";
+    const after = shouldTrackWorkspace
+      ? snapshotWorkspace(run.cwd)
+      : { root: path.resolve(run.cwd), capturedAt: new Date().toISOString(), files: {}, size: 0, truncated: false };
+    // 变更来源①：前后快照 diff（带 before/after，可回滚）。工作区大于快照上限时会截断。
+    const snapshotChanges = shouldTrackWorkspace ? changedFiles(run.before, after) : [];
+    // 变更来源②：运行窗口内的 mtime 扫描。仅当没有明确触碰路径时启用（有明确路径时
+    // 快照 diff 已经足够精确），用于补齐快照截断与 bash/officecli 无法回报目标的情况。
+    let recentChanges: any[] = [];
+    if (shouldTrackWorkspace && !concreteTouchedPaths(run).length) {
+      const sinceMs = new Date(run.startedAt || Date.now()).getTime() - 2000;
+      recentChanges = detectRecentWorkspaceFiles(run.cwd, sinceMs).map((item) => ({
+        path: item.path,
+        status: run.before?.files?.[item.path] ? "modified" : "added",
+      }));
+      if (recentChanges.length) run.changeDetection = { source: "recent-mtime", scanned: recentChanges.length, snapshotTruncated: Boolean(run.before?.truncated || after.truncated) };
+    }
+    const rawChanges = shouldTrackWorkspace ? filterRunChanges(run, mergeChangeLists(snapshotChanges, recentChanges)) : [];
+    if (shouldTrackWorkspace) copyAfterBlobs(run, rawChanges, after);
+    run.after = after;
+    // C01：补全审计字段 + 剔除“没有内容差异”的疑似变更（必须在 after blob 复制之后判定）
+    run.artifacts = shouldTrackWorkspace ? finalizeFileChanges(run, rawChanges, after) : [];
+    const artifacts = run.artifacts;
+    run.snapshotTruncated = Boolean(run.before?.truncated || after.truncated);
+    run.status = finalStatus;
+    run.error = finalError;
+    // 已落终态：从"待收尾的取消"表里移除，看门狗不再管它。
+    if (["completed", "failed", "cancelled", "aborted"].includes(finalStatus)) pendingCancellations.delete(run.id);
+    if (sessionId) run.sessionId = sessionId;
+    run.checkpoint = {
+      ...(run.checkpoint || {}),
+      status: sessionId || run.sessionId ? "available" : "unavailable",
+      sessionId: sessionId || run.sessionId || null,
+      updatedAt: new Date().toISOString(),
+    };
+    const validationMap = new Map(validationList.map((item) => [String(item?.path || "").replace(/\\/g, "/"), item]));
+    for (const artifact of artifacts) {
+      artifact.artifactId = `artifact_${crypto.randomUUID()}`;
+      artifact.runId = run.id;
+      artifact.sessionId = run.sessionId || null;
+      artifact.projectId = run.projectId || null;
+      artifact.validation = validationMap.get(String(artifact.path || "").replace(/\\/g, "/")) || null;
+      artifact.verificationStatus = artifact.validation?.status || "not_checked";
+    }
+    run.validations = validationList;
+    run.verificationStatus = run.validations.some((item: any) => item.status === "failed")
+      ? "failed"
+      : run.validations.some((item: any) => item.status === "warning")
+        ? "warning"
+        : run.validations.length
+          ? "passed"
+          : "not_checked";
+    const verificationNote = run.verificationStatus === "failed" ? "，产物校验发现问题" : run.verificationStatus === "warning" ? "，产物校验有提示" : "";
+    run.summary = summary || (artifacts.length
+      ? `本轮处理 ${artifacts.length} 个文件${verificationNote}`
+      : (run.snapshotTruncated ? "本轮未检测到文件变更（工作区过大，快照未覆盖全部文件）" : "本轮未产生文件变更"));
+    // 验收阶段事件：让前端执行流能显示"验证"阶段与结果（发布前预检 / 显式校验）
+    if (run.validations.length) {
+      const validatedAt = new Date().toISOString();
+      const validateSeq = Number(run.eventSeq || run.events[run.events.length - 1]?.seq || run.events.length || 0) + 1;
+      run.eventSeq = validateSeq;
+      const validateData = {
+        status: run.verificationStatus,
+        checked: run.validations.length,
+        failed: run.validations.filter((item: any) => item.status === "failed").length,
+        precheck: run.validations.some((item: any) => item.source === "publish_precheck"),
+      };
+      run.events.push({ seq: validateSeq, type: "artifacts_validated", data: validateData, at: validatedAt });
+      appendEvent({ clientId: run.clientId, threadId: run.threadId, runId: run.id, type: "artifacts_validated", data: validateData });
+    }
+    // 完成语义：显式声明（complete_task）优先；否则由上层传入的兼容推断结果。
+    // 完成声明绑定 runId：跨 Run 的旧声明不可串入本轮。
+    if (completion && typeof completion === "object") run.completion = { ...completion, runId: run.id };
+    // 收尾发布失败的警告写进结论卡：状态可以保 completed（交付文件已在盘上），但必须让用户看到原因。
+    if (run.publishError && run.completion && typeof run.completion === "object") {
+      run.completion.summary = `${String(run.completion.summary || "").slice(0, 3600)}\n\n⚠ ${run.publishError}（交付文件已写入工作区并通过校验，仅"收尾搬运"未完成）`;
+      run.completion.status = run.completion.status === "success" ? "partial" : run.completion.status;
+    }
+    // 结论优先作为 Run 摘要：历史列表与结果卡标题应展示真实结论，而不是“本轮处理 N 个文件”。
+    if (run.completion?.summary) run.summary = String(run.completion.summary).slice(0, 4000);
+    // 计划漂移收口：收尾时仍有未完成待办时，写进 completion.incomplete 并如实降级，
+    // 避免"计划没做完"却报告 success。
+    const unfinishedTodos = (Array.isArray(run.todos) ? run.todos : [])
+      .filter((todo: any) => !["completed", "skipped"].includes(String(todo?.status || "")));
+    if (unfinishedTodos.length && run.completion && typeof run.completion === "object") {
+      const titles = unfinishedTodos
+        .map((todo: any) => String(todo?.title || todo?.id || "").trim())
+        .filter(Boolean)
+        .slice(0, 10);
+      run.completion = {
+        ...run.completion,
+        status: run.completion.status === "success" ? "partial" : run.completion.status,
+        incomplete: [...new Set([...(Array.isArray(run.completion.incomplete) ? run.completion.incomplete : []), ...titles])].slice(0, 12),
+        todoNote: `收尾时仍有 ${unfinishedTodos.length} 项待办未完成`,
+      };
+    }
+    // 客观结果降级：取消/运行失败/验收失败可下调声明结论；模型 success 不可上调客观失败。
+    if (run.completion && typeof run.completion === "object") {
+      run.completion = applyObjectiveDowngrade(run.completion, {
+        runStatus: finalStatus,
+        verificationStatus: run.verificationStatus,
+      });
+    }
+    run.finishedAt = new Date().toISOString();
+    run.events = Array.isArray(run.events) ? run.events : [];
+    run.steps = Array.isArray(run.steps) ? run.steps : [];
+    for (const step of run.steps) {
+      if (step.status === "running" || step.status === "ready") {
+        step.status = finalStatus === "completed" ? "completed" : (finalStatus === "cancelled" ? "cancelled" : "failed");
+        step.finishedAt = run.finishedAt;
+      }
+    }
+    const seq = Number(run.eventSeq || run.events[run.events.length - 1]?.seq || run.events.length || 0) + 1;
+    run.eventSeq = seq;
+    const finishedData = { status: finalStatus, artifacts: artifacts.length, verificationStatus: run.verificationStatus, completion: run.completion || null, finalText: run.finalText || null, finalMessageId: run.finalMessageId || null, snapshotTruncated: Boolean(run.snapshotTruncated) };
+    run.events.push({ seq, type: "run_finished", data: finishedData, at: run.finishedAt });
+    const saved = saveRun(run);
+    appendEvent({ clientId: run.clientId, threadId: run.threadId, runId: run.id, type: "run_finished", data: finishedData });
+    return saved;
+  } finally {
+    releaseRunLocks(run.id);
+  }
+}
+
+/**
+ * 服务重启后，磁盘上仍为活动态的 Run 不可能继续持有旧进程内存，
+ * 先标记为 recovering，交给任务中心显式继续，避免假装仍在执行。
+ */
+export function recoverActiveRuns({ onlyIds = null }: { onlyIds?: string[] | null } = {}) {
+  ensureDir(RUNS_DIR);
+  reclaimStaleWriteLocks();
+  const allowList = Array.isArray(onlyIds) ? new Set(onlyIds.map(String)) : null;
+  const recovered: string[] = [];
+  for (const name of fs.readdirSync(RUNS_DIR).filter((item) => item.endsWith(".json"))) {
+    const run = loadRun(path.basename(name, ".json"));
+    if (!run || !ACTIVE_RUN_STATUSES.has(run.status)) continue;
+    // 上次重启已经标记为 recovering、这次重启仍然挂着：说明用户没有再继续它，
+    // 按失败收尾（discard staging + 补 run_finished），避免 run_started 永远没有终态。
+    if (run.status === "recovering") {
+      const finished = finishRun(run.id, {
+        status: "failed",
+        error: run.error || "服务重启两次后未被恢复，任务已终止",
+        summary: "任务在服务重启后未被继续，已自动收尾",
+      });
+      if (finished) recovered.push(`${run.id}(收尾)`);
+      continue;
+    }
+    if (allowList && !allowList.has(run.id)) continue;
+    run.status = "recovering";
+    run.recovery = { required: true, reason: "服务重启后需要用户确认继续", detectedAt: new Date().toISOString() };
+    run.events = Array.isArray(run.events) ? run.events : [];
+    const seq = Number(run.eventSeq || run.events.length || 0) + 1;
+    run.eventSeq = seq;
+    run.events.push({ seq, type: "run_recovered", data: { status: "recovering" }, at: run.recovery.detectedAt });
+    saveRun(run);
+    appendEvent({ clientId: run.clientId, threadId: run.threadId, runId: run.id, type: "run_recovered", data: { status: "recovering", reason: run.recovery.reason } });
+    recovered.push(run.id);
+  }
+  return recovered;
+}
+
+export function requestRunCancellation(id: string, reason: unknown = "用户请求中断") {
+  const run = loadRun(id);
+  if (!run) return null;
+  if (!ACTIVE_RUN_STATUSES.has(run.status)) return getRun(id);
+  if (run.status !== "cancel_requested") {
+    run.status = "cancel_requested";
+    run.cancelRequestedAt = new Date().toISOString();
+    run.cancelReason = String(reason || "用户请求中断");
+    run.events = Array.isArray(run.events) ? run.events : [];
+    const seq = Number(run.eventSeq || run.events.length || 0) + 1;
+    run.eventSeq = seq;
+    run.events.push({ seq, type: "run_cancel_requested", data: { reason: run.cancelReason }, at: run.cancelRequestedAt });
+    saveRun(run);
+    appendEvent({ clientId: run.clientId, threadId: run.threadId, runId: run.id, type: "run_cancel_requested", data: { reason: run.cancelReason, status: run.status } });
+  }
+  // 记入待收尾表：SDK 若迟迟不回来，服务端定时器会强制把这条 Run 收成 cancelled，
+  // 否则它会永远停在 cancel_requested（界面一直是「中断中」，任务中心一直算未完成）。
+  pendingCancellations.set(run.id, {
+    cancelRequestedAt: run.cancelRequestedAt || new Date().toISOString(),
+    lastEventAt: lastRunEventAt(run),
+  });
+  return getRun(id);
+}
+
+/** 进入取消但尚未终结的 Run（供"中断后无响应"看门狗使用）。 */
+export function listPendingCancellations() {
+  return [...pendingCancellations.entries()].map(([id, info]) => ({ id, ...info }));
+}
+
+export function clearPendingCancellation(id: string) {
+  return pendingCancellations.delete(id);
+}
+
+function lastRunEventAt(run: RunRecord) {
+  const events = Array.isArray(run?.events) ? run.events : [];
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    const at = Date.parse(events[i]?.at || "");
+    if (Number.isFinite(at)) return new Date(at).toISOString();
+  }
+  return run?.cancelRequestedAt || run?.startedAt || new Date().toISOString();
+}
+
+export function getRun(id: string) {
+  const run = loadRun(id);
+  if (!run) return null;
+  return publicRunView(run);
+}
+
+/**
+ * 读取时统一归属口径（含历史数据）：Run 的 artifacts 在入库时固化了当时的归属结论，
+ * 后来补充的"本轮确有写入 + 运行窗口内变更 = run-window"规则不会自动回溯。这里按同一套
+ * 证据（touchedPaths 的精确路径 / 工作区级 "."）重新标注 source，保证新旧数据一致：
+ *   - 精确台账路径 → write-ledger（已确认）
+ *   - 有工作区级写入证据 → run-window（待确认）
+ *   - 完全没有写入证据 → unattributed（只作线索）
+ */
+function withNormalizedAttribution(run: RunRecord) {
+  if (!run || !Array.isArray(run.artifacts) || !run.artifacts.length) return run;
+  const touchedAll = (run.touchedPaths || []).map((value: unknown) => normalizeTrackedPath(run, value)).filter(Boolean);
+  const concrete = new Set(touchedAll.filter((value: string) => value !== "."));
+  const workspaceWrite = touchedAll.includes(".");
+  if (!concrete.size && !workspaceWrite) return run;
+  let changed = false;
+  const artifacts = run.artifacts.map((item: any) => {
+    const artifactPath = String(item?.path || item?.relativePath || "").replace(/\\/g, "/");
+    const source = concrete.has(artifactPath) ? "write-ledger" : (item?.source === "unattributed" ? "run-window" : item?.source);
+    if (!source || source === item?.source) return item;
+    changed = true;
+    return { ...item, source, autoDeliverable: source !== "unattributed" };
+  });
+  return changed ? { ...run, artifacts } : run;
+}
+
+// 把已加载的 Run 投影为对外公开结构（去掉体积很大的 before/after 快照）。
+// listRuns 直接复用该方法，避免对同一文件二次 loadRun。
+// includeEvents=false 时用 eventCount 代替 events；
+// eventByteBudget>0 时只保留尾部事件直到接近该字节预算（列表接口瘦身，单条 Run 查询不受限）。
+function publicRunView(run: RunRecord, { includeEvents = true, eventByteBudget = 0 }: { includeEvents?: boolean; eventByteBudget?: number } = {}) {
+  const normalized = withNormalizedAttribution(run);
+  const { before, after, ...publicRun } = normalized;
+  if (Array.isArray(publicRun.events) && !includeEvents) {
+    publicRun.eventCount = publicRun.events.length;
+    delete publicRun.events;
+  } else if (Array.isArray(publicRun.events) && eventByteBudget > 0 && publicRun.events.length > 1) {
+    const events = publicRun.events;
+    let bytes = 0;
+    let start = events.length;
+    for (let i = events.length - 1; i >= 0; i -= 1) {
+      const size = JSON.stringify(events[i]).length;
+      if (start < events.length && bytes + size > eventByteBudget) break;
+      bytes += size;
+      start = i;
+    }
+    if (start > 0) {
+      publicRun.eventCount = events.length;
+      publicRun.events = events.slice(start);
+    }
+  }
+  const steps = Array.isArray(publicRun.steps) ? publicRun.steps : [];
+  const completed = steps.filter((step: any) => ["completed", "skipped"].includes(step.status)).length;
+  const todos = Array.isArray(publicRun.todos) ? publicRun.todos : [];
+  const todoCompleted = todos.filter((item: any) => ["completed", "skipped"].includes(item.status)).length;
+  // O-P1（OAW_STAGED_VISIBLE，默认关）：运行中的 Run 把已暂存（尚未物化）的写入路径
+  // 以「暂存」临时产物投影出来，让长任务执行期间产物面板就能看到进展；
+  // 非运行态 / flag 关闭时保持基线（artifacts 仅在 run 结束时由 finalizeFileChanges 装配）。
+  if (RUNTIME_FLAGS.stagedVisible && ["running", "queued", "waiting_user", "finishing"].includes(publicRun.status)) {
+    const existing = new Set((publicRun.artifacts || []).map((item: any) => String(item?.path || "").replace(/\\/g, "/")));
+    const staged = (publicRun.touchedPaths || [])
+      .map((value: unknown) => String(value || "").replace(/\\/g, "/"))
+      .filter((value: string) => value && value !== "." && !existing.has(value))
+      .map((value: string) => ({
+        artifactId: `staged:${publicRun.id}:${value}`,
+        path: value,
+        source: "staged",
+        status: "staged",
+        staged: true,
+      }));
+    if (staged.length) publicRun.artifacts = [...(publicRun.artifacts || []), ...staged];
+  }
+  return {
+    ...publicRun,
+    actions: {
+      canCancel: ["running", "queued", "waiting_user", "recovering"].includes(publicRun.status),
+      canResume: ["recovering", "failed", "cancelled", "aborted"].includes(publicRun.status),
+      canRetry: ["failed", "cancelled", "aborted"].includes(publicRun.status),
+    },
+    progress: { completed, total: steps.length, running: steps.filter((step: any) => step.status === "running").length },
+    todoProgress: { completed: todoCompleted, total: todos.length, running: todos.filter((item: any) => item.status === "in_progress").length, blocked: todos.filter((item: any) => item.status === "blocked").length, failed: todos.filter((item: any) => item.status === "failed").length },
+    currentStep: steps.find((step: any) => step.id === publicRun.currentStepId) || steps.find((step: any) => step.status === "running") || null,
+    workspaceSnapshot: { beforeFiles: Object.keys(before?.files || {}).length, afterFiles: Object.keys(after?.files || {}).length },
+  };
+}
+
+// 任务中心列表、徽标计数只需要状态摘要：完整 Run 视图（步骤/待办/事件/引用）
+// 单条可达数十 KB，列表一次 50 条就是 1MB 级响应，而明细点击时另有单条加载。
+export function runSummaryView(view: any) {
+  if (!view) return null;
+  return {
+    id: view.id,
+    status: view.status,
+    mode: view.mode || "",
+    task: view.task ? { goal: view.task.goal || "", title: view.task.title || "" } : null,
+    summary: view.summary || "",
+    completion: view.completion || null,
+    sessionId: view.sessionId || null,
+    threadId: view.threadId || null,
+    projectId: view.projectId || null,
+    cwd: view.cwd || "",
+    startedAt: view.startedAt || null,
+    finishedAt: view.finishedAt || null,
+    acceptanceStatus: view.acceptanceStatus || null,
+    verificationStatus: view.verificationStatus || null,
+    progress: view.progress || null,
+    todoProgress: view.todoProgress || null,
+    actions: view.actions || null,
+    eventCount: view.eventCount || 0,
+    workflow: view.workflow ? { id: view.workflow.id, name: view.workflow.name } : null,
+  };
+}
+
+function sameRunWorkspace(a: unknown, b: unknown) {
+  const left = path.resolve(String(a || ""));
+  const right = path.resolve(String(b || ""));
+  return process.platform === "win32"
+    ? left.toLowerCase() === right.toLowerCase()
+    : left === right;
+}
+
+// 只读 Run 元数据索引，供会话列表/项目统计等只依赖状态字段的场景使用：
+// 这些接口过去为了几个状态字段也要解析全部 Run（含 events/快照），是首屏慢的主因。
+export function listRunSummaries({ limit = 200 }: { limit?: number } = {}) {
+  ensureDir(RUNS_DIR);
+  const ids = fs.readdirSync(RUNS_DIR).filter((n) => n.endsWith(".json")).map((n) => path.basename(n, ".json"));
+  pruneRunIndex(ids);
+  return ids
+    .map((id) => runIndexEntry(id))
+    .filter(Boolean)
+    .sort((a, b) => String(b!.startedAt).localeCompare(String(a!.startedAt)))
+    .slice(0, Math.max(1, Math.min(500, limit)));
+}
+
+// 已删除的 Run 文件要顺带从索引里清掉（外部清理或删除会话时会产生）；
+// 只有索引明显大于当前文件数时才全量比对，避免每次列表都做 O(n) 删除扫描。
+function pruneRunIndex(ids: string[]) {
+  if (runIndex.size <= ids.length) return;
+  const current = new Set(ids);
+  for (const key of runIndex.keys()) {
+    if (!current.has(key)) runIndex.delete(key);
+  }
+}
+
+export function listRuns({ threadId = "", sessionId = "", cwd = "", projectId = "", status = "", mode = "", query = "", limit = 50, includeEvents = "latest" }: RunRecord = {}) {
+  ensureDir(RUNS_DIR);
+  const textQuery = String(query || "").trim().toLowerCase();
+  const ids = fs.readdirSync(RUNS_DIR).filter((n) => n.endsWith(".json")).map((n) => path.basename(n, ".json"));
+  pruneRunIndex(ids);
+  const sliced = ids
+    .map((id) => runIndexEntry(id))
+    .filter(Boolean)
+    .filter((meta) => (!threadId || meta!.threadId === threadId) && (!sessionId || meta!.sessionId === sessionId) && (!cwd || sameRunWorkspace(meta!.cwd, cwd)))
+    // 当前项目同时按 ID 和工作区查询；老 Run 可能还没有 projectId，
+    // 但只要其工作区相同仍应出现在任务中心，避免升级后历史任务消失。
+    .filter((meta) => (!projectId || meta!.projectId === projectId || (cwd && !meta!.projectId && sameRunWorkspace(meta!.cwd, cwd))) && (!status || status === "all" || meta!.status === status))
+    .filter((meta) => (!mode || mode === "all" || meta!.mode === mode))
+    .filter((meta) => !textQuery || meta!.search.includes(textQuery))
+    .sort((a, b) => String(b!.startedAt).localeCompare(String(a!.startedAt)))
+    .slice(0, Math.max(1, Math.min(200, limit)));
+  const ACTIVE_STATUSES = new Set(["running", "queued", "waiting_user", "cancel_requested", "finishing"]);
+  return sliced
+    .map((meta, index) => {
+      const run = loadRun(meta!.id);
+      if (!run) return null;
+      // 默认只为「运行中的 Run」和「最新 1 条」保留事件（最新一轮的轨迹展示够用），
+      // 其余用 eventCount 代替：单个 Run 事件可达数百 KB，列表接口必须瘦身。
+      // recovering 的旧 Run 不算运行中（它没有新事件，恢复视图按需单条加载）。
+      const include = includeEvents === "all"
+        || (includeEvents !== "none" && (ACTIVE_STATUSES.has(run.status) || index < 1));
+      return publicRunView(run, { includeEvents: include, eventByteBudget: include ? 160 * 1024 : 0 });
+    })
+    .filter(Boolean);
+}
+
+/** 持久化成果验收，保留旧版 validations/verificationStatus 供历史客户端兼容。 */
+export function updateRunAcceptance(id: string, acceptance: any) {
+  const run = loadRun(id);
+  if (!run) return null;
+  run.acceptance = acceptance || null;
+  run.acceptanceStatus = acceptance?.status || "not_checked";
+  run.acceptanceReadyToPublish = Boolean(acceptance?.readyToPublish);
+  const byPath = new Map<string, any>((acceptance?.artifacts || []).map((item: any): [string, any] => [String(item.path || "").replace(/\\/g, "/"), item]));
+  for (const artifact of run.artifacts || []) {
+    const result = byPath.get(String(artifact.path || "").replace(/\\/g, "/"));
+    if (!result) continue;
+    artifact.acceptance = result;
+    artifact.acceptanceStatus = result.status;
+  }
+  return saveRun(run);
+}
+
+export function rollbackRun(id: string, paths: string[] = []): RunRecord {
+  const run = loadRun(id);
+  if (!run || run.status === "running") return { ok: false, error: "run not finished" };
+  try {
+    const lock = withWriteLock({ workspace: run.cwd, targetPath: run.cwd, runId: `rollback_${run.id}`, threadId: run.threadId, kind: "rollback" }, () => rollbackRunUnlocked(run, paths));
+    return lock as RunRecord;
+  } catch (error: any) {
+    return { ok: false, code: error?.code || "ROLLBACK_FAILED", error: error?.message || String(error) };
+  }
+}
+
+function rollbackRunUnlocked(run: RunRecord, paths: string[] = []) {
+  const wanted = new Set(Array.isArray(paths) && paths.length ? paths : run.artifacts.map((a: any) => a.path));
+  const beforeDir = path.join(RUNS_DIR, run.id, "before");
+  const root = path.resolve(run.cwd);
+  const restored: string[] = [];
+  for (const artifact of run.artifacts) {
+    if (!wanted.has(artifact.path)) continue;
+    const target = path.resolve(root, artifact.path);
+    if (target !== root && !target.startsWith(root + path.sep)) continue;
+    const source = path.join(beforeDir, artifact.path);
+    try {
+      if (artifact.status === "added") fs.rmSync(target, { force: true });
+      else if (artifact.status === "renamed") {
+        fs.rmSync(target, { force: true });
+        const oldTarget = path.resolve(root, artifact.from || "");
+        const oldSource = path.join(beforeDir, artifact.from || "");
+        if (oldTarget !== root && oldTarget.startsWith(root + path.sep) && fs.existsSync(oldSource)) { ensureDir(path.dirname(oldTarget)); fs.copyFileSync(oldSource, oldTarget); }
+      }
+      else if (fs.existsSync(source)) { ensureDir(path.dirname(target)); fs.copyFileSync(source, target); }
+      else continue;
+      restored.push(artifact.path);
+    } catch {}
+  }
+  return { ok: true, restored };
+}
+
+export function runsDir() { return RUNS_DIR; }
