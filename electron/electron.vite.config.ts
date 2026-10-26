@@ -3,6 +3,15 @@ import path from "node:path";
 
 export default defineConfig({
   main: {
+    resolve: {
+      alias: {
+        // 过渡桥构建域备用 alias（与 vitest.config.ts 同源）：已迁 TS 模块经
+        // @legacy-server 引用旧 server 域导出时由构建解析。装配层当前走运行时
+        // 物理路径动态加载（assembly.ts，路径锚点保真），此 alias 供后续模块
+        // 静态引用场景与构建期解析兜底。
+        "@legacy-server": path.resolve(__dirname, "../server")
+      }
+    },
     build: {
       outDir: "out/main",
       lib: { entry: path.resolve(__dirname, "src/main/index.ts") }

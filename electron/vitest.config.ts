@@ -14,6 +14,13 @@ const reactDomDir = path.resolve(__dirname, "node_modules/react-dom");
 const legacyServerDir = path.resolve(__dirname, "../server");
 
 export default defineConfig({
+  server: {
+    fs: {
+      // B2 装配层：assembly.ts 经运行时物理路径动态加载 electron 外的旧 server
+      // 模块（与生产同形态、路径锚点保真），放开项目根供 vite-node 解析。
+      allow: [path.resolve(__dirname, "..")]
+    }
+  },
   resolve: {
     alias: [
       { find: /^@legacy-server\/kb\.mjs$/, replacement: path.join(legacyServerDir, "kb.mjs") },
