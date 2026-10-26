@@ -1,0 +1,433 @@
+/**
+ * Office CLI 域（S3-4，自 server/office.mjs 全量转录，364 行）。
+ *
+ * 转录范围（与旧模块逐行对齐）：
+ *  - 参数校验：validateOfficecliArgs（工作区边界/绝对路径归一/.. 拒绝，FILE_ARGUMENT_COMMANDS）；
+ *  - 子进程执行：runOfficecli（原生引擎优先、未命中回退 CLI、共享冲突锁恢复重试）/
+ *    runOfficecliOnce（officeLimiter 门控 spawn/超时/JSON 探测）+ officecliEnv（大工作簿
+ *    OFFICECLI_MAX_DOM_ELEMENTS=8000000 放宽）+ isOfficeSharingViolation；
+ *  - 探测：checkOfficecli（--version/--help 降级，探针缓存成功 60s/失败 15s 按 executable 分键）；
+ *  - L1/L2 包装：view/get/set/batch；
+ *  - 预览面：withPreviewCopy（临时副本隔离写入争用）/renderHtml（OfficeCLI --out 文件通道，
+ *    非零退出与空输出明确失败）/queryComments；
+ *  - watch 模式管理：startWatch/stopWatch/stopAllWatches（常驻 watch 进程 + 临时副本 +
+ *    fs.watchFile 同步预览，端口 26315-26400 轮转）；
+ *  - xlsx 面：sheetJson/workbookInfo。
+ *
+ * 行为保真说明：
+ *  - officeLimiter 静态直绑 pi-runtime.ts 单例（B6-7 转录自 pi-runtime-management.mjs，
+ *    同名导出 officeLimiter；与 agent 域同一 AsyncLimiter 实例——旧 office.mjs 经
+ *    pi-runtime-management.mjs 的同名单例，语义一致）；此前 create-tools.ts /
+ *    artifact-acceptance.ts / agent-prompt-direct.ts 经 @legacy-server/office.mjs 动态
+ *    import 的过渡绑定随本批退役。
+ *  - 原生引擎优先策略（P1-A/P1-B/P2-C）：runNativeOfficeCommand（doc-engine.ts，B2-13）
+ *    未命中或异常返回 null 时回退 officecli，§5.5 降级语义不变。
+ *  - TS strict 适配（noUncheckedIndexedAccess）：command[1] ?? "" / matchAll 分组 m[1] ?? ""
+ *    / split()[0]?.slice()——旧 JS falsy 语义不变；spawn stdout/stderr 按 kernel-sidecar
+ *    先例用 ?.（默认 stdio 管道下恒为非空）。
+ *  - spawn 真实进程路径（成功输出解析、锁恢复 close 重试、watch 常驻预览）依赖 officecli
+ *    二进制，由 smoke/真机验证；对拍覆盖纯逻辑与启动失败传播面（s3-office-parity）。
+ *  - 旧侧 server/index.mjs / artifact-acceptance.mjs / run-evaluation.mjs 继续消费
+ *    server/office.mjs 至域退役。
+ */
+import { spawn, type ChildProcess } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
+import os from "node:os";
+import { OFFICECLI, WORKSPACE_DIR } from "./workspace";
+import { officeLimiter } from "./agent/pi-runtime";
+import { runNativeOfficeCommand } from "./doc-engine";
+
+export type OfficeCliError = Error & { code?: string };
+
+const FILE_ARGUMENT_COMMANDS = new Set([
+  "view", "get", "set", "batch", "query", "watch", "open", "close", "save", "validate", "refresh", "dump",
+  "create", "add", "remove", "move", "swap", "delete", "import", "export",
+]);
+
+function createOfficeCliError(message: string, code: string, details: Record<string, unknown> = {}): OfficeCliError {
+  const error = new Error(message) as OfficeCliError;
+  error.code = code;
+  Object.assign(error, details);
+  return error;
+}
+
+export type OfficecliParsedArgs = {
+  command: string;
+  file: string | null;
+  path: string | null;
+  absolute?: boolean;
+};
+
+/**
+ * Office CLI 的文件参数必须相对当前工作区，避免 WSL/Windows 绝对路径混用，
+ * 也避免 Agent 越过当前工作区访问其它目录。
+ */
+export function validateOfficecliArgs(args: unknown, cwd: string = WORKSPACE_DIR): OfficecliParsedArgs {
+  if (!Array.isArray(args) || !args.length) {
+    throw createOfficeCliError("Office CLI 命令不能为空", "OFFICECLI_ARGS_INVALID");
+  }
+  const command = String(args[0] || "").trim().toLowerCase();
+  const file = FILE_ARGUMENT_COMMANDS.has(command) ? String(args[1] || "").trim() : "";
+  if (!file) return { command, file: null, path: null };
+  const root = path.resolve(cwd);
+  const target = path.resolve(root, file);
+  // 模型有时会直接复述上下文里的绝对路径。只要它仍在当前工作区内，
+  // 归一化为相对路径后再交给 Office CLI；越出工作区的路径继续拒绝。
+  if (path.isAbsolute(file)) {
+    if (target !== root && !target.startsWith(`${root}${path.sep}`)) {
+      throw createOfficeCliError("Office CLI 文件路径超出当前工作区范围", "OFFICE_PATH_SCOPE_ERROR", { command, file });
+    }
+    return { command, file: path.relative(root, target), path: target, absolute: true };
+  }
+  if (file.split(/[\\/]/).includes("..")) {
+    throw createOfficeCliError("Office CLI 文件路径必须是当前工作区内的相对路径", "OFFICE_PATH_SCOPE_ERROR", { command, file });
+  }
+  if (target !== root && !target.startsWith(`${root}${path.sep}`)) {
+    throw createOfficeCliError("Office CLI 文件路径超出当前工作区范围", "OFFICE_PATH_SCOPE_ERROR", { command, file });
+  }
+  return { command, file, path: target, absolute: false };
+}
+
+/** Office CLI 子进程环境：默认放宽大工作簿的元素上限（供应商默认 300 万会拒开大表）。 */
+function officecliEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  if (!env.OFFICECLI_MAX_DOM_ELEMENTS) env.OFFICECLI_MAX_DOM_ELEMENTS = "8000000";
+  return env;
+}
+
+/** 是否"文件被其他进程占用"（OfficeCLI 会以 io_error + being used by another process 报出）。 */
+export function isOfficeSharingViolation(result: { stderr?: string; stdout?: string; text?: string } | null | undefined): boolean {
+  const text = `${result?.stderr || ""}\n${result?.stdout || ""}\n${result?.text || ""}`;
+  return /being used by another process|sharing violation|正在被另一个进程使用/i.test(text);
+}
+
+const MUTATING_COMMANDS = new Set(["set", "batch", "add", "remove", "move", "swap", "delete", "create", "import", "save"]);
+
+export type OfficeCliRunOptions = { cwd?: string; timeoutMs?: number; executable?: string };
+
+export type OfficeCliResult = {
+  code: number | null;
+  stdout: string;
+  stderr: string;
+  text: string;
+  json: any;
+  command: string[];
+  executable?: string;
+  cwd?: string;
+  timedOut?: boolean;
+  engine?: string;
+  lockRecoveryAttempted?: boolean;
+  lockBlocked?: boolean;
+};
+
+/**
+ * Run an officecli command inside the workspace directory.
+ * Returns { code, stdout, stderr, json } — `json` is parsed when --json was used
+ * or when output starts with {/[.
+ */
+export function runOfficecli(args: unknown, { cwd = WORKSPACE_DIR, timeoutMs = 120000, executable = OFFICECLI }: OfficeCliRunOptions = {}): Promise<OfficeCliResult> {
+  const command: string[] = Array.isArray(args) ? args.map(String) : [];
+  const viaCli = async (): Promise<OfficeCliResult> => {
+    const result = await runOfficecliOnce(command, { cwd, timeoutMs, executable });
+    // 文件被 WPS/Word/Excel 打开时写入会失败：自动 close 释放句柄后重试一次，
+    // 仍失败则标记 lockBlocked，由上层提示用户关闭文档（而不是让模型反复重试）。
+    const file = MUTATING_COMMANDS.has(command[0]?.toLowerCase() ?? "") ? command[1] ?? "" : "";
+    if (result.code === 0 || !file || !isOfficeSharingViolation(result)) return result;
+    try { await runOfficecliOnce(["close", file], { cwd, timeoutMs: 20000, executable }); } catch {}
+    const retry = await runOfficecliOnce(command, { cwd, timeoutMs, executable });
+    retry.lockRecoveryAttempted = true;
+    if (!isOfficeSharingViolation(retry)) return retry;
+    retry.lockBlocked = true;
+    return retry;
+  };
+  // P1-A/P1-B/P2-C：原生文档引擎优先（create 全格式 / view text|outline|stats /
+  // docx 全文查找替换），命中即免启动二进制、不占 officeLimiter；
+  // 未命中或原生异常都回退 officecli，保证不因原生路径失败而中断（§5.5 降级策略）。
+  return runNativeOfficeCommand(command, { cwd })
+    .catch(() => null)
+    .then((native) => native || viaCli());
+}
+
+function runOfficecliOnce(command: string[], { cwd = WORKSPACE_DIR, timeoutMs = 120000, executable = OFFICECLI }: OfficeCliRunOptions = {}): Promise<OfficeCliResult> {
+  return officeLimiter.run(() => new Promise<OfficeCliResult>((resolve, reject) => {
+    let child: ChildProcess;
+    try {
+      child = spawn(executable, command, { cwd, windowsHide: true, env: officecliEnv() });
+    } catch (error: any) {
+      reject(createOfficeCliError(`Office CLI 启动失败：${error?.message || error}`, "OFFICECLI_START_FAILED", { executable, cwd, args: command }));
+      return;
+    }
+    let out = "";
+    let err = "";
+    let settled = false;
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      try { child.kill(); } catch {}
+      if (!settled) {
+        settled = true;
+        reject(createOfficeCliError(`Office CLI 超时（${timeoutMs}ms）：${command.join(" ")}`, "OFFICECLI_TIMEOUT", { executable, cwd, args: command, timeoutMs }));
+      }
+    }, timeoutMs);
+    child.stdout?.on("data", (d: Buffer) => (out += String(d)));
+    child.stderr?.on("data", (d: Buffer) => (err += String(d)));
+    child.on("error", (e: Error) => {
+      clearTimeout(timer);
+      if (settled) return;
+      settled = true;
+      const detail = (e as any)?.code === "ENOENT" ? `officecli not found: ${e.message}` : e.message;
+      reject(createOfficeCliError(`Office CLI 启动失败（${executable}）：${detail}`, "OFFICECLI_START_FAILED", { executable, cwd, args: command }));
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      if (settled) return;
+      settled = true;
+      let json: any = null;
+      const text = out.trim();
+      if (text && (text.startsWith("{") || text.startsWith("["))) {
+        try {
+          json = JSON.parse(text);
+        } catch {
+          json = null;
+        }
+      }
+      resolve({ code, stdout: out, stderr: err, text, json, command, executable, cwd, timedOut });
+    });
+  }), { cwd, args: Array.isArray(command) ? command.slice(0, 8) : [] });
+}
+
+export type OfficeCliProbe = { available: boolean; path: string; code: number | null; version?: string | null; message: string };
+
+// Office CLI 探测缓存：成功 60 秒内复用，失败 15 秒内复用。
+// 每次 prompt admission 都可能触发 checkOfficecli()，避免反复 spawn officecli.exe。
+// 缓存按可执行文件路径区分，显式注入其他路径（如测试里的缺失 CLI）不会命中缓存。
+const OFFICECLI_PROBE_CACHE_TTL_MS = 60000;
+const OFFICECLI_PROBE_FAIL_TTL_MS = 15000;
+let officecliProbeCache: { key: string; result: OfficeCliProbe; expiresAt: number } | null = null; // { key, result, expiresAt }
+
+export async function checkOfficecli(timeoutMs = 8000, executable = OFFICECLI): Promise<OfficeCliProbe> {
+  const now = Date.now();
+  const key = String(executable || "");
+  if (officecliProbeCache && officecliProbeCache.key === key && now < officecliProbeCache.expiresAt) {
+    return officecliProbeCache.result;
+  }
+  const probe = async (): Promise<OfficeCliProbe> => {
+    if (path.isAbsolute(executable) && !fs.existsSync(executable)) {
+      return { available: false, path: executable, code: null, message: `Office CLI 文件不存在：${executable}` };
+    }
+    try {
+      let result: OfficeCliResult & { version?: string | null } = await runOfficecli(["--version"], { timeoutMs, executable });
+      // 兼容较早版本：如果没有 --version，但 --help 可用，仍应允许只读/编辑链路启动。
+      if (result.code !== 0) {
+        const fallback = await runOfficecli(["--help"], { timeoutMs, executable });
+        if (fallback.code === 0) result = { ...fallback, version: null };
+      }
+      const version = Object.prototype.hasOwnProperty.call(result, "version")
+        ? result.version
+        : (result.code === 0 ? (result.stdout || result.text || "").trim().split(/\r?\n/)[0]?.slice(0, 120) : null);
+      return {
+        available: result.code === 0,
+        path: executable,
+        code: result.code,
+        version: version || null,
+        message: result.code === 0 ? "Office CLI 可用" : (result.stderr || result.text || "Office CLI 返回异常").trim().slice(0, 500),
+      };
+    } catch (error) {
+      return { available: false, path: executable, code: null, message: String((error as Error)?.message || error || "Office CLI 不可用").slice(0, 500) };
+    }
+  };
+  const result = await probe();
+  const ttl = result.available ? OFFICECLI_PROBE_CACHE_TTL_MS : OFFICECLI_PROBE_FAIL_TTL_MS;
+  officecliProbeCache = { key, result, expiresAt: now + ttl };
+  return result;
+}
+
+/** L1 read: view document in a mode. */
+export async function view(file: string, mode: string, extra: string[] = []): Promise<OfficeCliResult> {
+  return runOfficecli(["view", file, mode, ...extra]);
+}
+
+/** L1 read: get node JSON. */
+export async function get(file: string, target = "/", depth = 2): Promise<OfficeCliResult> {
+  return runOfficecli(["get", file, target, "--depth", String(depth), "--json"]);
+}
+
+/** L2 edit: set properties / find-replace. */
+export async function set(file: string, target = "/", props: string[] = []): Promise<OfficeCliResult> {
+  const args = ["set", file, target];
+  for (const p of props) args.push("--prop", p);
+  return runOfficecli([...args, "--json"]);
+}
+
+/** L2 batch edit: array of {command, path, props|parent|type|...} */
+export async function batch(file: string, commands: unknown): Promise<OfficeCliResult> {
+  const args = ["batch", file, "--commands", JSON.stringify(commands), "--json"];
+  return runOfficecli(args);
+}
+
+/**
+ * 只读预览也可能被 OfficeCLI/底层 Office 进程短暂打开并加锁。
+ * 预览统一操作临时副本，避免和 Agent 的 set/add/批注写入争用正式文档。
+ */
+async function withPreviewCopy<T>(file: string, operation: (previewFile: string, dir: string) => Promise<T>): Promise<T> {
+  const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "规聚预览-"));
+  const previewFile = path.join(dir, path.basename(file));
+  try {
+    await fs.promises.copyFile(file, previewFile);
+    return await operation(previewFile, dir);
+  } finally {
+    try { await fs.promises.rm(dir, { recursive: true, force: true }); } catch {}
+  }
+}
+
+/**
+ * Render docx/pptx to self-contained HTML。
+ * D03：改为 OfficeCLI 文件输出（--out）：stdout/JSON 通道对超大文档有大小上限
+ * （254MB PPTX 走 stdout 会以 JSON 超限失败，--out 实测 3.1s 产出 181.5MB 自包含 HTML）；
+ * 同时 OfficeCLI 非零退出必须明确失败，不能只把 stdout 当成功。
+ * 相对资源引用会在临时副本删除后失效，发现即告警（实测 10-杨勇/6-贺向阳/7-刘业全 均为 0 引用）。
+ */
+export async function renderHtml(file: string): Promise<string> {
+  return withPreviewCopy(file, async (previewFile, cwd) => {
+    const outFile = path.join(cwd, "preview.html");
+    const r = await runOfficecli(["view", previewFile, "html", "--out", outFile], { cwd });
+    if (Number(r.code) !== 0) {
+      const detail = String(r.stderr || r.text || "").trim().slice(0, 300);
+      throw createOfficeCliError(`OfficeCLI 渲染失败（退出码 ${r.code}）${detail ? `：${detail}` : ""}`, "OFFICECLI_RENDER_FAILED");
+    }
+    const html = await fs.promises.readFile(outFile, "utf8").catch(() => "");
+    if (!String(html).trim()) {
+      throw createOfficeCliError("OfficeCLI 渲染失败：输出为空", "OFFICECLI_RENDER_FAILED");
+    }
+    const relative = [...String(html).matchAll(/(?:src|href)="(?!data:|https?:|#|mailto:)([^"]+)"/g)].map((m) => m[1] ?? "");
+    if (relative.length) {
+      console.warn(`[preview] 高保真 HTML 含 ${relative.length} 个相对资源引用，临时副本删除后可能失效（样例：${relative.slice(0, 3).join(", ")}）`);
+    }
+    return html;
+  });
+}
+
+/** Read Office comments without letting the preview process open the source file. */
+export async function queryComments(file: string): Promise<OfficeCliResult> {
+  return withPreviewCopy(file, async (previewFile, cwd) => {
+    return runOfficecli(["query", previewFile, "comment", "--json"], { cwd });
+  });
+}
+
+// ---------- watch 模式管理 ----------
+// 按文件维护 watch 进程，提供实时预览 URL。agent 修改文件后 watch 自动刷新。
+
+type WatchEntry = {
+  child: ChildProcess;
+  port: number;
+  file: string;
+  previewFile: string;
+  previewDir: string;
+  ready: boolean;
+  syncPreview?: () => void;
+  error?: string;
+};
+
+const watchProcs = new Map<string, WatchEntry>(); // file -> { child, port }
+const PORT_RANGE = { start: 26315, end: 26400 };
+let nextPort = PORT_RANGE.start;
+
+/** 启动（或复用）某文件的 watch 进程，返回 { url, port }。 */
+export function startWatch(file: string): WatchEntry | Promise<WatchEntry> {
+  if (watchProcs.has(file)) return watchProcs.get(file)!;
+  // 找空闲端口
+  let port = nextPort++;
+  if (port > PORT_RANGE.end) port = PORT_RANGE.start;
+  // watch 进程常驻，不能直接持有正式文档；用临时副本承载预览，并把后续
+  // 修改同步过去。这样预览关闭/重启不会阻塞 Agent 的 OfficeCLI 写入。
+  const previewDir = fs.mkdtempSync(path.join(os.tmpdir(), "规聚预览-"));
+  const previewFile = path.join(previewDir, path.basename(file));
+  try {
+    fs.copyFileSync(file, previewFile);
+  } catch (error) {
+    try { fs.rmSync(previewDir, { recursive: true, force: true }); } catch {}
+    throw error;
+  }
+  const child = spawn(OFFICECLI, ["watch", previewFile, "--port", String(port)], {
+    cwd: previewDir,
+    windowsHide: true,
+  });
+  const entry: WatchEntry = { child, port, file, previewFile, previewDir, ready: false };
+  watchProcs.set(file, entry);
+  child.on("exit", () => {
+    fs.unwatchFile(file, entry.syncPreview);
+    watchProcs.delete(file);
+    setTimeout(() => { try { fs.rmSync(previewDir, { recursive: true, force: true }); } catch {} }, 200);
+  });
+  entry.syncPreview = () => {
+    const next = `${previewFile}.${Date.now()}.tmp`;
+    try {
+      fs.copyFileSync(file, next);
+      fs.renameSync(next, previewFile);
+    } catch {
+      try { fs.rmSync(next, { force: true }); } catch {}
+    }
+  };
+  fs.watchFile(file, { interval: 800 }, entry.syncPreview);
+  // 等待 ready
+  return new Promise<WatchEntry>((resolve) => {
+    let out = "";
+    child.on("error", (error: Error) => {
+      entry.error = error?.message || "OfficeCLI watch 启动失败";
+      if (!entry.ready) {
+        entry.ready = true;
+        resolve(entry);
+      }
+    });
+    const onData = (d: Buffer) => {
+      out += String(d);
+      if (!entry.ready && /http:\/\/localhost:\d+/i.test(out)) {
+        entry.ready = true;
+        resolve(entry);
+      }
+    };
+    child.stdout?.on("data", onData);
+    child.stderr?.on("data", onData);
+    setTimeout(() => {
+      if (!entry.ready) {
+        entry.ready = true;
+        resolve(entry);
+      }
+    }, 5000);
+  });
+}
+
+/** 停止某文件的 watch 进程。 */
+export function stopWatch(file: string): void {
+  const entry = watchProcs.get(file);
+  if (entry) {
+    try { entry.child.kill(); } catch {}
+    fs.unwatchFile(file, entry.syncPreview);
+    watchProcs.delete(file);
+    try { fs.rmSync(entry.previewDir, { recursive: true, force: true }); } catch {}
+  }
+}
+
+/** 停止所有 watch 进程（服务关闭时调用）。 */
+export function stopAllWatches(): void {
+  for (const [file, entry] of watchProcs) {
+    try { entry.child.kill(); } catch {}
+    fs.unwatchFile(file, entry.syncPreview);
+    try { fs.rmSync(entry.previewDir, { recursive: true, force: true }); } catch {}
+  }
+  watchProcs.clear();
+}
+
+/** Read xlsx sheet as structured JSON. */
+export async function sheetJson(file: string, sheet: string | null = null): Promise<OfficeCliResult> {
+  const target = sheet ? `/${sheet}` : "/";
+  const r = await runOfficecli(["get", file, target, "--depth", "3", "--json"]);
+  return r;
+}
+
+/** Workbook structure: sheets + dimensions. */
+export async function workbookInfo(file: string): Promise<OfficeCliResult> {
+  const r = await runOfficecli(["get", file, "/", "--depth", "1", "--json"]);
+  return r;
+}
