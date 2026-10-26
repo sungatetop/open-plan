@@ -1,10 +1,103 @@
 import { app, BrowserWindow, ipcMain } from "electron";
 import path from "node:path";
+import fs from "node:fs";
+import os from "node:os";
 import { pickPreferredPort } from "./util/port";
 import { resolveRendererTarget } from "./util/renderer-target";
 import { startLegacyServer, type LegacyServerHandle, type ServerStatusSnapshot } from "./legacy-server";
 import { channelRoutes, forwardHttpRequest } from "./ipc/http-forward";
 import { createEventStreamBridge } from "./ipc/events-bridge";
+import { createAgentDirectEventsBridge } from "./ipc/agent-direct-events";
+import {
+  AGENT_DIRECT_INVOKE_CHANNELS,
+  AGENT_STREAM_CLOSE_CHANNEL,
+  invokeAgentDirect,
+  invokeAgentStreamCloseDirect,
+  type AgentDirectInvokerDeps
+} from "./ipc/agent-direct-invokers";
+import {
+  AGENT_SESSIONS_DIRECT_CHANNELS,
+  invokeAgentSessionsDirect,
+  type AgentSessionsDirectDeps
+} from "./ipc/agent-sessions-direct";
+import {
+  AGENT_RUNS_DIRECT_CHANNELS,
+  invokeAgentRunsDirect,
+  type AgentRunsDirectDeps
+} from "./ipc/agent-runs-direct";
+import {
+  AGENT_PROMPT_DIRECT_CHANNELS,
+  invokeAgentPromptDirect,
+  snapshotWorkspace as mainchainSnapshotWorkspace,
+  type AgentPromptDirectDeps
+} from "./ipc/agent-prompt-direct";
+import {
+  AGENT_PLANS_DIRECT_CHANNELS,
+  invokeAgentPlansDirect,
+  type AgentPlansDirectDeps
+} from "./ipc/agent-plans-direct";
+import {
+  AGENT_AUTH_PERMISSIONS_DIRECT_CHANNELS,
+  invokeAgentAuthPermissionsDirect,
+  type AgentAuthPermissionsDirectDeps
+} from "./ipc/agent-auth-permissions-direct";
+import {
+  AGENT_PI_CONFIG_DIRECT_CHANNELS,
+  invokeAgentPiConfigDirect,
+  type AgentPiConfigDirectDeps
+} from "./ipc/agent-pi-config-direct";
+import {
+  AGENT_PROVIDER_CATALOG_DIRECT_CHANNELS,
+  invokeAgentProviderCatalogDirect,
+  type AgentProviderCatalogDirectDeps
+} from "./ipc/agent-provider-catalog-direct";
+import {
+  AGENT_NETWORK_SETTINGS_DIRECT_CHANNELS,
+  invokeAgentNetworkSettingsDirect,
+  type AgentNetworkSettingsDirectDeps
+} from "./ipc/agent-network-settings-direct";
+import {
+  AGENT_MEMORY_DIRECT_CHANNELS,
+  invokeAgentMemoryDirect,
+  type AgentMemoryDirectDeps
+} from "./ipc/agent-memory-direct";
+import {
+  AGENT_PROBE_DIAGNOSTICS_DIRECT_CHANNELS,
+  invokeAgentProbeDiagnosticsDirect,
+  type AgentProbeDiagnosticsDirectDeps
+} from "./ipc/agent-probe-diagnostics-direct";
+import {
+  NATIVE_SYSTEM_DIRECT_CHANNELS,
+  invokeNativeSystemDirect,
+  type NativeSystemDirectDeps
+} from "./ipc/native-system-direct";
+import {
+  SYSTEM_STATUS_DIRECT_CHANNELS,
+  invokeSystemStatusDirect,
+  type SystemStatusDirectDeps
+} from "./ipc/system-status-direct";
+import {
+  SEARCH_MAP_SETTINGS_DIRECT_CHANNELS,
+  invokeSearchMapSettingsDirect,
+  type SearchMapSettingsDirectDeps
+} from "./ipc/search-map-settings-direct";
+import {
+  PROJECT_MANAGEMENT_DIRECT_CHANNELS,
+  invokeProjectManagementDirect,
+  type ProjectManagementDirectDeps
+} from "./ipc/project-management-direct";
+import {
+  WORKSPACE_DIRECT_CHANNELS,
+  invokeWorkspaceDirect,
+  type WorkspaceDirectDeps
+} from "./ipc/workspace-direct";
+import {
+  FILES_DIRECT_CHANNELS,
+  invokeFilesDirect,
+  type FilesDirectDeps
+} from "./ipc/files-direct";
+import * as approvalPolicy from "./backend/agent/approval-policy";
+import * as eventStorage from "./backend/event-storage";
 import { createMemoryEventsBridge } from "./ipc/memory-events-bridge";
 import { createGlobalEventsBridge } from "./ipc/global-events-bridge";
 import type { InvokeEnvelope, DesktopEvent } from "../shared/protocol/channels";
@@ -92,6 +185,27 @@ function broadcastEvent(event: DesktopEvent): void {
 let eventsBridge: ReturnType<typeof createEventStreamBridge> | null = null;
 
 function registerEventBridgeHandlers(): void {
+  // S1 直推分支（双 flag 同开）：对话流事件源 = TS AgentManager 进程内直推，
+  // watch/unwatch 生命周期语义与 SSE 桥一致（同键幂等 / 非当前键 stop 忽略）。
+  if (AGENT_DOMAIN_ENABLED && AGENT_EVENT_DIRECT_ENABLED) {
+    const directBridge = createAgentDirectEventsBridge({
+      getManager: async () => {
+        const assembly = await import("./backend/agent/assembly");
+        return assembly.getAgentManager();
+      },
+      send: (event) => broadcastEvent(event),
+      onState: (state, detail) =>
+        broadcastEvent({ type: "op:stream-state", data: { state, detail: detail ?? null } })
+    });
+    ipcMain.handle("op:events:watch", (_event, request: Parameters<typeof directBridge.watch>[0]) =>
+      directBridge.watch(request)
+    );
+    ipcMain.handle("op:events:unwatch", (_event, request?: { client?: string; thread?: string }) => {
+      directBridge.stop(request ?? {});
+      return { ok: true };
+    });
+    return;
+  }
   const bridge = createEventStreamBridge({
     getPort: () => (server && server.status.phase === "ready" ? server.port : null),
     send: (event) => broadcastEvent(event),
@@ -145,6 +259,926 @@ function registerGlobalEventsBridgeHandlers(): void {
   });
 }
 
+/**
+ * S4 默认路径翻转（docs/solutions/2026-10-24-agent域流量切换评估方案.md §4-S4）：
+ * agent 域直调族 flag 语义统一为「未设置 = 默认启用，=0 显式关闭回滚」。
+ * sidecar 旧路径与 http-forward 转发分支保留（legacy-client 仍直连 sidecar，
+ * 摘除转发分支与 sidecar agent 域退役随 F 线联动）；任意域置 =0 即零成本翻回旧路径。
+ */
+function directPathEnabled(name: string): boolean {
+  return process.env[name] !== "0";
+}
+
+/** agent 域装配开关（B2 装配层；S4 起默认开，OP_DESKTOP_AGENT_DOMAIN=0 显式关闭）。 */
+const AGENT_DOMAIN_ENABLED = directPathEnabled("OP_DESKTOP_AGENT_DOMAIN");
+
+/**
+ * 对话流直推桥开关（S1；S4 起默认开，OP_DESKTOP_AGENT_EVENT_DIRECT=0 显式回滚）。
+ * 仅与 AGENT_DOMAIN_ENABLED 同开时生效：直推桥的数据源是 TS AgentManager（装配单飞实例），
+ * prompt 流量切至 TS 实例前通道不产生事件，两 flag 需同开（见 docs/solutions/2026-10-24-agent域流量切换评估方案.md）。
+ */
+const AGENT_EVENT_DIRECT_ENABLED = directPathEnabled("OP_DESKTOP_AGENT_EVENT_DIRECT");
+
+/**
+ * B 层通道直调开关（S2；S4 起默认开，OP_DESKTOP_AGENT_B_DIRECT=0 显式回滚）。
+ * 与 AGENT_DOMAIN_ENABLED 同开时 9 条 B 层薄映射通道进程内直调 TS AgentManager；
+ * stream-close 仅在 S1 直推（AGENT_EVENT_DIRECT_ENABLED）同开时直调 no-op（closed:0），
+ * 否则继续转发 sidecar 关闭真实 SSE。会话/审批态归属运行实例，S3 prompt 流量切换前
+ * 直调读到 TS 实例空态（与 S1 握手帧-only 同构的过渡语义，见
+ * docs/solutions/2026-10-24-agent域流量切换评估方案.md §4-S2）。
+ */
+const AGENT_B_DIRECT_ENABLED = directPathEnabled("OP_DESKTOP_AGENT_B_DIRECT");
+
+/**
+ * B 层通道直调注册（S2）：覆盖 http-forward catch-all 中 agent 域 9 条薄映射通道，
+ * 改为进程内直调 TS AgentManager；stream-close 在 S1 直推同开时一并接管。
+ * 诊断日志与 sidecar 同一文件族（TEMP 优先，server/index.mjs L70 同锚点，
+ * projectRoot 回退对应 PROJECT_DIR）。
+ */
+function registerAgentDirectInvokers(): void {
+  if (!(AGENT_DOMAIN_ENABLED && AGENT_B_DIRECT_ENABLED)) return;
+  const deps: AgentDirectInvokerDeps = {
+    getManager: async () => {
+      const assembly = await import("./backend/agent/assembly");
+      return assembly.getAgentManager();
+    },
+    listPendingApprovals: approvalPolicy.listPendingApprovals,
+    getApprovalMode: approvalPolicy.getApprovalMode,
+    setApprovalMode: approvalPolicy.setApprovalMode,
+    resolveToolApproval: approvalPolicy.resolveToolApproval,
+    eventStoreInfo: eventStorage.eventStoreInfo,
+    getReadCursor: eventStorage.getReadCursor,
+    markReadCursor: eventStorage.markReadCursor,
+    diagnosticLogPath: () => path.join(process.env.TEMP || projectRoot(), "open-plan-agent连接诊断.log")
+  };
+  for (const channel of AGENT_DIRECT_INVOKE_CHANNELS) {
+    ipcMain.removeHandler(channel);
+    ipcMain.handle(channel, (_event, payload: InvokeEnvelope | undefined) => invokeAgentDirect(channel, payload, deps));
+  }
+  if (AGENT_EVENT_DIRECT_ENABLED) {
+    ipcMain.removeHandler(AGENT_STREAM_CLOSE_CHANNEL);
+    ipcMain.handle(AGENT_STREAM_CLOSE_CHANNEL, () => invokeAgentStreamCloseDirect());
+  }
+}
+
+/**
+ * 会话族通道直调开关（S3-1；S4 起默认开，OP_DESKTOP_AGENT_SESSIONS_DIRECT=0 显式回滚）。
+ * 与 AGENT_DOMAIN_ENABLED 同开时会话族 9 条通道进程内直调会话存储域
+ * （backend/agent/session-files.ts，文件族共享态，跨实例即时一致——与 S2 B 层的
+ * "运行实例空态过渡"不同，见 docs/solutions/2026-10-24-agent域流量切换评估方案.md §4-S3）。
+ */
+const AGENT_SESSIONS_DIRECT_ENABLED = directPathEnabled("OP_DESKTOP_AGENT_SESSIONS_DIRECT");
+
+/**
+ * 会话族通道直调注册（S3-1）：覆盖 http-forward catch-all 中 op:sessions:* 9 条通道，
+ * 改为进程内直调会话存储域。runs/projects/workspace 跨域联接惰性动态组装（单飞缓存，
+ * flag 关闭时不加载这三个域）；会话存储域（session-files.ts，加载期 mkdir 幂等）随
+ * 模块静态链加载，与 event-storage（B1-1）同类先例。
+ */
+function registerAgentSessionsDirectInvokers(): void {
+  if (!(AGENT_DOMAIN_ENABLED && AGENT_SESSIONS_DIRECT_ENABLED)) return;
+  let depsPromise: Promise<AgentSessionsDirectDeps> | null = null;
+  const ensureDeps = (): Promise<AgentSessionsDirectDeps> => {
+    depsPromise ??= (async () => {
+      const [runs, projects, workspace] = await Promise.all([
+        import("./backend/runs"),
+        import("./backend/project-management"),
+        import("./backend/workspace")
+      ]);
+      return {
+        listRunSummaries: (opts) => runs.listRunSummaries(opts),
+        getProject: (id) => projects.getProject(id),
+        getProjectForWorkspace: (cwd) => projects.getProjectForWorkspace(cwd),
+        getWorkspace: () => workspace.getWorkspace(),
+        normalizeWorkspace: (dir) => workspace.normalizeWorkspace(String(dir ?? ""))
+      };
+    })();
+    return depsPromise;
+  };
+  for (const channel of AGENT_SESSIONS_DIRECT_CHANNELS) {
+    ipcMain.removeHandler(channel);
+    ipcMain.handle(channel, async (_event, payload: InvokeEnvelope | undefined) =>
+      invokeAgentSessionsDirect(channel, payload, await ensureDeps())
+    );
+  }
+}
+
+/**
+ * 运行族通道直调开关（S3-2；S4 起默认开，OP_DESKTOP_AGENT_RUNS_DIRECT=0 显式回滚）。
+ * 与 AGENT_DOMAIN_ENABLED 同开时运行族 11 条通道（op:runs:* 除 resume/retry +
+ * op:artifacts:* 2 条）进程内直调 TS 域服务；resume/retry 依赖 executeContinuation
+ * （S3-3 prompt 主链）继续转发 sidecar。runs/发布台账/after blob 为文件族共享态
+ * （OAW_RUNS_DIR 同锚点，跨实例即时一致）；cancel 的 live.busy 判定消费运行实例
+ * 内存态（S3-3 前直调读到 TS 实例空态 → 走 finishRun cancelled 分支，与 S2 过渡
+ * 语义同构，见 docs/solutions/2026-10-24-agent域流量切换评估方案.md §4-S3）。
+ */
+const AGENT_RUNS_DIRECT_ENABLED = directPathEnabled("OP_DESKTOP_AGENT_RUNS_DIRECT");
+
+/**
+ * 运行族通道直调注册（S3-2）：覆盖 http-forward catch-all 中 11 条运行族通道，
+ * 改为进程内直调 TS 域服务。runs/artifact/diff/workspace 跨域惰性动态组装（单飞缓存，
+ * flag 关闭时不加载这四个域）。
+ */
+function registerAgentRunsDirectInvokers(): void {
+  if (!(AGENT_DOMAIN_ENABLED && AGENT_RUNS_DIRECT_ENABLED)) return;
+  let depsPromise: Promise<AgentRunsDirectDeps> | null = null;
+  const ensureDeps = (): Promise<AgentRunsDirectDeps> => {
+    depsPromise ??= (async () => {
+      const [runs, artifacts, diff, workspace] = await Promise.all([
+        import("./backend/runs"),
+        import("./backend/artifact-management"),
+        import("./backend/file-diff"),
+        import("./backend/workspace")
+      ]);
+      return {
+        getManager: async () => {
+          const assembly = await import("./backend/agent/assembly");
+          return assembly.getAgentManager();
+        },
+        getRun: (id) => runs.getRun(String(id)),
+        listRuns: (opts) => runs.listRuns(opts),
+        runSummaryView: (run) => runs.runSummaryView(run),
+        updateRunStep: (id, stepId, patch) => runs.updateRunStep(String(id), stepId, patch),
+        finishRun: (id, patch) => runs.finishRun(id, patch),
+        requestRunCancellation: (id, reason) => runs.requestRunCancellation(String(id), reason),
+        awaitBeforeBlobs: (runId) => runs.awaitBeforeBlobs(runId),
+        rollbackRun: (id, paths) => runs.rollbackRun(String(id), paths),
+        listPublishedArtifacts: (opts) => artifacts.listPublishedArtifacts(opts),
+        publishArtifact: (runId, artifactId, opts) => artifacts.publishArtifact(runId, artifactId, opts),
+        confirmArtifactAcceptance: (runId, artifactId, opts) => artifacts.confirmArtifactAcceptance(runId, artifactId, opts),
+        inspectRunAcceptance: (runId, rules) => artifacts.inspectRunAcceptance(runId, rules),
+        rollbackPublishedArtifact: (publicationId, opts) => artifacts.rollbackPublishedArtifact(publicationId, opts),
+        diffFileContents: (input) => diff.diffFileContents(input),
+        diffLimits: diff.DIFF_LIMITS as { maxInputBytes: number; maxHunksPerPage: number },
+        runsChangesDir: () => runs.runsDir(),
+        normalizeWorkspace: (dir) => workspace.normalizeWorkspace(String(dir ?? "")),
+        isInside: (root, target) => workspace.isInside(root, target)
+      };
+    })();
+    return depsPromise;
+  };
+  for (const channel of AGENT_RUNS_DIRECT_CHANNELS) {
+    ipcMain.removeHandler(channel);
+    ipcMain.handle(channel, async (_event, payload: InvokeEnvelope | undefined) =>
+      invokeAgentRunsDirect(channel, payload, await ensureDeps())
+    );
+  }
+}
+
+/**
+ * 主链通道直调开关（S3-3；S4 起默认开，OP_DESKTOP_AGENT_PROMPT_DIRECT=0 显式回滚）。
+ * 与 AGENT_DOMAIN_ENABLED 同开时 prompt 主链 10 条通道（op:agent:prompt/abort/answer/
+ * compact/new/resume/session-tree/session-branch + op:runs:resume/retry）进程内直调
+ * TS AgentManager 单飞与各域服务——A 层编排转录收口后，app 形态 agent 域 invoke 面
+ * 全部可进程内闭环（对话流事件面另需 S1 直推 flag）。S3 三批收口：
+ * 会话族（S3-1）→ 运行族（S3-2）→ prompt 主链（本批）。
+ */
+const AGENT_PROMPT_DIRECT_ENABLED = directPathEnabled("OP_DESKTOP_AGENT_PROMPT_DIRECT");
+
+/**
+ * 主链通道直调注册（S3-3）：覆盖 http-forward catch-all 中 10 条主链通道，改为进程内
+ * 直调。runs/workspace/project/session-files/skills/write-probe/event-storage 跨域
+ * 惰性动态组装（单飞缓存，flag 关闭时不加载）；AgentManager 经 assembly 单飞。
+ */
+function registerAgentPromptDirectInvokers(): void {
+  if (!(AGENT_DOMAIN_ENABLED && AGENT_PROMPT_DIRECT_ENABLED)) return;
+  let depsPromise: Promise<AgentPromptDirectDeps> | null = null;
+  const ensureDeps = (): Promise<AgentPromptDirectDeps> => {
+    depsPromise ??= (async () => {
+      const [runs, workspace, projects, sessionFiles, skillsCatalog, writeProbe, writeCoordination, artifactVerification, agentContext] = await Promise.all([
+        import("./backend/runs"),
+        import("./backend/workspace"),
+        import("./backend/project-management"),
+        import("./backend/agent/session-files"),
+        import("./backend/agent/skills-catalog"),
+        import("./backend/workspace-write-probe"),
+        import("./backend/agent/write-coordination"),
+        import("./backend/artifact-verification"),
+        import("./backend/agent/context")
+      ]);
+      return {
+        getManager: async () => {
+          const assembly = await import("./backend/agent/assembly");
+          return assembly.getAgentManager();
+        },
+        getWorkspace: () => workspace.getWorkspace(),
+        normalizeWorkspace: (dir) => workspace.normalizeWorkspace(String(dir ?? "")),
+        safeName: (name) => workspace.safeName(String(name ?? "")),
+        getProjectForWorkspace: (root) => projects.getProjectForWorkspace(root),
+        getProject: (id) => projects.getProject(id),
+        defaultProjectSettings: () => projects.defaultProjectSettings(),
+        findSessionFile: (id) => sessionFiles.findSessionFile(id),
+        readSessionHeader: (found) => sessionFiles.readSessionHeader(found),
+        updateSessionHeader: (id, patch) => sessionFiles.updateSessionHeader(id, patch),
+        annotateSessionThread: (sessionId, threadId) => sessionFiles.annotateSessionThread(sessionId, threadId),
+        scanSkills: () => skillsCatalog.scanSkills(),
+        preflightSkills: (opts) => skillsCatalog.preflightSkills(opts),
+        resolveReferences: (refs, text, ws) => agentContext.resolveReferences(refs, text, ws),
+        requireWorkspaceWriteForTask: (plan, ws) => writeProbe.requireWorkspaceWriteForTask(plan, ws),
+        beginRun: (input) => runs.beginRun(input),
+        getRun: (id) => runs.getRun(String(id)),
+        listRuns: (opts) => runs.listRuns(opts),
+        finishRun: (id, patch) => runs.finishRun(id, patch),
+        requestRunCancellation: (id, reason) => runs.requestRunCancellation(String(id), reason),
+        recordRunEvent: (id, type, data) => runs.recordRunEvent(String(id), type, data as never),
+        snapshotWorkspace: (root) => mainchainSnapshotWorkspace(workspace.normalizeWorkspace(String(root ?? "")) || workspace.getWorkspace()),
+        filterRunChanges: (run, changes) => runs.filterRunChanges(run, changes),
+        validateArtifacts: (paths, root) => artifactVerification.validateArtifacts(paths, root),
+        validateArtifactFile: (file, root, relativePath) => artifactVerification.validateArtifactFile(file, root, relativePath),
+        listStagedFilesForValidation: (runId) => writeCoordination.listStagedFilesForValidation(runId),
+        stageWrite: (opts) => writeCoordination.stageWrite(opts as never),
+        stagedRunsRoot: () => runs.runsDir(),
+        appendEvent: (evt) => eventStorage.appendEvent(evt as never),
+        diagnosticLogPath: () => path.join(process.env.TEMP || projectRoot(), "open-plan-agent连接诊断.log")
+      };
+    })();
+    return depsPromise as Promise<AgentPromptDirectDeps>;
+  };
+  for (const channel of AGENT_PROMPT_DIRECT_CHANNELS) {
+    ipcMain.removeHandler(channel);
+    ipcMain.handle(channel, async (_event, payload: InvokeEnvelope | undefined) =>
+      invokeAgentPromptDirect(channel, payload, await ensureDeps())
+    );
+  }
+}
+
+/**
+ * 套餐族通道直调开关（C-1；S4 起默认开，OP_DESKTOP_AGENT_PLANS_DIRECT=0 显式回滚）。
+ * 与 AGENT_DOMAIN_ENABLED 同开时套餐族 4 条通道（op:agent:plans*）进程内直调套餐目录域
+ * （backend/plan-catalog.ts）；apply/disconnect 成功路径附带模型运行时缓存重置与
+ * 配置状态快照（文件族共享态），无 live 会话态依赖（C 层配置族口径）。
+ */
+const AGENT_PLANS_DIRECT_ENABLED = directPathEnabled("OP_DESKTOP_AGENT_PLANS_DIRECT");
+
+/**
+ * 套餐族通道直调注册（C-1）：覆盖 http-forward catch-all 中 4 条套餐通道，
+ * 改为进程内直调。plan-catalog/pi-runtime/pi-config-management 跨域惰性动态组装
+ * （单飞缓存，flag 关闭时不加载这三个域）。
+ */
+function registerAgentPlansDirectInvokers(): void {
+  if (!(AGENT_DOMAIN_ENABLED && AGENT_PLANS_DIRECT_ENABLED)) return;
+  let depsPromise: Promise<AgentPlansDirectDeps> | null = null;
+  const ensureDeps = (): Promise<AgentPlansDirectDeps> => {
+    depsPromise ??= (async () => {
+      const [planCatalog, piRuntime, piConfig] = await Promise.all([
+        import("./backend/plan-catalog"),
+        import("./backend/agent/pi-runtime"),
+        import("./backend/agent/pi-config-management")
+      ]);
+      return {
+        listPlans: () => planCatalog.listPlans(),
+        fetchPlanModels: (planId) => planCatalog.fetchPlanModels(planId),
+        applyPlan: (body) => planCatalog.applyPlan(body),
+        disconnectPlan: (body) => planCatalog.disconnectPlan(body),
+        resetModelRuntime: () => piRuntime.piRuntimeManager.resetModelRuntime(),
+        getConfigStatus: () => piConfig.getConfigStatus()
+      };
+    })();
+    return depsPromise;
+  };
+  for (const channel of AGENT_PLANS_DIRECT_CHANNELS) {
+    ipcMain.removeHandler(channel);
+    ipcMain.handle(channel, async (_event, payload: InvokeEnvelope | undefined) =>
+      invokeAgentPlansDirect(channel, payload, await ensureDeps())
+    );
+  }
+}
+
+/**
+ * 凭据与权限族通道直调开关（C-2；S4 起默认开，OP_DESKTOP_AGENT_AUTH_PERMISSIONS_DIRECT=0
+ * 显式回滚）。与 AGENT_DOMAIN_ENABLED 同开时凭据 3 条
+ * （op:agent:auth:get/save/remove）+ 权限规则 2 条（op:agent:permissions:get/
+ * rule:remove）通道进程内直调；provider-auth 的 runtime seam 绑定
+ * piRuntimeManager 对应方法（modelRuntime/resetModelRuntime），凭据错误表与
+ * 权限规则为模块级/文件族共享态，无 live 会话态依赖（C 层配置族口径）。
+ */
+const AGENT_AUTH_PERMISSIONS_DIRECT_ENABLED = directPathEnabled("OP_DESKTOP_AGENT_AUTH_PERMISSIONS_DIRECT");
+
+/**
+ * 凭据与权限族通道直调注册（C-2）：覆盖 http-forward catch-all 中 5 条通道，
+ * 改为进程内直调。provider-auth/agent-errors/approval-policy/pi-runtime 跨域
+ * 惰性动态组装（单飞缓存，flag 关闭时不加载）。
+ */
+function registerAgentAuthPermissionsDirectInvokers(): void {
+  if (!(AGENT_DOMAIN_ENABLED && AGENT_AUTH_PERMISSIONS_DIRECT_ENABLED)) return;
+  let depsPromise: Promise<AgentAuthPermissionsDirectDeps> | null = null;
+  const ensureDeps = (): Promise<AgentAuthPermissionsDirectDeps> => {
+    depsPromise ??= (async () => {
+      const [providerAuth, agentErrors, approvalPolicy, piRuntime] = await Promise.all([
+        import("./backend/agent/provider-auth"),
+        import("./backend/agent/agent-errors"),
+        import("./backend/agent/approval-policy"),
+        import("./backend/agent/pi-runtime")
+      ]);
+      return {
+        listAuth: () => providerAuth.listAuth(),
+        setApiKey: (provider, key) =>
+          providerAuth.setApiKey(provider, key, { modelRuntime: () => piRuntime.piRuntimeManager.modelRuntime() }),
+        removeApiKey: (provider) =>
+          providerAuth.removeApiKey(provider, { resetModelRuntime: () => piRuntime.piRuntimeManager.resetModelRuntime() }),
+        getCredentialErrors: () => agentErrors.getCredentialErrors(),
+        listPermissionRules: () => approvalPolicy.listPermissionRules(),
+        removeUserRule: (rule) => approvalPolicy.removeUserRule(rule as never)
+      };
+    })();
+    return depsPromise;
+  };
+  for (const channel of AGENT_AUTH_PERMISSIONS_DIRECT_CHANNELS) {
+    ipcMain.removeHandler(channel);
+    ipcMain.handle(channel, async (_event, payload: InvokeEnvelope | undefined) =>
+      invokeAgentAuthPermissionsDirect(channel, payload, await ensureDeps())
+    );
+  }
+}
+
+/**
+ * Pi 配置族通道直调开关（C-3；S4 起默认开，OP_DESKTOP_AGENT_PI_CONFIG_DIRECT=0 显式回滚）。
+ * 与 AGENT_DOMAIN_ENABLED 同开时 8 条通道（op:models:list /
+ * op:agent:model-configs:list/save/delete / op:agent:default-model:set /
+ * op:agent:config-status / op:agent:import-preview / op:agent:import-config）
+ * 进程内直调；数据源 pi-config-management（B6 对拍覆盖）+ provider-auth runtime seam
+ * 绑定 piRuntimeManager（C-2 同口径）+ session-files（会话目录与缓存失效），
+ * 无 live 会话态依赖（C 层配置族口径）。
+ */
+const AGENT_PI_CONFIG_DIRECT_ENABLED = directPathEnabled("OP_DESKTOP_AGENT_PI_CONFIG_DIRECT");
+
+/**
+ * Pi 配置族通道直调注册（C-3）：覆盖 http-forward catch-all 中 8 条通道，
+ * 改为进程内直调。pi-config-management/provider-auth/agent-errors/session-files/
+ * pi-runtime/assembly 六域惰性动态组装（单飞缓存，flag 关闭时不加载）。
+ */
+function registerAgentPiConfigDirectInvokers(): void {
+  if (!(AGENT_DOMAIN_ENABLED && AGENT_PI_CONFIG_DIRECT_ENABLED)) return;
+  let depsPromise: Promise<AgentPiConfigDirectDeps> | null = null;
+  const ensureDeps = (): Promise<AgentPiConfigDirectDeps> => {
+    depsPromise ??= (async () => {
+      const [piConfig, providerAuth, agentErrors, sessionFiles, piRuntime, assembly] = await Promise.all([
+        import("./backend/agent/pi-config-management"),
+        import("./backend/agent/provider-auth"),
+        import("./backend/agent/agent-errors"),
+        import("./backend/agent/session-files"),
+        import("./backend/agent/pi-runtime"),
+        import("./backend/agent/assembly")
+      ]);
+      return {
+        listModelCatalog: async () => (await assembly.getAgentManager()).listModelCatalog(),
+        readModelsStore: () => piConfig.readModelsStore(),
+        readRuntimeSettings: () => piConfig.readRuntimeSettings(),
+        readModelsConfig: () => piConfig.readModelsConfig(),
+        writeModelsConfig: (value) => piConfig.writeModelsConfig(value),
+        listAuth: () => providerAuth.listAuth(),
+        getCredentialErrors: () => agentErrors.getCredentialErrors(),
+        setApiKey: (provider, key) =>
+          providerAuth.setApiKey(provider, key, { modelRuntime: () => piRuntime.piRuntimeManager.modelRuntime() }),
+        removeApiKey: (provider) =>
+          providerAuth.removeApiKey(provider, { resetModelRuntime: () => piRuntime.piRuntimeManager.resetModelRuntime() }),
+        resetModelRuntime: () => piRuntime.piRuntimeManager.resetModelRuntime(),
+        writeDefaultModel: (input) => piConfig.writeDefaultModel(input as never),
+        getConfigStatus: () => piConfig.getConfigStatus(),
+        previewLocalPiConfig: () => piConfig.previewLocalPiConfig(),
+        importLocalPiConfig: (options) => piConfig.importLocalPiConfig(options as never),
+        importLocalPiSessions: (options) => piConfig.importLocalPiSessions(options as never),
+        sessionsDir: () => sessionFiles.SESSIONS_DIR,
+        clearSessionCaches: () => sessionFiles.clearSessionCaches()
+      };
+    })();
+    return depsPromise;
+  };
+  for (const channel of AGENT_PI_CONFIG_DIRECT_CHANNELS) {
+    ipcMain.removeHandler(channel);
+    ipcMain.handle(channel, async (_event, payload: InvokeEnvelope | undefined) =>
+      invokeAgentPiConfigDirect(channel, payload, await ensureDeps())
+    );
+  }
+}
+
+/**
+ * 供应商目录族通道直调开关（C-4；S4 起默认开，OP_DESKTOP_AGENT_PROVIDER_CATALOG_DIRECT=0
+ * 显式回滚）。与 AGENT_DOMAIN_ENABLED 同开时 6 条通道
+ * （op:agent:provider-catalog* 4 条 + op:agent:custom-provider +
+ * op:agent:model-configs:fetch-models）进程内直调；数据源 provider-catalog
+ * （B2 对拍覆盖）+ models-dev-catalog + pi-network-proxy 网络适配器 +
+ * pi-config-management 读写族，无 live 会话态依赖（C 层配置族口径）。
+ */
+const AGENT_PROVIDER_CATALOG_DIRECT_ENABLED = directPathEnabled("OP_DESKTOP_AGENT_PROVIDER_CATALOG_DIRECT");
+
+/**
+ * 供应商目录族通道直调注册（C-4）：覆盖 http-forward catch-all 中 6 条通道，
+ * 改为进程内直调。provider-catalog/models-dev-catalog/pi-network-proxy/
+ * pi-config-management/pi-runtime 五域惰性动态组装（单飞缓存，flag 关闭不加载）。
+ */
+function registerAgentProviderCatalogDirectInvokers(): void {
+  if (!(AGENT_DOMAIN_ENABLED && AGENT_PROVIDER_CATALOG_DIRECT_ENABLED)) return;
+  let depsPromise: Promise<AgentProviderCatalogDirectDeps> | null = null;
+  const ensureDeps = (): Promise<AgentProviderCatalogDirectDeps> => {
+    depsPromise ??= (async () => {
+      const [providerCatalog, modelsDevCatalog, piNetworkProxy, piConfig, piRuntime, providerAuth, agentErrors] = await Promise.all([
+        import("./backend/provider-catalog"),
+        import("./backend/models-dev-catalog"),
+        import("./backend/agent/pi-network-proxy"),
+        import("./backend/agent/pi-config-management"),
+        import("./backend/agent/pi-runtime"),
+        import("./backend/agent/provider-auth"),
+        import("./backend/agent/agent-errors")
+      ]);
+      return {
+        builtinProviderList: () => providerCatalog.builtinProviderList(),
+        builtinProviderDetail: (id) => providerCatalog.builtinProviderDetail(id),
+        buildBuiltinImport: (provider, options) => providerCatalog.buildBuiltinImport(provider, options as never),
+        findBuiltinModel: (id) => providerCatalog.findBuiltinModel(id),
+        fetchModelsDevCatalog: () => modelsDevCatalog.fetchModelsDevCatalog(),
+        readModelsDevCache: () => modelsDevCatalog.readModelsDevCache(),
+        writeModelsDevCache: (data) => modelsDevCatalog.writeModelsDevCache(data),
+        invalidateMergedCatalog: () => providerCatalog.invalidateMergedCatalog(),
+        createPiNetworkAdapter: () => piNetworkProxy.createPiNetworkAdapter(),
+        readModelsConfig: () => piConfig.readModelsConfig(),
+        writeModelsConfig: (value) => piConfig.writeModelsConfig(value),
+        readRuntimeSettings: () => piConfig.readRuntimeSettings(),
+        writeDefaultModel: (input) => piConfig.writeDefaultModel(input as never),
+        listAuth: () => providerAuth.listAuth(),
+        getCredentialErrors: () => agentErrors.getCredentialErrors(),
+        setApiKey: (provider, key) =>
+          providerAuth.setApiKey(provider, key, { modelRuntime: () => piRuntime.piRuntimeManager.modelRuntime() }),
+        resetModelRuntime: () => piRuntime.piRuntimeManager.resetModelRuntime()
+      };
+    })();
+    return depsPromise;
+  };
+  for (const channel of AGENT_PROVIDER_CATALOG_DIRECT_CHANNELS) {
+    ipcMain.removeHandler(channel);
+    ipcMain.handle(channel, async (_event, payload: InvokeEnvelope | undefined) =>
+      invokeAgentProviderCatalogDirect(channel, payload, await ensureDeps())
+    );
+  }
+}
+
+/**
+ * 网络设置族通道直调开关（C-5；S4 起默认开，OP_DESKTOP_AGENT_NETWORK_SETTINGS_DIRECT=0
+ * 显式回滚）。与 AGENT_DOMAIN_ENABLED 同开时 2 条通道
+ * （op:agent:network-settings:get/save）进程内直调；数据源 pi-config-management
+ * 读写族 + pi-runtime 运行时应用，无 live 会话态依赖（C 层配置族口径）。
+ */
+const AGENT_NETWORK_SETTINGS_DIRECT_ENABLED = directPathEnabled("OP_DESKTOP_AGENT_NETWORK_SETTINGS_DIRECT");
+
+/**
+ * 网络设置族通道直调注册（C-5）：覆盖 http-forward catch-all 中 2 条通道，
+ * 改为进程内直调。pi-config-management/pi-runtime 两域惰性动态组装
+ * （单飞缓存，flag 关闭时不加载）。
+ */
+function registerAgentNetworkSettingsDirectInvokers(): void {
+  if (!(AGENT_DOMAIN_ENABLED && AGENT_NETWORK_SETTINGS_DIRECT_ENABLED)) return;
+  let depsPromise: Promise<AgentNetworkSettingsDirectDeps> | null = null;
+  const ensureDeps = (): Promise<AgentNetworkSettingsDirectDeps> => {
+    depsPromise ??= (async () => {
+      const [piConfig, piRuntime] = await Promise.all([
+        import("./backend/agent/pi-config-management"),
+        import("./backend/agent/pi-runtime")
+      ]);
+      return {
+        readNetworkSettings: () => piConfig.readNetworkSettings(),
+        saveNetworkSettings: (value, options) => piConfig.saveNetworkSettings(value, options as never),
+        loadNetworkSettings: () => piConfig.loadNetworkSettings() as Record<string, any>,
+        updateNetworkSettings: (settings) => piRuntime.piRuntimeManager.updateNetworkSettings(settings)
+      };
+    })();
+    return depsPromise;
+  };
+  for (const channel of AGENT_NETWORK_SETTINGS_DIRECT_CHANNELS) {
+    ipcMain.removeHandler(channel);
+    ipcMain.handle(channel, async (_event, payload: InvokeEnvelope | undefined) =>
+      invokeAgentNetworkSettingsDirect(channel, payload, await ensureDeps())
+    );
+  }
+}
+
+/**
+ * 记忆族通道直调开关（C-6；S4 起默认开，OP_DESKTOP_AGENT_MEMORY_DIRECT=0 显式回滚）。
+ * 与 AGENT_DOMAIN_ENABLED 同开时 10 条通道（op:memory:list/init/
+ * file:get/file:save + op:memory:proposals:list/approve/edit/reject/history/merge）
+ * 进程内直调；数据源 memory-files 文件域（C-6 转录）+ workspace/agent-key/
+ * event-storage/persistence-utils + agentManager 提案六方法，无 live 会话态依赖
+ * （C 层配置族口径）。
+ */
+const AGENT_MEMORY_DIRECT_ENABLED = directPathEnabled("OP_DESKTOP_AGENT_MEMORY_DIRECT");
+
+/**
+ * 记忆族通道直调注册（C-6）：覆盖 http-forward catch-all 中 10 条通道，
+ * 改为进程内直调。memory-files/workspace/event-storage/persistence-utils/
+ * agent-key/assembly 六域惰性动态组装（单飞缓存，flag 关闭时不加载）。
+ */
+function registerAgentMemoryDirectInvokers(): void {
+  if (!(AGENT_DOMAIN_ENABLED && AGENT_MEMORY_DIRECT_ENABLED)) return;
+  let depsPromise: Promise<AgentMemoryDirectDeps> | null = null;
+  const ensureDeps = (): Promise<AgentMemoryDirectDeps> => {
+    depsPromise ??= (async () => {
+      const [memoryFiles, workspace, eventStorage, persistence, agentKeyMod, assembly] = await Promise.all([
+        import("./backend/agent/memory-files"),
+        import("./backend/workspace"),
+        import("./backend/event-storage"),
+        import("./backend/persistence-utils"),
+        import("./backend/agent/agent-key"),
+        import("./backend/agent/assembly")
+      ]);
+      const agentManager = await assembly.getAgentManager();
+      return {
+        listMemoryFiles: () => memoryFiles.listMemoryFiles(),
+        getMemoryDir: () => memoryFiles.getMemoryDir(),
+        startMemoryWatcher: () => memoryFiles.startMemoryWatcher(),
+        resolveMemoryPath: (rel) => memoryFiles.resolveMemoryPath(rel),
+        getWorkspace: () => workspace.getWorkspace(),
+        normalizeWorkspace: (dir) => workspace.normalizeWorkspace(dir),
+        agentKey: (client, thread) => agentKeyMod.agentKey(client, thread),
+        ensureDirectory: (dir) => persistence.ensureDirectory(dir),
+        atomicWriteFile: (file, data) => persistence.atomicWriteFile(file, data, "utf8"),
+        fileExists: (p) => fs.existsSync(p),
+        readFileUtf8: (p) => fs.readFileSync(p, "utf8"),
+        appendEvent: (event) => eventStorage.appendEvent(event as never),
+        memoryProposals: (threadId, filters) => agentManager.memoryProposals(threadId, filters),
+        approveMemoryProposal: (id, options) => agentManager.approveMemoryProposal(id, options),
+        editMemoryProposal: (id, options) => agentManager.editMemoryProposal(id, options),
+        rejectMemoryProposal: (id, reason) => agentManager.rejectMemoryProposal(id, reason),
+        memoryProposalHistory: (id) => agentManager.memoryProposalHistory(id),
+        mergeMemoryProposals: (targetId, sourceIds) => agentManager.mergeMemoryProposals(targetId, sourceIds)
+      };
+    })();
+    return depsPromise;
+  };
+  for (const channel of AGENT_MEMORY_DIRECT_CHANNELS) {
+    ipcMain.removeHandler(channel);
+    ipcMain.handle(channel, async (_event, payload: InvokeEnvelope | undefined) =>
+      invokeAgentMemoryDirect(channel, payload, await ensureDeps())
+    );
+  }
+}
+
+/**
+ * 探测与诊断族通道直调开关（C-7；S4 起默认开，OP_DESKTOP_AGENT_PROBE_DIAGNOSTICS_DIRECT=0
+ * 显式回滚）。与 AGENT_DOMAIN_ENABLED 同开时 2 条通道
+ * （op:agent:model:probe / op:agent:diagnostics）进程内直调；数据源
+ * agentManager 探测与健康面 + pi-runtime 网络诊断 + provider-auth/agent-errors
+ * 凭据面 + pi-config-management 默认模型设置，无 live 会话态依赖（C 层口径）。
+ */
+const AGENT_PROBE_DIAGNOSTICS_DIRECT_ENABLED = directPathEnabled("OP_DESKTOP_AGENT_PROBE_DIAGNOSTICS_DIRECT");
+
+/**
+ * 探测与诊断族通道直调注册（C-7）：覆盖 http-forward catch-all 中 2 条通道，
+ * 改为进程内直调。provider-auth/agent-errors/pi-config-management/pi-runtime/
+ * agent-key/assembly 六域惰性动态组装（单飞缓存，flag 关闭时不加载）。
+ */
+function registerAgentProbeDiagnosticsDirectInvokers(): void {
+  if (!(AGENT_DOMAIN_ENABLED && AGENT_PROBE_DIAGNOSTICS_DIRECT_ENABLED)) return;
+  let depsPromise: Promise<AgentProbeDiagnosticsDirectDeps> | null = null;
+  const ensureDeps = (): Promise<AgentProbeDiagnosticsDirectDeps> => {
+    depsPromise ??= (async () => {
+      const [providerAuth, agentErrors, piConfig, piRuntime, agentKeyMod, assembly] = await Promise.all([
+        import("./backend/agent/provider-auth"),
+        import("./backend/agent/agent-errors"),
+        import("./backend/agent/pi-config-management"),
+        import("./backend/agent/pi-runtime"),
+        import("./backend/agent/agent-key"),
+        import("./backend/agent/assembly")
+      ]);
+      const agentManager = await assembly.getAgentManager();
+      return {
+        probeModel: (model, options) => agentManager.probeModel(model, options),
+        runtimeHealth: (key) => agentManager.runtimeHealth(key),
+        listRuntimes: () => agentManager.listRuntimes() as Record<string, any>,
+        listSessionStates: () => agentManager.listSessionStates(),
+        listModelCatalog: () => agentManager.listModelCatalog() as Promise<Record<string, any>>,
+        networkDiagnostics: () => piRuntime.piRuntimeManager.networkDiagnostics(),
+        listAuth: () => providerAuth.listAuth(),
+        getCredentialErrors: () => agentErrors.getCredentialErrors(),
+        readRuntimeSettings: () => piConfig.readRuntimeSettings(),
+        agentKey: (client, thread) => agentKeyMod.agentKey(client, thread),
+        serviceVersion: () => app.getVersion()
+      };
+    })();
+    return depsPromise;
+  };
+  for (const channel of AGENT_PROBE_DIAGNOSTICS_DIRECT_CHANNELS) {
+    ipcMain.removeHandler(channel);
+    ipcMain.handle(channel, async (_event, payload: InvokeEnvelope | undefined) =>
+      invokeAgentProbeDiagnosticsDirect(channel, payload, await ensureDeps())
+    );
+  }
+}
+
+/**
+ * 文件根目录与系统原生面通道直调开关（D-1a；S4 语义默认开，OP_DESKTOP_NATIVE_SYSTEM_DIRECT=0
+ * 显式回滚）。与 AGENT_DOMAIN_ENABLED 同开时 6 条通道（op:file-roots:list/add/remove +
+ * op:system:reveal/open/pick-files）进程内直调；数据源 workspace/native-files/
+ * project-management 三域，无 live 会话态依赖（非 agent 域薄映射口径）。
+ */
+const NATIVE_SYSTEM_DIRECT_ENABLED = directPathEnabled("OP_DESKTOP_NATIVE_SYSTEM_DIRECT");
+
+/**
+ * 文件根目录与系统原生面通道直调注册（D-1a）：覆盖 http-forward catch-all 中 6 条通道，
+ * 改为进程内直调。workspace/native-files/project-management 三域惰性动态组装
+ * （单飞缓存，flag 关闭时不加载）；fs 面注入 realpathSync/statSync（白名单归一与目录判定）。
+ */
+function registerNativeSystemDirectInvokers(): void {
+  if (!(AGENT_DOMAIN_ENABLED && NATIVE_SYSTEM_DIRECT_ENABLED)) return;
+  let depsPromise: Promise<NativeSystemDirectDeps> | null = null;
+  const ensureDeps = (): Promise<NativeSystemDirectDeps> => {
+    depsPromise ??= (async () => {
+      const [workspace, nativeFiles, projectManagement] = await Promise.all([
+        import("./backend/workspace"),
+        import("./backend/native-files"),
+        import("./backend/project-management")
+      ]);
+      return {
+        listFileRoots: () => workspace.listFileRoots(),
+        addFileRoot: (dir, label) => workspace.addFileRoot(dir as string, label as string | undefined),
+        removeFileRoot: (id) => workspace.removeFileRoot(id as string),
+        getWorkspace: () => workspace.getWorkspace(),
+        resolvePath: (rel) => workspace.resolvePath(rel),
+        isInside: (root, target) => workspace.isInside(root, target),
+        listProjects: (filters) => projectManagement.listProjects(filters as never) as Array<{ rootPath?: string }>,
+        revealInFileManager: (absPath) => nativeFiles.revealInFileManager(absPath),
+        openWithDefaultApp: (absPath) => nativeFiles.openWithDefaultApp(absPath),
+        pickFiles: (options) => nativeFiles.pickFiles(options),
+        nativeCapabilities: () => nativeFiles.nativeCapabilities(),
+        cancelActivePicker: () => nativeFiles.cancelActivePicker(),
+        realpathSync: (p) => fs.realpathSync(p),
+        statSync: (p) => fs.statSync(p)
+      };
+    })();
+    return depsPromise;
+  };
+  for (const channel of NATIVE_SYSTEM_DIRECT_CHANNELS) {
+    ipcMain.removeHandler(channel);
+    ipcMain.handle(channel, async (_event, payload: InvokeEnvelope | undefined) =>
+      invokeNativeSystemDirect(channel, payload, await ensureDeps())
+    );
+  }
+}
+
+/**
+ * 状态与知识库摄取、模型刷新通道直调开关（D-1b；S4 语义默认开，OP_DESKTOP_SYSTEM_STATUS_DIRECT=0
+ * 显式回滚）。与 AGENT_DOMAIN_ENABLED 同开时 3 条通道（op:status:get / op:kb:ingest /
+ * op:models:refresh）进程内直调；status 为进程身份聚合投影（HTTP 认证面差异见模块头注释），
+ * models:refresh 数据源为装配单飞 agentManager（C-3 同款接入）。
+ */
+const SYSTEM_STATUS_DIRECT_ENABLED = directPathEnabled("OP_DESKTOP_SYSTEM_STATUS_DIRECT");
+
+/** 状态与知识库摄取、模型刷新通道直调注册（D-1b）：覆盖 http-forward catch-all 中 3 条通道。 */
+function registerSystemStatusDirectInvokers(): void {
+  if (!(AGENT_DOMAIN_ENABLED && SYSTEM_STATUS_DIRECT_ENABLED)) return;
+  let depsPromise: Promise<SystemStatusDirectDeps> | null = null;
+  const ensureDeps = (): Promise<SystemStatusDirectDeps> => {
+    depsPromise ??= (async () => {
+      const [workspace, nativeFiles, featureFlags, kb, assembly] = await Promise.all([
+        import("./backend/workspace"),
+        import("./backend/native-files"),
+        import("./backend/feature-flags"),
+        import("./backend/kb"),
+        import("./backend/agent/assembly")
+      ]);
+      return {
+        officecliPath: workspace.OFFICECLI,
+        serviceVersion: () => app.getVersion(),
+        nativeCapabilities: () => nativeFiles.nativeCapabilities() as Record<string, unknown>,
+        activePickerInfo: () => nativeFiles.activePickerInfo() as Record<string, unknown>,
+        runtimeFlagsSnapshot: () => featureFlags.runtimeFlagsSnapshot() as Record<string, unknown>,
+        ingestDocx: (name) => kb.ingestDocx(name),
+        refreshModels: async () => (await assembly.getAgentManager()).refreshModels(),
+        listModelCatalog: async () => (await assembly.getAgentManager()).listModelCatalog(),
+        // serviceIdentity 逐行转录（server/index.mjs L76-78）：os.userInfo 优先、USERNAME 回退。
+        identity: () => {
+          try {
+            return os.userInfo().username || String(process.env.USERNAME || "").trim() || "unknown";
+          } catch {
+            return String(process.env.USERNAME || "").trim() || "unknown";
+          }
+        },
+        startedAt: new Date().toISOString()
+      };
+    })();
+    return depsPromise;
+  };
+  for (const channel of SYSTEM_STATUS_DIRECT_CHANNELS) {
+    ipcMain.removeHandler(channel);
+    ipcMain.handle(channel, async (_event, payload: InvokeEnvelope | undefined) =>
+      invokeSystemStatusDirect(channel, payload, await ensureDeps())
+    );
+  }
+}
+
+/**
+ * 联网搜索配置与地图底图设置通道直调开关（D-1c；S4 语义默认开，OP_DESKTOP_SEARCH_MAP_SETTINGS_DIRECT=0
+ * 显式回滚）。与 AGENT_DOMAIN_ENABLED 同开时 5 条通道（op:search:settings:get/save、
+ * op:search:test、op:map:settings:get/save）进程内直调；数据源 web-search/map 两域。
+ */
+const SEARCH_MAP_SETTINGS_DIRECT_ENABLED = directPathEnabled("OP_DESKTOP_SEARCH_MAP_SETTINGS_DIRECT");
+
+/** 联网搜索配置与地图底图设置通道直调注册（D-1c）：覆盖 http-forward catch-all 中 5 条通道。 */
+function registerSearchMapSettingsDirectInvokers(): void {
+  if (!(AGENT_DOMAIN_ENABLED && SEARCH_MAP_SETTINGS_DIRECT_ENABLED)) return;
+  let depsPromise: Promise<SearchMapSettingsDirectDeps> | null = null;
+  const ensureDeps = (): Promise<SearchMapSettingsDirectDeps> => {
+    depsPromise ??= (async () => {
+      const [webSearch, map] = await Promise.all([
+        import("./backend/web-search"),
+        import("./backend/map")
+      ]);
+      return {
+        searchBackends: webSearch.SEARCH_BACKENDS,
+        publicSearchSettings: () => webSearch.publicSearchSettings() as Record<string, unknown>,
+        saveSearchSettings: (input) => webSearch.saveSearchSettings(input) as Record<string, unknown>,
+        testSearchBackend: (backend, options) => webSearch.testSearchBackend(backend, options) as Promise<Record<string, unknown>>,
+        loadMapSettings: () => map.loadMapSettings(),
+        saveMapSettings: (basemaps) => map.saveMapSettings(basemaps),
+        listProjects: () => map.listProjects() as Array<{ project: unknown }>,
+        rebuildBasemapStyle: (name) => map.rebuildBasemapStyle(name as string)
+      };
+    })();
+    return depsPromise;
+  };
+  for (const channel of SEARCH_MAP_SETTINGS_DIRECT_CHANNELS) {
+    ipcMain.removeHandler(channel);
+    ipcMain.handle(channel, async (_event, payload: InvokeEnvelope | undefined) =>
+      invokeSearchMapSettingsDirect(channel, payload, await ensureDeps())
+    );
+  }
+}
+
+/**
+ * 项目管理族通道直调开关（D-2；S4 语义默认开，OP_DESKTOP_PROJECTS_DIRECT=0 显式回滚）。
+ * 与 AGENT_DOMAIN_ENABLED 同开时 7 条通道（op:projects:list/create/classify/update/pin/
+ * archive/settings:update）进程内直调；list 为四域计数聚合（project-management + runs +
+ * session-files + 装配单飞 agentManager.memoryProposals）。
+ */
+const PROJECTS_DIRECT_ENABLED = directPathEnabled("OP_DESKTOP_PROJECTS_DIRECT");
+
+/** 项目管理族通道直调注册（D-2）：覆盖 http-forward catch-all 中 7 条通道。 */
+function registerProjectManagementDirectInvokers(): void {
+  if (!(AGENT_DOMAIN_ENABLED && PROJECTS_DIRECT_ENABLED)) return;
+  let depsPromise: Promise<ProjectManagementDirectDeps> | null = null;
+  const ensureDeps = (): Promise<ProjectManagementDirectDeps> => {
+    depsPromise ??= (async () => {
+      const [workspace, projects, runs, sessionFiles, assembly] = await Promise.all([
+        import("./backend/workspace"),
+        import("./backend/project-management"),
+        import("./backend/runs"),
+        import("./backend/agent/session-files"),
+        import("./backend/agent/assembly")
+      ]);
+      const agentManager = await assembly.getAgentManager();
+      return {
+        getWorkspace: () => workspace.getWorkspace(),
+        ensureProjectForWorkspace: (rootPath) => projects.ensureProjectForWorkspace(rootPath),
+        listRunSummaries: (options) => runs.listRunSummaries(options) as Array<Record<string, any>>,
+        memoryProposals: () => agentManager.memoryProposals() as Array<Record<string, any>>,
+        listSessionFiles: () => sessionFiles.listSessionFiles(),
+        readSessionHeader: (found) => sessionFiles.readSessionHeader(found as never),
+        listProjects: (filters) => projects.listProjects(filters),
+        listProjectTypes: () => projects.listProjectTypes(),
+        listProjectStatuses: () => projects.listProjectStatuses(),
+        listProjectProfiles: () => projects.listProjectProfiles() as Record<string, any>,
+        defaultProjectSettings: () => projects.defaultProjectSettings() as Record<string, any>,
+        createProject: (input) => projects.createProject(input) as { ok: boolean } & Record<string, unknown>,
+        updateProject: (id, patch) => projects.updateProject(id as string, patch) as { ok: boolean } & Record<string, unknown>,
+        getProjectSettings: (id) => projects.getProjectSettings(id as string) as Record<string, any>,
+        updateProjectSettings: (id, patch) => projects.updateProjectSettings(id as string, patch) as { ok: boolean } & Record<string, unknown>,
+        archiveProject: (id, archived) => projects.archiveProject(id as string, archived) as { ok: boolean } & Record<string, unknown>,
+        classifyProjects: (options) => projects.classifyProjects(options) as Record<string, unknown>
+      };
+    })();
+    return depsPromise;
+  };
+  for (const channel of PROJECT_MANAGEMENT_DIRECT_CHANNELS) {
+    ipcMain.removeHandler(channel);
+    ipcMain.handle(channel, async (_event, payload: InvokeEnvelope | undefined) =>
+      invokeProjectManagementDirect(channel, payload, await ensureDeps())
+    );
+  }
+}
+
+/**
+ * workspace 族通道直调开关（D-3；S4 语义默认开，OP_DESKTOP_WORKSPACE_DIRECT=0 显式回滚）。
+ * 与 AGENT_DOMAIN_ENABLED 同开时 5 条通道（op:workspaces:list / op:workspace:switch /
+ * validate / pick / pick:cancel）进程内直调：workspaces 聚合缓存（5s TTL + 会话扫描 +
+ * 办公目录过滤）+ 写探针门禁 + 原生对话框 + Office CLI 双检查。
+ */
+const WORKSPACE_DIRECT_ENABLED = directPathEnabled("OP_DESKTOP_WORKSPACE_DIRECT");
+
+/** workspace 族通道直调注册（D-3）：覆盖 http-forward catch-all 中 5 条通道。 */
+function registerWorkspaceDirectInvokers(): void {
+  if (!(AGENT_DOMAIN_ENABLED && WORKSPACE_DIRECT_ENABLED)) return;
+  let depsPromise: Promise<WorkspaceDirectDeps> | null = null;
+  const ensureDeps = (): Promise<WorkspaceDirectDeps> => {
+    depsPromise ??= (async () => {
+      const [workspace, writeProbe, office, nativeFiles, sessionFiles] = await Promise.all([
+        import("./backend/workspace"),
+        import("./backend/workspace-write-probe"),
+        import("./backend/office"),
+        import("./backend/native-files"),
+        import("./backend/agent/session-files")
+      ]);
+      return {
+        WORKSPACE_DIR: workspace.WORKSPACE_DIR,
+        getWorkspace: () => workspace.getWorkspace(),
+        setWorkspace: (dir) => workspace.setWorkspace(dir),
+        listWorkspace: (dir) => workspace.listWorkspace(dir) as unknown[],
+        normalizeWorkspace: (dir) => workspace.normalizeWorkspace(dir),
+        getHiddenWorkspaces: () => workspace.getHiddenWorkspaces(),
+        evaluateWorkspaceWrite: (root) => writeProbe.evaluateWorkspaceWrite(root),
+        checkOfficecli: () => office.checkOfficecli(),
+        pickFolder: (options) => nativeFiles.pickFolder(options),
+        cancelActivePicker: () => nativeFiles.cancelActivePicker(),
+        activePickerInfo: () => nativeFiles.activePickerInfo(),
+        listSessionFiles: () => sessionFiles.listSessionFiles(),
+        readSessionTextCached: (found) => sessionFiles.readSessionTextCached(found as never),
+        existsSync: (p) => fs.existsSync(p),
+        readdirSync: (p) => fs.readdirSync(p),
+        realpathSync: (p) => fs.realpathSync(p)
+      };
+    })();
+    return depsPromise;
+  };
+  for (const channel of WORKSPACE_DIRECT_CHANNELS) {
+    ipcMain.removeHandler(channel);
+    ipcMain.handle(channel, async (_event, payload: InvokeEnvelope | undefined) =>
+      invokeWorkspaceDirect(channel, payload, await ensureDeps())
+    );
+  }
+}
+
+/**
+ * files 族通道直调开关（D-4；S4 语义默认开，OP_DESKTOP_FILES_DIRECT=0 显式回滚）。
+ * 与 AGENT_DOMAIN_ENABLED 同开时 4 条通道（op:files:list/search/upload/delete）
+ * 进程内直调：请求级工作区解析 + mime 投影 + writeWorkspaceFile/withWriteLockAsync
+ * 写协同 + withOfficecliReleaseRetry（OFFICE_DOCUMENT_LOCKED 释放重试）。
+ */
+const FILES_DIRECT_ENABLED = directPathEnabled("OP_DESKTOP_FILES_DIRECT");
+
+/** files 族通道直调注册（D-4）：覆盖 http-forward catch-all 中 4 条通道。 */
+function registerFilesDirectInvokers(): void {
+  if (!(AGENT_DOMAIN_ENABLED && FILES_DIRECT_ENABLED)) return;
+  let depsPromise: Promise<FilesDirectDeps> | null = null;
+  const ensureDeps = (): Promise<FilesDirectDeps> => {
+    depsPromise ??= (async () => {
+      const [workspace, writeCoordination, filePermissionError, office] = await Promise.all([
+        import("./backend/workspace"),
+        import("./backend/agent/write-coordination"),
+        import("./backend/file-permission-error"),
+        import("./backend/office")
+      ]);
+      return {
+        getWorkspace: () => workspace.getWorkspace(),
+        normalizeWorkspace: (dir) => workspace.normalizeWorkspace(dir),
+        resolvePath: (rel, ws) => workspace.resolvePath(rel, ws),
+        safeName: (name) => workspace.safeName(name),
+        listWorkspace: (dir) => workspace.listWorkspace(dir) as Array<Record<string, any>>,
+        searchWorkspace: (query, options) => workspace.searchWorkspace(query, options),
+        writeWorkspaceFile: (input) => writeCoordination.writeWorkspaceFile(input),
+        withWriteLockAsync: (options, callback) => writeCoordination.withWriteLockAsync(options, callback),
+        runOfficecli: (args, options) => office.runOfficecli(args, options),
+        normalizeWorkspaceWriteError: (error) => filePermissionError.normalizeWorkspaceWriteError(error),
+        workspaceWriteHttpStatus: (error) => filePermissionError.workspaceWriteHttpStatus(error),
+        existsSync: (p) => fs.existsSync(p),
+        statSync: (p) => fs.statSync(p),
+        unlinkSync: (p) => fs.unlinkSync(p)
+      };
+    })();
+    return depsPromise;
+  };
+  for (const channel of FILES_DIRECT_CHANNELS) {
+    ipcMain.removeHandler(channel);
+    ipcMain.handle(channel, async (_event, payload: InvokeEnvelope | undefined) =>
+      invokeFilesDirect(channel, payload, await ensureDeps())
+    );
+  }
+}
+
+/**
+ * B2 装配层冒烟路径：动态加载装配模块并构造真实 AgentManager
+ * （已迁 TS 实现 + 未迁域旧 server 过渡桥）。成功输出 AGENT_DOMAIN_ASSEMBLED，
+ * 失败输出 SMOKE_FAIL 并退出。
+ */
+async function assembleAgentDomainForSmoke(): Promise<boolean> {
+  try {
+    const assembly = await import("./backend/agent/assembly");
+    await assembly.getAgentManager();
+    console.log("AGENT_DOMAIN_ASSEMBLED");
+    return true;
+  } catch (error) {
+    console.log(`SMOKE_FAIL agent 域装配失败：${error instanceof Error ? error.message : String(error)}`);
+    void shutdown(1);
+    return false;
+  }
+}
+
+/** 非 SMOKE 形态的后台装配（不阻塞窗口加载；失败仅记录不崩进程）。 */
+function assembleAgentDomainInBackground(): void {
+  void import("./backend/agent/assembly")
+    .then((assembly) => assembly.getAgentManager())
+    .then(() => console.log("AGENT_DOMAIN_ASSEMBLED"))
+    .catch((error) => {
+      console.error(`agent 域装配失败：${error instanceof Error ? error.message : String(error)}`);
+    });
+}
+
 async function bootstrap(): Promise<void> {
   let port: number;
   try {
@@ -158,15 +1192,18 @@ async function bootstrap(): Promise<void> {
   server = startLegacyServer(root, port);
   broadcastStatus(server.status);
   server.ready
-    .then((probe) => {
+    .then(async (probe) => {
       if (!server) return;
       broadcastStatus(server.status);
       if (probe.ok) {
         if (SMOKE && RENDERER_TARGET === "legacy-client") {
+          // B2 装配层冒烟：flag 开时先装配（SMOKE_OK 锚点在装配成功后才输出）
+          if (AGENT_DOMAIN_ENABLED && !(await assembleAgentDomainForSmoke())) return;
           console.log(`SMOKE_OK port=${server.port}`);
           void shutdown(0);
           return;
         }
+        if (AGENT_DOMAIN_ENABLED) assembleAgentDomainInBackground();
         if (RENDERER_TARGET === "app") {
           if (SMOKE) {
             void smokeNewUi();
@@ -222,6 +1259,23 @@ if (!gotLock) {
   app.whenReady().then(() => {
     ipcMain.handle("op:server-status", () => server?.status ?? { phase: "starting" });
     registerChannelForwarders();
+    registerAgentDirectInvokers();
+    registerAgentSessionsDirectInvokers();
+    registerAgentRunsDirectInvokers();
+    registerAgentPromptDirectInvokers();
+    registerAgentPlansDirectInvokers();
+    registerAgentAuthPermissionsDirectInvokers();
+    registerAgentPiConfigDirectInvokers();
+    registerAgentProviderCatalogDirectInvokers();
+    registerAgentNetworkSettingsDirectInvokers();
+    registerAgentMemoryDirectInvokers();
+    registerAgentProbeDiagnosticsDirectInvokers();
+    registerNativeSystemDirectInvokers();
+    registerSystemStatusDirectInvokers();
+    registerSearchMapSettingsDirectInvokers();
+    registerProjectManagementDirectInvokers();
+    registerWorkspaceDirectInvokers();
+    registerFilesDirectInvokers();
     registerEventBridgeHandlers();
     registerMemoryBridgeHandlers();
     registerGlobalEventsBridgeHandlers();

@@ -5,18 +5,18 @@ import os from "node:os";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import JSZip from "jszip";
-import XLSX from "xlsx";
+// xlsx 的 module 字段指向 xlsx.mjs（仅具名导出），rollup 打包态 default import 会
+// 解析失败，故用 namespace import；readFile/utils 两构建（cjs/mjs）具名面一致。
+import * as XLSX from "xlsx";
 // 逐行等价迁移自 server/context.mjs（B6-5，agent 域直接上游，B2 收编时随域校正）。
 // 注意：当前仅对拍覆盖、未装配运行时；旧 JS 实现保留至域退役。
 import { PROJECT_DIR, getWorkspace, resolveExternalPath, resolvePath, listFileRoots } from "../workspace";
 import { atomicWriteFile } from "../persistence-utils";
 
-// 过渡桥：knowledge/template 分支仍动态引用旧 server 模块（kb.mjs / tpl.mjs 属独立域，
-// 待其 TS 化批次收编后替换为本域模块；模块未装配运行时，装配前必已替换）。
-// @legacy-server/* 别名解析到 electron 外物理文件，与旧侧 import("./kb.mjs") 同一模块 id
-// （vite/vitest alias + tsconfig paths 三处已同步；electron.vite.config.ts 装配时补齐）。
-const KB_MODULE_PATH = "@legacy-server/kb.mjs";
-const TPL_MODULE_PATH = "@legacy-server/tpl.mjs";
+// template 分支自 S3-10 起换绑本域 tpl.ts（同目录上一级，layer-repository/spatial-analysis
+// 同批；kb 分支 S3-7 先例）。变量相对路径以调用方 context.ts 为基准。
+const KB_MODULE_PATH = "../kb";
+const TPL_MODULE_PATH = "../tpl";
 const execFileAsync = promisify(execFile) as (file: string, args: string[], opts?: Record<string, unknown>) => Promise<{ stdout: string; stderr: string }>;
 const MAX_READ_CHARS = 50000;
 const SUPPORTED = new Set(["docx", "xlsx", "pptx", "pdf", "csv", "json", "md", "markdown", "txt", "html", "htm"]);
