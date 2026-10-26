@@ -119,6 +119,8 @@ export interface CapabilityPlan {
   capabilities: TaskCapability[];
   routing: { officecli: string; documentRead: string; knowledge: string; map: string; skills: string };
   output: { expected: boolean; saveToWorkspace: boolean };
+  /** Office CLI 预检结果：preferred 时同步回填，lazy 时先置 deferred 由后台异步回填。 */
+  officecli?: { available: boolean | null; path?: string; code?: number | null; version?: string | null; message?: string; deferred?: boolean };
 }
 
 /** 根据输入和引用生成可解释的本轮能力计划，供 Run、前端和 Pi prompt 共用。 */
