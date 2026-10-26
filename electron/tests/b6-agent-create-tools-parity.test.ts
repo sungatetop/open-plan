@@ -40,37 +40,48 @@ const reg = vi.hoisted(() => ({
 // vi.mock 工厂用 getter 显式转发：vitest 会枚举工厂返回对象的导出名做存在性校验，
 // Proxy 动态取值会让「未枚举到的导出」被判为未定义而抛错；getter 让导出名静态可见，
 // 取值时才解引用 reg 里的当前 stub（每用例可重赋值）。
-vi.mock("@legacy-server/office.mjs", () => ({
+// S3-4 起 create-tools.ts officecli 工具动态 import TS backend/office（officeLimiter
+// 经 pi-runtime.ts 直绑），mock 目标随批换绑；stub 经 reg.office 与旧侧工厂共享。
+// S3-6 起 map_template 工具同理换绑 TS backend/map-template；stub 经 reg.tpl 共享。
+// S3-7 起 kb_search/kb_read 工具换绑 TS backend/kb；stub 经 reg.kb 共享。
+// S3-8 起 map_get/map_edit/map_import/map_analyze 系工具换绑 TS backend/map；stub 经 reg.map 共享。
+vi.mock("../src/main/backend/office", () => ({
   get runOfficecli() { return (reg as any).office.runOfficecli; },
   get validateOfficecliArgs() { return (reg as any).office.validateOfficecliArgs; },
 }));
-vi.mock("@legacy-server/kb.mjs", () => ({
+vi.mock("../src/main/backend/kb", () => ({
   get scan() { return (reg as any).kb.scan; },
   get status() { return (reg as any).kb.status; },
   get getDoc() { return (reg as any).kb.getDoc; },
   get search() { return (reg as any).kb.search; },
 }));
-vi.mock("@legacy-server/map.mjs", () => ({
+vi.mock("../src/main/backend/map", () => ({
   get DEFAULT_PROJECT() { return (reg as any).map.DEFAULT_PROJECT; },
   get getProject() { return (reg as any).map.getProject; },
   get projectDir() { return (reg as any).map.projectDir; },
   get listProjects() { return (reg as any).map.listProjects; },
   get importLayer() { return (reg as any).map.importLayer; },
 }));
-vi.mock("@legacy-server/layer-repository.mjs", () => ({
+// S3-10 起 map_edit/map_import/map_datasets/map_save_analysis 的归属仓库换绑 TS
+// backend/layer-repository；map_analyze 空间分析换绑 TS backend/spatial-analysis。
+// stub 经 reg.repo / reg.spatial 与旧侧工厂共享。
+vi.mock("../src/main/backend/layer-repository", () => ({
   get listLayers() { return (reg as any).repo.listLayers; },
   get resolveLayer() { return (reg as any).repo.resolveLayer; },
   get markLayerOwnership() { return (reg as any).repo.markLayerOwnership; },
 }));
-vi.mock("@legacy-server/map-visualization.mjs", () => ({
+// S3-9 起 map-list-projects 数据源清单 / map_analyze 数据源路径 / map_template 期望线
+// 上图换绑 TS backend/map-visualization + traffic-sources；stub 经 reg.vis 共享，
+// traffic-sources 仅注册面（导入即注册），mock 为空壳即可（listSources/loadSource 已 mock）。
+vi.mock("../src/main/backend/map-visualization", () => ({
   get listSources() { return (reg as any).vis.listSources; },
   get loadSource() { return (reg as any).vis.loadSource; },
 }));
-vi.mock("@legacy-server/traffic-sources.mjs", () => ({}));
-vi.mock("@legacy-server/spatial-analysis.mjs", () => ({
+vi.mock("../src/main/backend/traffic-sources", () => ({}));
+vi.mock("../src/main/backend/spatial-analysis", () => ({
   get analyzeGeoJSON() { return (reg as any).spatial.analyzeGeoJSON; },
 }));
-vi.mock("@legacy-server/map-template.mjs", () => ({
+vi.mock("../src/main/backend/map-template", () => ({
   get runOdCommuterTemplate() { return (reg as any).tpl.runOdCommuterTemplate; },
 }));
 

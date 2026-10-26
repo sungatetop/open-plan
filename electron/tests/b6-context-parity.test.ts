@@ -90,7 +90,27 @@ vi.mock("../../server/kb.mjs", () => ({
   getTreeLevel: () => hoisted.kbState.tree,
 }));
 
+// S3-7 起 context.ts knowledge 分支换绑 TS backend/kb（KB_MODULE_PATH="../kb"），
+// 新侧 mock 与旧侧共享同一 kbState，双链各自命中（工厂形态同上，非 getter——
+// kbState 字段每用例整体重置，取值时解引用即可）。
+vi.mock("../src/main/backend/kb", () => ({
+  scan: async () => {},
+  status: () => ({ roots: hoisted.kbState.roots }),
+  getDoc: (relPath: string, rootIdx: number | null) => {
+    if (rootIdx === null || rootIdx < 0 || rootIdx >= hoisted.kbState.roots.length) return hoisted.kbState.docFallback;
+    return hoisted.kbState.docsByRoot[rootIdx] ?? hoisted.kbState.docFallback;
+  },
+  getTreeLevel: () => hoisted.kbState.tree,
+}));
+
 vi.mock("../../server/tpl.mjs", () => ({
+  resolveTemplatePath: () => hoisted.tplState.path,
+  getTemplateContent: () => hoisted.tplState.content,
+}));
+
+// S3-10 起 context.ts template 分支换绑 TS backend/tpl（TPL_MODULE_PATH="../tpl"），
+// 新侧 mock 与旧侧共享同一 tplState，双链各自命中（kb 先例同款工厂形态）。
+vi.mock("../src/main/backend/tpl", () => ({
   resolveTemplatePath: () => hoisted.tplState.path,
   getTemplateContent: () => hoisted.tplState.content,
 }));

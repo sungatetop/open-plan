@@ -14,9 +14,10 @@
  *  2. 未迁域走 world seam 注入（pi 域 defineTool/Type/createBashToolDefinition、
  *     审批/命令安全/office 参数/网页搜索/内置浏览器/sidecar/记忆治理/runs 等，
  *     B2 装配绑定同名旧实现；B6-1 已迁的 office-command/usage-text 除外）；
- *  3. office/kb/map 族动态 legacy 模块经 `@legacy-server/*` 别名动态 import
- *     （与旧侧 import("./x.mjs") 同一物理模块，vitest alias + tsconfig paths 已同步；
- *     生产 electron.vite.config.ts main 段 alias 待装配时补齐）。
+ *  3. office/kb/map 族动态 import：office 自 S3-4 起迁 TS 直绑 `../office`（officeLimiter
+ *     经 pi-runtime.ts 静态直绑）；kb 自 S3-7、map 族自 S3-8、可视化三域自 S3-9、
+ *     layer-repository/spatial-analysis 自 S3-10 起迁 TS 直绑；至此本文件
+ *     `@legacy-server/*` 过渡动态 import 清零。
  *
  * 行为差异说明（语义等价，仅依赖注入形状）：
  *  - entry：旧代码 `let entry;` 前向声明，工具闭包捕获变量绑定（组装完成后才可读）。
@@ -175,7 +176,7 @@ export function buildCreateTools(world: CreateToolsWorld) {
       args: Type.String({ description: "officecli command arguments (single string)" }),
     }),
     execute: async (_toolCallId: unknown, params: any) => {
-      const { runOfficecli, validateOfficecliArgs } = await import("@legacy-server/office.mjs");
+      const { runOfficecli, validateOfficecliArgs } = await import("../office");
       const args = parseArgs(String(params.args || ""));
       const ctx = activeWriteContext("officecli");
       let parsed: any;
@@ -335,7 +336,7 @@ export function buildCreateTools(world: CreateToolsWorld) {
       query: Type.String({ description: "搜索关键词（支持中文，可多个词空格分隔）" }),
     }),
     execute: async (_toolCallId: unknown, params: any) => {
-      const kb = await import("@legacy-server/kb.mjs");
+      const kb = await import("../kb");
       const query = String(params.query || "").trim();
       reviewSourceEvent("review_source_search_started", { query });
       await kb.scan();
@@ -369,11 +370,11 @@ export function buildCreateTools(world: CreateToolsWorld) {
       path: Type.String({ description: "相对路径@根目录名，如 xx.md@根目录" }),
     }),
     execute: async (_toolCallId: unknown, params: any) => {
-      const kb = await import("@legacy-server/kb.mjs");
+      const kb = await import("../kb");
       await kb.scan();
       const raw = String(params.path || "").trim();
       const parts = raw.split("@").map((s: string) => (s || "").trim());
-      const relPath = parts[0];
+      const relPath = parts[0]!;
       const rootName = parts[1] || "";
       let rootIdx: number | null = null;
       if (rootName) {
@@ -767,8 +768,8 @@ export function buildCreateTools(world: CreateToolsWorld) {
       project: Type.Optional(Type.String({ description: "项目名，默认 zhejiang-map" })),
     }),
     execute: async (_toolCallId: unknown, params: any) => {
-      const map = await import("@legacy-server/map.mjs");
-      const repo = await import("@legacy-server/layer-repository.mjs");
+      const map = await import("../map");
+      const repo = await import("../layer-repository");
       const name = params.project || world.entry.task?.mapProject || map.DEFAULT_PROJECT;
       const p = map.getProject(name);
       if (!p) return { content: [{ type: "text", text: `项目不存在: ${name}` }], details: {} };
@@ -827,8 +828,8 @@ export function buildCreateTools(world: CreateToolsWorld) {
       source: Type.Optional(Type.String({ description: "add: 数据源 id，默认等于 target" })),
     }),
     execute: async (_toolCallId: unknown, params: any) => {
-      const map = await import("@legacy-server/map.mjs");
-      const repo = await import("@legacy-server/layer-repository.mjs");
+      const map = await import("../map");
+      const repo = await import("../layer-repository");
       const name = params.project || world.entry.task?.mapProject || map.DEFAULT_PROJECT;
       const dir = map.projectDir(name);
       if (!dir) return { content: [{ type: "text", text: "项目不存在" }], details: {} };
@@ -962,7 +963,7 @@ export function buildCreateTools(world: CreateToolsWorld) {
       layerId: Type.Optional(Type.String({ description: "图层 id（字母数字下划线），默认取文件名" })),
     }),
     execute: async (_toolCallId: unknown, params: any) => {
-      const map = await import("@legacy-server/map.mjs");
+      const map = await import("../map");
       const fsMod = (await import("node:fs")).default;
       const pathMod = (await import("node:path")).default;
       const ws = world.entry.workspace;
@@ -998,7 +999,7 @@ export function buildCreateTools(world: CreateToolsWorld) {
         writeEvent("write_locked", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: `maps/${name}`, kind: "map_import" });
         const imported = await map.importLayer(name, layerId, geojson);
         // 标注归属：导入的图层属于当前工作区（共享数据集内的 id 不会被改写）。
-        const repo = await import("@legacy-server/layer-repository.mjs");
+        const repo = await import("../layer-repository");
         repo.markLayerOwnership(name, layerId, { workspace: String(ws || world.entry.workspace || "") });
         return imported;
       });
@@ -1022,8 +1023,8 @@ export function buildCreateTools(world: CreateToolsWorld) {
       project: Type.Optional(Type.String({ description: "可选：只看某个项目" })),
     }),
     execute: async (_toolCallId: unknown, params: any) => {
-      const map = await import("@legacy-server/map.mjs");
-      const repo = await import("@legacy-server/layer-repository.mjs");
+      const map = await import("../map");
+      const repo = await import("../layer-repository");
       const wanted = String(params.project || "").trim();
       const projects = map.listProjects() || [];
       if (!projects.length) {
@@ -1057,8 +1058,8 @@ export function buildCreateTools(world: CreateToolsWorld) {
       // 尤其是 local-file——用户把 CSV/GeoJSON 丢进工作区时，这条是唯一入口。
       let sourceRows: string[] = [];
       try {
-        const { listSources } = await import("@legacy-server/map-visualization.mjs");
-        await import("@legacy-server/traffic-sources.mjs");
+        const { listSources } = await import("../map-visualization");
+        await import("../traffic-sources");
         const sources = listSources();
         if (sources.length) {
           sourceRows = [
@@ -1109,7 +1110,7 @@ export function buildCreateTools(world: CreateToolsWorld) {
           return { content: [{ type: "text", text: "空间分析能力未开启（OAW_SPATIAL_ANALYSIS=1）。开启后支持缓冲区/空间筛选/范围裁剪。" }], details: {} };
         }
         try {
-          const spatial = await import("@legacy-server/spatial-analysis.mjs");
+          const spatial = await import("../spatial-analysis");
           const readWorkspaceJson = (relative: unknown) => {
             const root = path.resolve(world.entry.workspace || getWorkspace());
             const target = path.resolve(root, String(relative || "").trim());
@@ -1156,8 +1157,8 @@ export function buildCreateTools(world: CreateToolsWorld) {
       // 数据源适配器路径（阶段 5）：有真实数据时优先，避免把用户的数据当演示。
       if (params.dataSource) {
         try {
-          const visual = await import("@legacy-server/map-visualization.mjs");
-          await import("@legacy-server/traffic-sources.mjs");
+          const visual = await import("../map-visualization");
+          await import("../traffic-sources");
           const descriptor = await visual.loadSource(String(params.dataSource), {
             path: params.path,
             kind: params.analysis === "od" ? "od" : params.analysis === "isochrone" ? "isochrone" : "stations",
@@ -1223,7 +1224,7 @@ export function buildCreateTools(world: CreateToolsWorld) {
         return { content: [{ type: "text", text: "场景化分析模板未开启（OAW_MAP_TEMPLATES=1）。开启后可用 od-commuter 模板做 OD 通勤带宽分析并成文。" }], details: {} };
       }
       try {
-        const { runOdCommuterTemplate } = await import("@legacy-server/map-template.mjs");
+        const { runOdCommuterTemplate } = await import("../map-template");
         const result = await runOdCommuterTemplate({
           workspace: world.entry.workspace || getWorkspace(),
           path: params.path,
@@ -1232,7 +1233,7 @@ export function buildCreateTools(world: CreateToolsWorld) {
           project: params.project || world.entry.task?.mapProject || "zhejiang-map",
         });
         // 期望线直接上地图（临时层，与 map_analyze 同一条 map_action 通道）
-        const descriptor = await import("@legacy-server/map-visualization.mjs").then((m: any) => m.loadSource("local-file", { workspace: world.entry.workspace || getWorkspace(), path: params.path })).catch(() => null);
+        const descriptor = await import("../map-visualization").then((m: any) => m.loadSource("local-file", { workspace: world.entry.workspace || getWorkspace(), path: params.path })).catch(() => null);
         if (descriptor && !descriptor.error && descriptor.lines) {
           const action: any = {
             action: "show_analysis",
@@ -1276,7 +1277,7 @@ export function buildCreateTools(world: CreateToolsWorld) {
     execute: async (_toolCallId: unknown, params: any) => {
       const action = world.entry.lastMapAnalysis;
       if (!action?.geojson) return { content: [{ type: "text", text: "当前没有可保存的地图分析结果，请先生成热力图或等时圈。" }], details: {} };
-      const map = await import("@legacy-server/map.mjs");
+      const map = await import("../map");
       const ctx = activeWriteContext("map_save_analysis");
       const project = params.project || action.project || world.entry.task?.mapProject || map.DEFAULT_PROJECT;
       const layerId = String(params.layerId || action.id || `analysis-${action.analysis || "result"}`).replace(/[^a-zA-Z0-9_-]/g, "-");
@@ -1302,7 +1303,7 @@ export function buildCreateTools(world: CreateToolsWorld) {
         await map.importLayer(project, layerId, action.geojson);
         if (action.lines) await map.importLayer(project, `${layerId}-lines`, action.lines);
         // 标注归属：分析结果保存后属于当前工作区，前端「我的图层」分组可见。
-        const repo = await import("@legacy-server/layer-repository.mjs");
+        const repo = await import("../layer-repository");
         const owner = String(world.entry.workspace || "");
         repo.markLayerOwnership(project, layerId, { workspace: owner });
         if (action.lines) repo.markLayerOwnership(project, `${layerId}-lines`, { workspace: owner });
