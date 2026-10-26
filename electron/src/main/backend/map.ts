@@ -1,0 +1,1428 @@
+/**
+ * 地图项目服务：项目读取/样式保存/图层导入/瓦片重建（map 域）
+ *
+ * 逐行等价迁移自 server/map.mjs（S3-8，绞杀者分域 S3 批次，1413 行）。
+ * 目录结构（office-workspace/maps/{project}/）:
+ *   map.config.json   项目配置（名称/中心/底图/图层清单）
+ *   style.json        MapLibre 样式（sources 用相对瓦片 URL）
+ *   layers/*.geojson  图层数据
+ *   tiles/{layer}/{z}/{x}/{y}.pbf  矢量瓦片（生成产物）
+ *
+ * 静态文件由旧 index.mjs 挂载: /api/map/data/* → maps 根目录（HTTP 面随流量切换批切换）。
+ *
+ * 行为保真说明：
+ *  - WORKSPACE_DIR 静态直绑 workspace.ts（B6-1 先例），与旧侧 server/workspace.mjs
+ *    同指 {项目根}/office-workspace，MAPS_ROOT 天然同锚点。
+ *  - LAYER_DEFS/GROUP_BY_TYPE/buildProjectTiles 经物理相对路径静态绑定
+ *    scripts/lib/tiler.mjs（CLI 与 server 共用库，不属 map 域转录面，新旧侧
+ *    引用同一物理模块，行为天然等价）。
+ *  - 旧侧 __dirname（fileURLToPath(import.meta.url)）为死变量，省略。
+ *  - TS strict 适配（noUncheckedIndexedAccess）：bbox/lines/cols/正则分组等索引访问
+ *    加 ! 收窄；catch 参量显式 any（旧 JS 隐式宽松）；Error.code 用 any 载体。
+ *    其余 falsy/可选链语义与旧 JS 一致。
+ *  - 当前消费面：agent create-tools 的 map_* 工具（动态 import ../map）；
+ *    旧 HTTP 路由（server/index.mjs）与 layer-repository/project-pack 随域退役切换。
+ */
+import fs from "node:fs";
+import path from "node:path";
+import { WORKSPACE_DIR } from "./workspace";
+import { LAYER_DEFS, GROUP_BY_TYPE, buildProjectTiles } from "../../../../scripts/lib/tiler.mjs";
+
+const MAPS_ROOT = path.join(WORKSPACE_DIR, "maps");
+export const DEFAULT_PROJECT = "zhejiang-map";
+
+// 字形地址（单一定义）：自托管到 /glyphs/，由 client/public/glyphs 提供
+// （scripts/tools/generate-map-glyphs.mjs 生成）。改这里即可全项目生效。
+export const GLYPHS_URL = "/glyphs/{fontstack}/{range}.pbf";
+
+export const STATIC_ROOT = MAPS_ROOT; // index.mjs 静态挂载点
+
+// 基础底图（始终可用）：高德 3 档，国内 CDN 稳定、CORS 全开
+// style=8 路网（含道路注记） / style=6 卫星影像 / style=7 卫星影像+注记
+const GAODE_BASEMAPS: Record<string, any> = {
+  "gaode-road": {
+    name: "高德路网",
+    type: "raster",
+    tileSize: 256,
+    tiles: [
+      "https://webrd01.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}",
+      "https://webrd02.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}",
+      "https://webrd03.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}",
+      "https://webrd04.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}",
+    ],
+    attribution: '&copy; <a href="https://www.amap.com/">高德地图</a>',
+  },
+  "gaode-sat": {
+    name: "高德卫星",
+    type: "raster",
+    tileSize: 256,
+    tiles: [
+      "https://webst01.is.autonavi.com/appmaptile?style=6&x={x}&y={y}&z={z}",
+      "https://webst02.is.autonavi.com/appmaptile?style=6&x={x}&y={y}&z={z}",
+      "https://webst03.is.autonavi.com/appmaptile?style=6&x={x}&y={y}&z={z}",
+      "https://webst04.is.autonavi.com/appmaptile?style=6&x={x}&y={y}&z={z}",
+    ],
+    attribution: '&copy; <a href="https://www.amap.com/">高德地图</a>',
+  },
+  "gaode-sat-label": {
+    name: "高德卫星注记",
+    type: "raster",
+    tileSize: 256,
+    tiles: [
+      "https://webst01.is.autonavi.com/appmaptile?style=7&x={x}&y={y}&z={z}",
+      "https://webst02.is.autonavi.com/appmaptile?style=7&x={x}&y={y}&z={z}",
+      "https://webst03.is.autonavi.com/appmaptile?style=7&x={x}&y={y}&z={z}",
+      "https://webst04.is.autonavi.com/appmaptile?style=7&x={x}&y={y}&z={z}",
+    ],
+    attribution: '&copy; <a href="https://www.amap.com/">高德地图</a>',
+  },
+};
+
+// 公开免 Key 栅格底图。OpenFreeMap 的 Liberty/Bright/Fiord 是完整 MapLibre
+// 矢量样式，直接作为单个 raster source 会替换项目图层，因此不在此列表中。
+function noKeyBasemaps() {
+  return {
+    "osm-standard": {
+      name: "OSM 标准",
+      type: "raster",
+      tileSize: 256,
+      maxzoom: 19,
+      tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap contributors</a>',
+    },
+    "carto-positron": {
+      name: "CARTO 浅色",
+      type: "raster",
+      tileSize: 256,
+      maxzoom: 20,
+      tiles: ["https://basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png"],
+      attribution: '&copy; <a href="https://carto.com/attributions">CARTO</a> &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+    },
+    "carto-dark": {
+      name: "CARTO 暗色",
+      type: "raster",
+      tileSize: 256,
+      maxzoom: 20,
+      tiles: ["https://basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png"],
+      attribution: '&copy; <a href="https://carto.com/attributions">CARTO</a> &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+    },
+    "carto-voyager": {
+      name: "CARTO Voyager",
+      type: "raster",
+      tileSize: 256,
+      maxzoom: 20,
+      tiles: ["https://basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png"],
+      attribution: '&copy; <a href="https://carto.com/attributions">CARTO</a> &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+    },
+    opentopomap: {
+      name: "OpenTopoMap 地形",
+      type: "raster",
+      tileSize: 256,
+      maxzoom: 17,
+      tiles: [
+        "https://a.tile.opentopomap.org/{z}/{x}/{y}.png",
+        "https://b.tile.opentopomap.org/{z}/{x}/{y}.png",
+        "https://c.tile.opentopomap.org/{z}/{x}/{y}.png",
+      ],
+      attribution: '&copy; <a href="https://opentopomap.org/">OpenTopoMap</a> &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+    },
+    "tencent-road": {
+      name: "腾讯路网（GCJ-02）",
+      type: "raster",
+      tileSize: 256,
+      maxzoom: 18,
+      scheme: "tms",
+      tiles: [
+        "https://rt0.map.gtimg.com/tile?z={z}&x={x}&y={y}&type=vector&styleid=0",
+        "https://rt1.map.gtimg.com/tile?z={z}&x={x}&y={y}&type=vector&styleid=0",
+        "https://rt2.map.gtimg.com/tile?z={z}&x={x}&y={y}&type=vector&styleid=0",
+        "https://rt3.map.gtimg.com/tile?z={z}&x={x}&y={y}&type=vector&styleid=0",
+      ],
+      attribution: '&copy; <a href="https://map.qq.com/">腾讯地图</a>（GCJ-02）',
+    },
+    "tencent-satellite": {
+      name: "腾讯卫星（GCJ-02）",
+      type: "raster",
+      tileSize: 256,
+      maxzoom: 18,
+      scheme: "tms",
+      tiles: [
+        "https://p0.map.gtimg.com/sateTiles/{z}/{x}/{y}.jpg",
+        "https://p1.map.gtimg.com/sateTiles/{z}/{x}/{y}.jpg",
+        "https://p2.map.gtimg.com/sateTiles/{z}/{x}/{y}.jpg",
+        "https://p3.map.gtimg.com/sateTiles/{z}/{x}/{y}.jpg",
+      ],
+      attribution: '&copy; <a href="https://map.qq.com/">腾讯地图</a>（GCJ-02）',
+    },
+  };
+}
+
+// 底图设置（maps/settings.json）：各底图服务 Key
+const MAP_SETTINGS_PATH = path.join(MAPS_ROOT, "settings.json");
+// 密钥只写入 settings.local.json（被 .gitignore 忽略），避免误提交到仓库。
+const MAP_SETTINGS_LOCAL_PATH = path.join(MAPS_ROOT, "settings.local.json");
+const DEFAULT_MAP_SETTINGS = { basemaps: { tiandituKey: "", maptilerKey: "", geoapifyKey: "", esriToken: "" } };
+
+export function loadMapSettings() {
+  const raw = readJson(MAP_SETTINGS_PATH, null);
+  const local = readJson(MAP_SETTINGS_LOCAL_PATH, null);
+  return {
+    basemaps: {
+      ...DEFAULT_MAP_SETTINGS.basemaps,
+      ...(raw?.basemaps || {}),
+      ...(local?.basemaps || {}),
+    },
+  };
+}
+
+export function saveMapSettings(basemaps: any = {}) {
+  const cur = loadMapSettings();
+  cur.basemaps = {
+    tiandituKey: String(basemaps.tiandituKey ?? cur.basemaps.tiandituKey ?? ""),
+    maptilerKey: String(basemaps.maptilerKey ?? cur.basemaps.maptilerKey ?? ""),
+    geoapifyKey: String(basemaps.geoapifyKey ?? cur.basemaps.geoapifyKey ?? ""),
+    esriToken: String(basemaps.esriToken ?? cur.basemaps.esriToken ?? ""),
+  };
+  fs.mkdirSync(MAPS_ROOT, { recursive: true });
+  fs.writeFileSync(MAP_SETTINGS_LOCAL_PATH, JSON.stringify({ basemaps: cur.basemaps }, null, 2));
+  return cur;
+}
+
+// Esri 免费底图（World_Imagery / World_Street_Map，无需 Key）
+function esriBasemaps() {
+  return {
+    "esri-sat": {
+      name: "Esri 卫星",
+      type: "raster",
+      tileSize: 256,
+      tiles: ["https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"],
+      attribution: '&copy; Esri, Maxar, Earthstar Geographics',
+    },
+    "esri-street": {
+      name: "Esri 街道",
+      type: "raster",
+      tileSize: 256,
+      tiles: ["https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}"],
+      attribution: '&copy; Esri, HERE, Garmin, OpenStreetMap contributors',
+    },
+  };
+}
+
+// 天地图 WMTS（XYZ 风格），需用户填 tk；子域 t0-t7
+function tiandituBasemaps(key: any) {
+  const tk = encodeURIComponent(key);
+  const hosts = ["t0", "t1", "t2", "t3", "t4", "t5", "t6", "t7"];
+  const wmts = (layer: string, matrix: string) =>
+    hosts.map(
+      (h) =>
+        `https://${h}.tianditu.gov.cn/${layer}_w/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=${layer}&STYLE=default&TILEMATRIXSET=${matrix}&FORMAT=tiles&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}&tk=${tk}`
+    );
+  return {
+    "tianditu-vec": {
+      name: "天地图矢量",
+      type: "raster",
+      tileSize: 256,
+      tiles: wmts("vec", "w"),
+      attribution: '&copy; <a href="https://www.tianditu.gov.cn/">天地图</a>',
+    },
+    "tianditu-img": {
+      name: "天地图影像",
+      type: "raster",
+      tileSize: 256,
+      tiles: wmts("img", "w"),
+      attribution: '&copy; <a href="https://www.tianditu.gov.cn/">天地图</a>',
+    },
+  };
+}
+
+// MapTiler XYZ，需用户填 Key。
+// 当前项目统一使用无标注参数，避免底图自带地名与项目中文标注重复。
+function maptilerBasemaps(key: any) {
+  const k = encodeURIComponent(key);
+  const raster = (name: any, mapId: any, ext = "png") => ({
+    name,
+    type: "raster",
+    tileSize: 256,
+    tiles: [`https://api.maptiler.com/maps/${mapId}/{z}/{x}/{y}.${ext}?key=${k}&language=none`],
+    attribution: '&copy; <a href="https://www.maptiler.com/">MapTiler</a> &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+  });
+  return {
+    "maptiler-streets": raster("MapTiler 街道（无标注）", "streets-v2"),
+    "maptiler-satellite": {
+      ...raster("MapTiler 卫星（无标注）", "satellite-v2", "jpg"),
+      tiles: [`https://api.maptiler.com/tiles/satellite-v2/{z}/{x}/{y}.jpg?key=${k}&language=none`],
+    },
+    "maptiler-hybrid": raster("MapTiler 卫星混合（无标注）", "hybrid", "jpg"),
+    "maptiler-outdoor": raster("MapTiler 户外地形（无标注）", "outdoor-v2"),
+    "maptiler-winter": raster("MapTiler 冬季地形（无标注）", "winter-v2"),
+    "maptiler-basic": raster("MapTiler 简洁底图（无标注）", "basic-v2"),
+  };
+}
+
+/** 按设置生成可用底图源（免 Key 源固定，天地图/MapTiler 填 Key 后启用） */
+function markBasemap(s: any) {
+  return { ...s, metadata: { ...(s.metadata || {}), basemap: true } };
+}
+export function getBasemaps(settings: any = loadMapSettings()) {
+  const b: any = {};
+  b.blank = markBasemap({ name: "无底图", type: "raster", tileSize: 256, tiles: [], attribution: "" });
+  for (const [id, s] of Object.entries(GAODE_BASEMAPS)) b[id] = markBasemap(s);
+  for (const [id, s] of Object.entries(noKeyBasemaps())) b[id] = markBasemap(s);
+  for (const [id, s] of Object.entries(esriBasemaps())) b[id] = markBasemap(s);
+  const tk = settings?.basemaps?.tiandituKey;
+  if (tk) for (const [id, s] of Object.entries(tiandituBasemaps(tk))) b[id] = markBasemap(s);
+  const mk = settings?.basemaps?.maptilerKey;
+  if (mk) for (const [id, s] of Object.entries(maptilerBasemaps(mk))) b[id] = markBasemap(s);
+  return b;
+}
+
+/** 图层默认样式（与 LAYER_DEFS 对齐，Agent 可改 style.json 覆盖） */
+function layerStyle(def: any) {
+  const base = { id: def.id, source: def.id, "source-layer": def.id, layout: { visibility: "visible" } };
+  switch (def.type) {
+    case "boundary":
+      return {
+        ...base,
+        type: "line",
+        paint: {
+          "line-color": def.id === "boundary-city" ? "#e4572e" : "#b8b8c8",
+          "line-width": def.id === "boundary-city" ? 2 : ["interpolate", ["linear"], ["zoom"], 7, 0.8, 10, 1.3, 13, 1.8],
+          "line-opacity": 0.9,
+          "line-dasharray": def.id === "boundary-city" ? [1, 0] : [2, 1.2],
+        },
+      };
+    case "road":
+      return {
+        ...base,
+        type: "line",
+        paint: {
+          "line-color": def.id === "highways" ? "#d62728" : def.id === "roads-rural" ? "#2ca02c" : "#ff7f0e",
+          "line-width": def.id === "highways" ? ["interpolate", ["linear"], ["zoom"], 5, 1, 10, 2.5, 13, 4.5] : ["interpolate", ["linear"], ["zoom"], 5, 0.8, 10, 1.8, 13, 3.2],
+          "line-opacity": 0.85,
+        },
+      };
+    case "point":
+      return {
+        ...base,
+        type: "circle",
+        paint: {
+          "circle-radius": def.id === "toll-stations" ? 4 : 4.5,
+          "circle-color": def.id === "toll-stations" ? "#2ca02c" : "#9467bd",
+          "circle-stroke-color": "#ffffff",
+          "circle-stroke-width": 1,
+          "circle-opacity": 0.9,
+        },
+      };
+    default:
+      return base;
+  }
+}
+
+function getDefaultStyle(project: any, baseProject: any = null) {
+  const basemaps: any = getBasemaps();
+  const sources: any = { ...basemaps };
+  const sourceProject = baseProject || project;
+  for (const def of LAYER_DEFS) {
+    sources[def.id] = {
+      type: "vector",
+      // 绝对路径：MapLibre 不解析 sources.tiles 的相对 URL
+      tiles: [`/api/map/data/${sourceProject}/tiles/${def.id}/{z}/{x}/{y}.pbf`],
+      maxzoom: def.maxzoom,
+    };
+  }
+  // 底图栅格图层：切换底图 = 切换显隐，无需整样式重载
+  const DEFAULT_BASEMAP = "gaode-road";
+  const basemapLayers = Object.keys(basemaps).map((id) => {
+    const visibility = id === DEFAULT_BASEMAP ? "visible" : "none";
+    return id === "blank"
+      ? {
+          id: "basemap-blank",
+          type: "background",
+          layout: { visibility },
+          paint: { "background-color": "rgba(0,0,0,0)" },
+        }
+      : {
+          id: `basemap-${id}`,
+          type: "raster",
+          source: id,
+          layout: { visibility },
+          paint: { "raster-opacity": 1 },
+        };
+  });
+  const layers = [
+    ...basemapLayers,
+    ...LAYER_DEFS.map(layerStyle),
+  ];
+  return {
+    version: 8,
+    name: `${project} 地图样式`,
+    sources,
+    layers,
+    // 自托管字形：原先指向 glyphs.openfreestyle.com（域名已无法解析），
+    // 导致 15 个标注图层（道路注记、行政区名）全部缺字形。
+    glyphs: GLYPHS_URL,
+  };
+}
+
+function defaultConfig(project: any, { name = null, baseProject = null }: any = {}) {
+  return {
+    name: name || (project === "zhejiang-map" ? "浙江省交通路网与区划图" : project),
+    project,
+    // 基础路网可复用已有项目；业务图层、配置和 Run 产物仍归当前项目。
+    baseProject: baseProject && baseProject !== project ? baseProject : null,
+    center: [120.0, 29.2],
+    zoom: 7,
+    basemap: "gaode-road",
+    layers: LAYER_DEFS.map((d) => ({
+      id: d.id,
+      name: d.name,
+      type: d.type,
+      group: d.group || (GROUP_BY_TYPE as Record<string, string>)[d.type] || "其他",
+      visible: true,
+      minzoom: d.minzoom,
+      maxzoom: d.maxzoom,
+    })),
+  };
+}
+
+/** 项目目录（防目录穿越） */
+export function projectDir(name: any = DEFAULT_PROJECT) {
+  const n = String(name || "").trim();
+  if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(n)) return null;
+  return path.join(MAPS_ROOT, n);
+}
+
+export function listProjects() {
+  if (!fs.existsSync(MAPS_ROOT)) return [];
+  return fs
+    .readdirSync(MAPS_ROOT, { withFileTypes: true })
+    .filter((e) => e.isDirectory() && fs.existsSync(path.join(MAPS_ROOT, e.name, "map.config.json")))
+    .map((e) => {
+      try {
+        return JSON.parse(fs.readFileSync(path.join(MAPS_ROOT, e.name, "map.config.json"), "utf8"));
+      } catch {
+        return { project: e.name, name: e.name };
+      }
+    });
+}
+
+function readJson(p: string, fallback: any = null) {
+  try { return JSON.parse(fs.readFileSync(p, "utf8")); } catch { return fallback; }
+}
+
+// 样式文件可能被提交到仓库，持久化时把底图服务凭证替换为占位符。
+// 运行时由 /api/map/data/:project/style.json 注入真实 URL，因此地图仍可正常加载。
+function redactBasemapCredentials(style: any) {
+  const out: any = { ...style, sources: { ...(style?.sources || {}) } };
+  for (const [id, source] of Object.entries(out.sources) as [string, any][]) {
+    if (!source?.metadata?.basemap && !/^(maptiler|tianditu)-/.test(id)) continue;
+    out.sources[id] = {
+      ...source,
+      tiles: Array.isArray(source.tiles)
+        ? source.tiles.map((t: any) => String(t).replace(/([?&](?:key|tk)=)[^&]+/gi, "$1__MAP_SERVICE_KEY__"))
+        : source.tiles,
+    };
+  }
+  return out;
+}
+
+/** 将当前本地设置注入样式响应，不把凭证写回 tracked style.json。 */
+export function hydrateBasemapSources(style: any) {
+  const out: any = { ...style, sources: { ...(style?.sources || {}) } };
+  const runtime: any = getBasemaps();
+  for (const [id, source] of Object.entries(runtime) as [string, any][]) out.sources[id] = source;
+
+  // 运行时保护：用户/Agent 手写的样式可能遗留非法 paint.line-cap，或引用了
+  // 尚未生成的矢量瓦片。修正/剔除后再交给 MapLibre，避免整份 style 加载失败。
+  const invalidSources = new Set<string>();
+  for (const [id, source] of Object.entries(out.sources) as [string, any][]) {
+    const tile = Array.isArray(source?.tiles) ? String(source.tiles[0] || "") : "";
+    const match = tile.match(/\/api\/map\/data\/([^/]+)\/tiles\/([^/]+)\//);
+    if (!match || source?.type !== "vector") continue;
+    const project = match[1]!;
+    const layer = match[2]!;
+    const dir = projectDir(project);
+    if (!dir || !fs.existsSync(path.join(dir, "tiles", layer))) {
+      invalidSources.add(id);
+      continue;
+    }
+    // 用户绘制的小图层使用 GeoJSON 更稳健，不依赖旧的 PBF 产物。
+    const geojson = path.join(dir, "layers", `${layer}.geojson`);
+    if (layer.startsWith("drawn-") && fs.existsSync(geojson)) {
+      out.sources[id] = { type: "geojson", data: `/api/map/data/${project}/layers/${layer}.geojson` };
+      for (const l of out.layers || []) if (l.source === id) delete l["source-layer"];
+    }
+  }
+  if (invalidSources.size) {
+    for (const id of invalidSources) delete out.sources[id];
+    out.layers = (out.layers || []).filter((l: any) => !invalidSources.has(l.source));
+  }
+  // 样式文件可能只剩下图层引用，而数据源已经被 Agent/用户删除。
+  // MapLibre 对这种悬空 source 引用会直接阻断样式加载，前端只能永久显示"地图加载中"。
+  // 运行时剔除悬空图层，保留其余可用图层正常渲染；真正需要的数据可通过重新导入图层恢复。
+  const sourceIds = new Set(Object.keys(out.sources || {}));
+  out.layers = (out.layers || []).filter((l: any) => !l?.source || sourceIds.has(l.source));
+  // 图层 id 必须唯一：重复 id 会让 MapLibre 判定整份样式非法（前端表现为"地图样式加载失败"）。
+  // 历史导入/刷新可能写入重复定义，交给 MapLibre 前按首次出现兜底去重。
+  const seenLayerIds = new Set<string>();
+  out.layers = (out.layers || []).filter((l: any) => {
+    const id = String(l?.id || "");
+    if (!id || seenLayerIds.has(id)) return false;
+    seenLayerIds.add(id);
+    return true;
+  });
+  out.layers = (out.layers || []).map((l: any) => {
+    if (l?.paint?.["line-cap"] === undefined) return l;
+    const { ["line-cap"]: cap, ...paint } = l.paint;
+    return { ...l, layout: { ...(l.layout || {}), "line-cap": cap }, paint };
+  });
+  // 跨类型 paint 兜底：line-* 误写入 symbol/circle、text-* 误写入 line 等（Agent/用户
+  // 误编辑）会让 MapLibre 校验拒绝整份样式（"unknown property"，表现为整屏加载失败）。
+  // 按属性家族剔除与图层类型不匹配的键，保证交付给前端的样式永远可通过校验。
+  const PAINT_FAMILY: Record<string, string[]> = {
+    "line-": ["line"], "text-": ["symbol"], "icon-": ["symbol"], "circle-": ["circle"],
+    "fill-": ["fill"], "raster-": ["raster"], "heatmap-": ["heatmap"], "hillshade-": ["hillshade"],
+    "background-": ["background"],
+  };
+  out.layers = (out.layers || []).map((l: any) => {
+    if (!l || !l.paint || !l.type) return l;
+    const bad = Object.keys(l.paint).filter((k) => {
+      const dash = k.indexOf("-") + 1;
+      const fam = dash ? PAINT_FAMILY[k.slice(0, dash)] : null;
+      return fam && !fam.includes(l.type);
+    });
+    if (!bad.length) return l;
+    const paint = { ...l.paint };
+    for (const k of bad) delete paint[k];
+    return { ...l, paint };
+  });
+
+  // 兼容旧的 tracked style.json：新增免 Key 底图无需用户先保存一次设置，
+  // 也能在动态样式响应中直接出现。缺失的底图图层插入到第一个业务图层之前，
+  // 避免栅格覆盖道路、边界和分析图层。
+  const layers = Array.isArray(out.layers) ? [...out.layers] : [];
+  const baseIds = new Set(layers.filter((l: any) => String(l?.id || "").startsWith("basemap-")).map((l: any) => String(l.id).slice("basemap-".length)));
+  const visibleId = layers.find((l: any) => String(l?.id || "").startsWith("basemap-") && l.layout?.visibility === "visible")?.id?.slice("basemap-".length) || "gaode-road";
+  const missing = Object.keys(runtime).filter((id) => !baseIds.has(id));
+  if (missing.length) {
+    const insertAt = layers.findIndex((l: any) => !String(l?.id || "").startsWith("basemap-"));
+    const baseLayers = missing.map((id) => id === "blank"
+      ? {
+          id: "basemap-blank",
+          type: "background",
+          layout: { visibility: id === visibleId ? "visible" : "none" },
+          paint: { "background-color": "rgba(0,0,0,0)" },
+        }
+      : {
+          id: `basemap-${id}`,
+          type: "raster",
+          source: id,
+          layout: { visibility: id === visibleId ? "visible" : "none" },
+          paint: { "raster-opacity": 1 },
+        });
+    layers.splice(insertAt < 0 ? layers.length : insertAt, 0, ...baseLayers);
+    out.layers = layers;
+  }
+  return out;
+}
+
+export function ensureProject(name: any = DEFAULT_PROJECT, options: any = {}) {
+  const dir = projectDir(name);
+  if (!dir) return null;
+  fs.mkdirSync(path.join(dir, "layers"), { recursive: true });
+  const cfgPath = path.join(dir, "map.config.json");
+  const stylePath = path.join(dir, "style.json");
+  const config = readJson(cfgPath, null) || defaultConfig(name, options);
+  if (!fs.existsSync(cfgPath)) fs.writeFileSync(cfgPath, JSON.stringify(config, null, 2));
+  if (!fs.existsSync(stylePath)) fs.writeFileSync(stylePath, JSON.stringify(redactBasemapCredentials(getDefaultStyle(name, config.baseProject)), null, 2));
+  return dir;
+}
+
+/** 创建独立地图项目：复用基础路网样式源，业务图层和配置单独保存。 */
+export function createProject({ project, name = null, baseProject = DEFAULT_PROJECT }: any = {}) {
+  const id = String(project || "").trim();
+  const dir = projectDir(id);
+  if (!dir) {
+    const error: any = new Error("项目标识需为 1-64 位英文、数字、下划线或短横线，且以字母或数字开头");
+    error.code = "MAP_PROJECT_INVALID";
+    throw error;
+  }
+  if (fs.existsSync(path.join(dir, "map.config.json"))) {
+    const error: any = new Error(`地图项目已存在：${id}`);
+    error.code = "MAP_PROJECT_EXISTS";
+    throw error;
+  }
+  const base = String(baseProject || DEFAULT_PROJECT).trim();
+  const baseDir = projectDir(base);
+  if (!baseDir || (base !== id && !fs.existsSync(path.join(baseDir, "map.config.json")))) {
+    const error: any = new Error(`基础地图项目不存在：${base}`);
+    error.code = "MAP_BASE_PROJECT_NOT_FOUND";
+    throw error;
+  }
+  ensureProject(id, { name: String(name || id).trim() || id, baseProject: base === id ? null : base });
+  return getProject(id) || { config: defaultConfig(id, { name, baseProject: base }), style: getDefaultStyle(id, base), files: [] };
+}
+
+/** 递归复制目录（不依赖 fs.cpSync：Windows + Node 22 下 cpSync 存在崩溃问题）。 */
+function copyDirRecursive(source: string, target: string) {
+  fs.mkdirSync(target, { recursive: true });
+  for (const entry of fs.readdirSync(source, { withFileTypes: true })) {
+    if (entry.name.startsWith("._") || entry.name.startsWith(".") && entry.name !== ".keep") continue;
+    const sourcePath = path.join(source, entry.name);
+    const targetPath = path.join(target, entry.name);
+    if (entry.isDirectory()) {
+      copyDirRecursive(sourcePath, targetPath);
+    } else if (entry.isFile()) {
+      fs.copyFileSync(sourcePath, targetPath);
+    }
+  }
+}
+
+/** 复制地图项目：保留基础路网引用与全部图层，生成独立副本。 */
+export function duplicateProject({ project, name = null }: any = {}) {
+  const source = String(project || "").trim();
+  const sourceDir = projectDir(source);
+  if (!sourceDir || !fs.existsSync(path.join(sourceDir, "map.config.json"))) {
+    const error: any = new Error(`源地图项目不存在：${source}`);
+    error.code = "MAP_PROJECT_NOT_FOUND";
+    throw error;
+  }
+  const target = String(name || `${source}-copy`).trim();
+  const targetDir = projectDir(target);
+  if (!targetDir) {
+    const error: any = new Error("项目标识需为 1-64 位英文、数字、下划线或短横线");
+    error.code = "MAP_PROJECT_INVALID";
+    throw error;
+  }
+  if (fs.existsSync(path.join(targetDir, "map.config.json"))) {
+    const error: any = new Error(`地图项目已存在：${target}`);
+    error.code = "MAP_PROJECT_EXISTS";
+    throw error;
+  }
+  copyDirRecursive(sourceDir, targetDir);
+  const cfgPath = path.join(targetDir, "map.config.json");
+  const config = readJson(cfgPath, {}) || {};
+  config.project = target;
+  config.name = `${config.name || source} 副本`;
+  config.duplicatedFrom = source;
+  config.duplicatedAt = new Date().toISOString();
+  fs.writeFileSync(cfgPath, JSON.stringify(config, null, 2));
+  return getProject(target);
+}
+
+/** 重命名地图项目目录（默认项目不可重命名）。 */
+export function renameProject({ project, name }: any = {}) {
+  const source = String(project || "").trim();
+  const target = String(name || "").trim();
+  if (source === DEFAULT_PROJECT) {
+    const error: any = new Error("默认地图项目不能重命名");
+    error.code = "MAP_PROJECT_PROTECTED";
+    throw error;
+  }
+  const sourceDir = projectDir(source);
+  const targetDir = projectDir(target);
+  if (!sourceDir || !fs.existsSync(path.join(sourceDir, "map.config.json"))) {
+    const error: any = new Error(`地图项目不存在：${source}`);
+    error.code = "MAP_PROJECT_NOT_FOUND";
+    throw error;
+  }
+  if (!targetDir) {
+    const error: any = new Error("项目标识需为 1-64 位英文、数字、下划线或短横线");
+    error.code = "MAP_PROJECT_INVALID";
+    throw error;
+  }
+  if (fs.existsSync(targetDir)) {
+    const error: any = new Error(`目标名称已存在：${target}`);
+    error.code = "MAP_PROJECT_EXISTS";
+    throw error;
+  }
+  // Windows 上目录 rename 可能被安全软件/索引器短暂占用（EPERM/EBUSY），
+  // 先退避重试，仍失败则复制后删除，保证重命名不因瞬时锁失败。
+  let renamed = false;
+  for (let attempt = 0; attempt < 3 && !renamed; attempt += 1) {
+    try {
+      fs.renameSync(sourceDir, targetDir);
+      renamed = true;
+    } catch (error: any) {
+      if (!["EPERM", "EBUSY", "EACCES"].includes(error?.code)) throw error;
+      if (attempt < 2) {
+        const until = Date.now() + 150 * (attempt + 1);
+        while (Date.now() < until) { /* 同步短退避 */ }
+      }
+    }
+  }
+  if (!renamed) {
+    try {
+      copyDirRecursive(sourceDir, targetDir);
+      fs.rmSync(sourceDir, { recursive: true, force: true });
+    } catch (error) {
+      try { fs.rmSync(targetDir, { recursive: true, force: true }); } catch {}
+      throw error;
+    }
+  }
+  const cfgPath = path.join(targetDir, "map.config.json");
+  const config = readJson(cfgPath, {}) || {};
+  config.project = target;
+  config.name = String(config.name || target);
+  fs.writeFileSync(cfgPath, JSON.stringify(config, null, 2));
+  return getProject(target);
+}
+
+/** 归档/恢复地图项目：只改配置状态，不改目录（避免破坏会话与恢复链接）。 */
+export function archiveProject(name: any, archived: any = true) {
+  const dir = projectDir(name);
+  if (!dir) return null;
+  const cfgPath = path.join(dir, "map.config.json");
+  if (!fs.existsSync(cfgPath)) return null;
+  const config = readJson(cfgPath, {}) || {};
+  config.archived = Boolean(archived);
+  config.archivedAt = archived ? new Date().toISOString() : null;
+  fs.writeFileSync(cfgPath, JSON.stringify(config, null, 2));
+  return config;
+}
+
+/** 删除地图项目（默认项目受保护），移入回收目录而不是直接物理删除。 */
+export function deleteProject(name: any) {
+  const id = String(name || "").trim();
+  if (id === DEFAULT_PROJECT) {
+    const error: any = new Error("默认地图项目不能删除");
+    error.code = "MAP_PROJECT_PROTECTED";
+    throw error;
+  }
+  const dir = projectDir(id);
+  if (!dir || !fs.existsSync(path.join(dir, "map.config.json"))) {
+    const error: any = new Error(`地图项目不存在：${id}`);
+    error.code = "MAP_PROJECT_NOT_FOUND";
+    throw error;
+  }
+  const trashRoot = path.join(MAPS_ROOT, ".trash");
+  fs.mkdirSync(trashRoot, { recursive: true });
+  const target = path.join(trashRoot, `${id}-${Date.now().toString(36)}`);
+  let moved = false;
+  for (let attempt = 0; attempt < 3 && !moved; attempt += 1) {
+    try {
+      fs.renameSync(dir, target);
+      moved = true;
+    } catch (error: any) {
+      if (!["EPERM", "EBUSY", "EACCES"].includes(error?.code)) throw error;
+      if (attempt < 2) {
+        const until = Date.now() + 150 * (attempt + 1);
+        while (Date.now() < until) { /* 同步短退避 */ }
+      } else {
+        copyDirRecursive(dir, target);
+        fs.rmSync(dir, { recursive: true, force: true });
+        moved = true;
+      }
+    }
+  }
+  return { deleted: id, trash: path.basename(target) };
+}
+
+/** 项目详情：config + style + 图层文件清单 */
+export function getProject(name: any = DEFAULT_PROJECT) {
+  const dir = projectDir(name);
+  if (!dir) return null;
+  if (!fs.existsSync(path.join(dir, "map.config.json"))) return null;
+  ensureProject(name);
+  const config = readJson(path.join(dir, "map.config.json"), defaultConfig(name));
+  const style = readJson(path.join(dir, "style.json"), getDefaultStyle(name, config.baseProject));
+  // 字形地址升级：存量 style.json 里固化了已失效的远程 glyphs（openfreestyle.com 无法解析），
+  // 读取时就地改成本地 /glyphs/，避免逐个项目手工改文件，也避免下次写盘时又把旧值带回去。
+  if (style && String(style.glyphs || "") !== GLYPHS_URL) style.glyphs = GLYPHS_URL;
+  const layersDir = path.join(dir, "layers");
+  const files = fs.existsSync(layersDir)
+    ? fs.readdirSync(layersDir, { withFileTypes: true })
+        .filter((e) => e.isFile() && !e.name.startsWith("._") && !e.name.startsWith(".") && e.name.endsWith(".geojson"))
+        .map((e) => {
+          const st = fs.statSync(path.join(layersDir, e.name));
+          return { file: e.name, id: e.name.replace(/\.geojson$/, ""), size: st.size, mtime: st.mtimeMs };
+        })
+    : [];
+  const basemaps: any = getBasemaps();
+  return {
+    config,
+    style,
+    files,
+    basemaps: Object.keys(basemaps),
+    basemapMeta: (Object.entries(basemaps) as [string, any][]).map(([id, s]) => ({ id, name: s.name || id })),
+  };
+}
+
+export function saveStyle(name: any, style: any) {
+  const dir = ensureProject(name);
+  if (!dir || !style || typeof style !== "object") return null;
+  fs.writeFileSync(path.join(dir, "style.json"), JSON.stringify(style, null, 2));
+  return true;
+}
+
+export function saveConfig(name: any, config: any) {
+  const dir = ensureProject(name);
+  if (!dir || !config) return null;
+  fs.writeFileSync(path.join(dir, "map.config.json"), JSON.stringify(config, null, 2));
+  return true;
+}
+
+/**
+ * 按最新底图设置重建 style.json 的底图部分（保留图层自定义样式）。
+ * 底图源 = id 出现在当前 getBasemaps() 里的 sources；其余 sources/图层原样保留。
+ */
+export function rebuildBasemapStyle(name: any = DEFAULT_PROJECT) {
+  const dir = projectDir(name);
+  if (!dir) return false;
+  const stylePath = path.join(dir, "style.json");
+  const basemaps: any = getBasemaps();
+  const cfg = readJson(path.join(dir, "map.config.json"), defaultConfig(name));
+  const current = cfg?.basemap;
+  const DEFAULT_BASEMAP = current && basemaps[current] ? current : "gaode-road";
+
+  let style: any = readJson(stylePath, null);
+  if (!style || typeof style !== "object" || !style.sources) {
+    fs.writeFileSync(stylePath, JSON.stringify(redactBasemapCredentials(getDefaultStyle(name)), null, 2));
+    return true;
+  }
+  // 保留非底图 sources（底图 source 带 metadata.basemap 标记）
+  const sources: any = {};
+  for (const [id, s] of Object.entries(style.sources) as [string, any][]) {
+    if (!s?.metadata?.basemap && !s?.basemap) sources[id] = s;
+  }
+  Object.assign(sources, basemaps);
+  // 保留非底图图层，重建 basemap-* 图层
+  const keep = Array.isArray(style.layers) ? style.layers.filter((l: any) => !String(l.id).startsWith("basemap-")) : [];
+  // 新项目只复用基础路网瓦片；导入的业务图层则在当前项目生成独立 source。
+  const sourceProject = cfg?.baseProject || name;
+  const configLayers = Array.isArray(cfg?.layers) ? cfg.layers : [];
+  for (const layer of configLayers) {
+    const id = String(layer?.id || "").trim();
+    if (!id || sources[id]) continue;
+    const def = LAYER_DEFS.find((item) => item.id === id) || { id, type: layer.type || "road", minzoom: layer.minzoom || 5, maxzoom: layer.maxzoom || 13 };
+    sources[id] = { type: "vector", tiles: [`/api/map/data/${LAYER_DEFS.some((item) => item.id === id) ? sourceProject : name}/tiles/${id}/{z}/{x}/{y}.pbf`], maxzoom: def.maxzoom };
+    if (!keep.some((item: any) => item.id === id)) keep.push(layerStyle(def));
+  }
+  const baseLayers = Object.keys(basemaps).map((id) =>
+    id === "blank"
+      ? {
+          id: "basemap-blank",
+          type: "background",
+          layout: { visibility: id === DEFAULT_BASEMAP ? "visible" : "none" },
+          paint: { "background-color": "rgba(0,0,0,0)" },
+        }
+      : {
+          id: `basemap-${id}`,
+          type: "raster",
+          source: id,
+          layout: { visibility: id === DEFAULT_BASEMAP ? "visible" : "none" },
+          paint: { "raster-opacity": 1 },
+        }
+  );
+  // 同步 config.layers 中缺失的矢量图层（数据已导入但 style 未注册，如 roads-province）
+  for (const l of cfg?.layers || []) {
+    const id = l.id;
+    if (!sources[id]) {
+      sources[id] = {
+        type: "vector",
+        tiles: [`/api/map/data/${name}/tiles/${id}/{z}/{x}/{y}.pbf`],
+        maxzoom: l.maxzoom || 13,
+      };
+    }
+    if (!style.layers.some((x: any) => x.id === id)) {
+      const def = { id, type: l.type || "road", minzoom: l.minzoom || 5, maxzoom: l.maxzoom || 13 };
+      keep.push(layerStyle(def));
+    }
+    // 道路图层自动补标号图层（显示 ref 编号，缺失回退 name），置于线图层之后
+    if (l.type === "road" && !style.layers.some((x: any) => x.id === `${id}-label`)) {
+      keep.push({
+        id: `${id}-label`,
+        type: "symbol",
+        source: id,
+        "source-layer": id,
+        minzoom: (l.minzoom || 5) + 2,
+        layout: {
+          "symbol-placement": "line",
+          "text-field": ["coalesce", ["get", "ref"], ["get", "name"], ""],
+          "text-size": ["interpolate", ["linear"], ["zoom"], 8, 10, 13, 12],
+          "text-font": ["Noto Sans Regular"],
+          "text-rotation-alignment": "map",
+          "text-allow-overlap": false,
+        },
+        paint: {
+          "text-color": "#ffffff",
+          "text-halo-color": "rgba(0,0,0,0.75)",
+          "text-halo-width": 1.2,
+        },
+      });
+    }
+  }
+  style.sources = sources;
+  // 去重兜底：config 循环与磁盘 style 的判重基准不一致时可能登记同一图层 id，
+  // MapLibre 不接受重复图层 id，写入前按首次出现收敛。
+  const dedupedKeep: any[] = [];
+  const keepIds = new Set<string>();
+  for (const l of keep) {
+    const id = String(l?.id || "");
+    if (id && keepIds.has(id)) continue;
+    if (id) keepIds.add(id);
+    dedupedKeep.push(l);
+  }
+  style.layers = [...baseLayers, ...dedupedKeep];
+  fs.writeFileSync(stylePath, JSON.stringify(redactBasemapCredentials(style), null, 2));
+  return true;
+}
+
+/** 导入/覆盖一个 GeoJSON 图层并重建其瓦片 */
+export async function importLayer(name: any, layerId: any, geojson: any) {
+  const dir = ensureProject(name);
+  const safeId = String(layerId || "").replace(/[^a-zA-Z0-9_-]/g, "");
+  if (!dir || !safeId) return null;
+  const stats = validateGeoJSON(geojson);
+  const target = path.join(dir, "layers", `${safeId}.geojson`);
+  fs.writeFileSync(target, typeof geojson === "string" ? geojson : JSON.stringify(geojson));
+  // 把新图层加入 config（若不存在）
+  const config = readJson(path.join(dir, "map.config.json"), defaultConfig(name));
+  if (!config.layers.some((l: any) => l.id === safeId)) {
+    const type = guessType(geojson);
+    config.layers.push({ id: safeId, name: safeId, type, group: GROUP_BY_TYPE[type] || "其他", visible: true, minzoom: 5, maxzoom: 13 });
+    fs.writeFileSync(path.join(dir, "map.config.json"), JSON.stringify(config, null, 2));
+  }
+  // 重建该图层瓦片（缺 def 时按通用参数）
+  const def = LAYER_DEFS.find((d) => d.id === safeId) || { id: safeId, minzoom: 5, maxzoom: 13, tolerance: 0.0001 };
+  const r = (buildProjectTiles as any)(dir, { layerIds: [safeId], force: true, defs: [def] });
+  // 导入后立即把新图层注册到 style，确保前端可见性复选框和 Agent 产物都能正常显示/隐藏。
+  rebuildBasemapStyle(name);
+  return { ok: true, layer: safeId, features: stats.features, bbox: stats.bbox, tiles: r[safeId] };
+}
+
+function validateGeoJSON(geojson: any) {
+  let fc = geojson;
+  if (typeof fc === "string") fc = JSON.parse(fc);
+  if (fc?.type === "Feature") fc = { type: "FeatureCollection", features: [fc] };
+  if (fc?.type !== "FeatureCollection" || !Array.isArray(fc.features) || !fc.features.length) {
+    throw new Error("没有可导入的要素（需要非空 FeatureCollection）");
+  }
+  const bbox = [Infinity, Infinity, -Infinity, -Infinity];
+  let coordinates = 0;
+  const walk = (value: any) => {
+    if (!Array.isArray(value)) return;
+    if (typeof value[0] === "number" && typeof value[1] === "number") {
+      const [lng, lat] = value;
+      if (!Number.isFinite(lng) || !Number.isFinite(lat)) throw new Error("图层包含无效坐标");
+      if (Math.abs(lng) > 180 || Math.abs(lat) > 90) throw new Error("坐标不在经纬度范围内，请先转换为 WGS84/EPSG:4326");
+      bbox[0] = Math.min(bbox[0]!, lng); bbox[1] = Math.min(bbox[1]!, lat);
+      bbox[2] = Math.max(bbox[2]!, lng); bbox[3] = Math.max(bbox[3]!, lat);
+      coordinates += 1;
+      return;
+    }
+    value.forEach(walk);
+  };
+  for (const feature of fc.features) walk(feature?.geometry?.coordinates);
+  if (!coordinates || bbox[0] === Infinity) throw new Error("要素没有有效几何坐标");
+  return { features: fc.features.length, bbox };
+}
+
+function guessType(geojson: any) {
+  const fc = typeof geojson === "string" ? JSON.parse(geojson) : geojson;
+  const g = fc?.features?.[0]?.geometry?.type;
+  if (g === "Point" || g === "MultiPoint") return "point";
+  if (g === "LineString" || g === "MultiLineString") return "road";
+  return "boundary";
+}
+
+/** 重建全部瓦片（工具箱按钮 / 数据变更后） */
+export function rebuildTiles(name: any = DEFAULT_PROJECT, layerIds: any = null) {
+  const dir = ensureProject(name);
+  if (!dir) return null;
+  return buildProjectTiles(dir, { force: true, layerIds });
+}
+
+/** 批量导入多个图层（逐个导入，避免重复重建整套内置图层） */
+export async function importBatch(name: any, items: any) {
+  const results: any = {};
+  for (const it of items || []) {
+    if (!it?.geojson) continue;
+    const safeId = String(it.layerId || "").replace(/[^a-zA-Z0-9_-]/g, "");
+    if (!safeId) continue;
+    try { results[safeId] = await importLayer(name, safeId, it.geojson); } catch { results[safeId] = { ok: false, error: "导入失败" }; }
+  }
+  return { ok: Object.values(results).every((result: any) => result?.ok), layers: results };
+}
+
+/** 读取图层原始 GeoJSON */
+export function getLayer(name: any, layerId: any) {
+  const dir = projectDir(name);
+  const safeId = String(layerId || "").replace(/[^a-zA-Z0-9_-]/g, "");
+  if (!dir || !safeId) return null;
+  const p = path.join(dir, "layers", `${safeId}.geojson`);
+  if (!fs.existsSync(p)) return null;
+  try { return JSON.parse(fs.readFileSync(p, "utf8")); } catch { return null; }
+}
+
+/** 删除图层：移除 geojson + 瓦片 + style 图层 + config 条目 */
+export function deleteLayer(name: any, layerId: any) {
+  const dir = projectDir(name);
+  const safeId = String(layerId || "").replace(/[^a-zA-Z0-9_-]/g, "");
+  if (!dir || !safeId) return { ok: false, error: "invalid layer" };
+  const dataPath = path.join(dir, "layers", `${safeId}.geojson`);
+  if (fs.existsSync(dataPath)) fs.rmSync(dataPath);
+  const tilesPath = path.join(dir, "tiles", safeId);
+  if (fs.existsSync(tilesPath)) fs.rmSync(tilesPath, { recursive: true });
+  // style 里移除对应图层
+  const style = readJson(path.join(dir, "style.json"), getDefaultStyle(name));
+  const before = style.layers.length;
+  style.layers = style.layers.filter((l: any) => l.id !== safeId && !l.id.startsWith(`basemap-${safeId}`));
+  if (style.sources?.[safeId]) delete style.sources[safeId];
+  if (style.layers.length !== before) {
+    fs.writeFileSync(path.join(dir, "style.json"), JSON.stringify(style, null, 2));
+  }
+  // config 里移除条目
+  const config = readJson(path.join(dir, "map.config.json"), defaultConfig(name));
+  config.layers = (config.layers || []).filter((l: any) => l.id !== safeId);
+  fs.writeFileSync(path.join(dir, "map.config.json"), JSON.stringify(config, null, 2));
+  return { ok: true };
+}
+
+// ---------- 外部服务 ----------
+
+/** 等时圈分析（高德 v5 isochrone）… */
+export async function isochrone({ location, mode = "driving", range = 30, rangeType = "time" }: any = {}) {
+  const settings = loadMapSettings();
+  const geoapifyKey = settings?.basemaps?.geoapifyKey || process.env.GEOAPIFY_KEY || "";
+  if (geoapifyKey) return isochroneGeoapify({ location, mode, range, rangeType, key: geoapifyKey });
+  const key = process.env.AMAP_KEY || process.env.GAODE_KEY || "";
+  if (!key) return { error: "未配置 Geoapify 或高德等时圈 Key（可在设置中配置 Geoapify Key）" };
+  const url = new URL("https://restapi.amap.com/v5/isochrone");
+  url.searchParams.set("key", key);
+  url.searchParams.set("location", String(location || ""));
+  url.searchParams.set("mode", String(mode || "driving"));
+  url.searchParams.set("range_type", String(rangeType || "time"));
+  url.searchParams.set("range", String(range || 30));
+  let data;
+  try {
+    const r = await fetch(url);
+    data = await r.json();
+  } catch (e: any) {
+    return { error: "等时圈请求失败: " + e.message };
+  }
+  if (data.status !== "1") return { error: data.info || data.infocode || "等时圈请求失败" };
+  const polygons = (data.result?.polygons || [])
+    .map((p: any) => normalizePoints(p.points))
+    .filter((pts: any) => pts && pts.length >= 3);
+  return { error: null, center: data.result.center, cost: data.result.cost, polygons };
+}
+
+/** Geoapify Isoline API：返回 GeoJSON，统一转换为当前前端使用的外环点数组。 */
+async function isochroneGeoapify({ location, mode = "driving", range = 30, rangeType = "time", key }: any) {
+  const [lon, lat] = String(location || "").split(",").map(Number);
+  if (!Number.isFinite(lon) || !Number.isFinite(lat)) return { error: "等时圈中心点坐标无效" };
+  const modeMap: Record<string, string> = { driving: "drive", walking: "walk", bicycling: "bicycle", transit: "transit", drive: "drive", walk: "walk", bicycle: "bicycle" };
+  const apiType = rangeType === "distance" ? "distance" : "time";
+  const numericRange = Number(range) || 30;
+  const apiRange = apiType === "distance" ? Math.round(numericRange * 1000) : Math.round(numericRange * 60);
+  const url = new URL("https://api.geoapify.com/v1/isoline");
+  url.searchParams.set("lat", String(lat));
+  url.searchParams.set("lon", String(lon));
+  url.searchParams.set("type", apiType);
+  url.searchParams.set("mode", modeMap[mode] || "drive");
+  url.searchParams.set("range", String(apiRange));
+  url.searchParams.set("apiKey", key);
+  let data;
+  try {
+    const response = await fetch(url, { signal: AbortSignal.timeout(25000) });
+    data = await response.json();
+    if (!response.ok) return { error: data?.message || `Geoapify 等时圈请求失败（${response.status}）` };
+  } catch (e: any) {
+    return { error: "Geoapify 等时圈请求失败: " + e.message };
+  }
+  const polygons: any[] = [];
+  for (const feature of data?.features || []) {
+    const geometry = feature?.geometry;
+    if (geometry?.type === "Polygon" && geometry.coordinates?.[0]?.length >= 3) polygons.push(geometry.coordinates[0]);
+    if (geometry?.type === "MultiPolygon") {
+      for (const polygon of geometry.coordinates || []) if (polygon?.[0]?.length >= 3) polygons.push(polygon[0]);
+    }
+  }
+  if (!polygons.length) return { error: data?.message || "Geoapify 未返回有效等时圈多边形" };
+  return { error: null, provider: "geoapify", center: [lon, lat], cost: null, polygons };
+}
+
+/** 高德 points 可能是 [[lng,lat],...] 或 [{lng,lat},...] 或字符串 */
+function normalizePoints(points: any) {
+  if (typeof points === "string") {
+    try { points = JSON.parse(points); } catch { return null; }
+  }
+  if (!Array.isArray(points)) return null;
+  return points.map((p: any) => {
+    if (Array.isArray(p)) return [Number(p[0]), Number(p[1])];
+    if (p && typeof p === "object") return [Number(p.lng), Number(p.lat)];
+    return null;
+  }).filter(Boolean);
+}
+
+/**
+ * 路径规划（可插拔 provider）
+ * - osrm（默认）：开源 OSRM 公共服务器，零配置；也可配 OSRM_URL 指向自托管实例
+ * - amap：高德 v5 direction（需 AMAP_KEY，中国路网更准）
+ * 返回: { error: null, provider, distance(米), duration(秒), geometry: [[lng,lat],...] }
+ */
+export async function route({ from, to, mode = "driving", provider = "osrm" }: any = {}) {
+  if (!from || !to) return { error: "需要起点和终点坐标" };
+  if (provider === "amap") return routeAmap(from, to, mode);
+  return routeOsrm(from, to, mode);
+}
+
+async function routeOsrm(from: any, to: any, mode: any) {
+  const profile = mode === "walking" ? "foot" : mode === "bicycling" ? "bike" : "driving";
+  const base = process.env.OSRM_URL || "https://router.project-osrm.org";
+  const url = `${base}/route/v1/${profile}/${from};${to}?overview=full&geometries=geojson&steps=false`;
+  let data;
+  try {
+    const r = await fetch(url, { signal: AbortSignal.timeout(20000) });
+    data = await r.json();
+  } catch (e: any) {
+    return { error: "OSRM 请求失败: " + e.message + "（可配置环境变量 OSRM_URL 指向自托管实例，或改用 provider=amap）" };
+  }
+  if (data.code !== "Ok" || !data.routes?.length) {
+    return { error: "OSRM 未找到路径: " + (data.code || "unknown") + "（请确认两点间有路网）" };
+  }
+  const route0 = data.routes[0];
+  return {
+    error: null,
+    provider: "osrm",
+    distance: route0.distance,
+    duration: route0.duration,
+    geometry: route0.geometry?.coordinates || [],
+  };
+}
+
+async function routeAmap(from: any, to: any, mode: any) {
+  const key = process.env.AMAP_KEY || process.env.GAODE_KEY || "";
+  if (!key) return { error: "未配置高德 Web 服务 Key（环境变量 AMAP_KEY），请改用默认 OSRM 开源路由" };
+  const amapMode = ({ driving: "driving", walking: "walking", bicycling: "bicycling", transit: "transit" } as Record<string, string>)[mode] || "driving";
+  const url = new URL("https://restapi.amap.com/v5/direction/" + amapMode);
+  url.searchParams.set("key", key);
+  url.searchParams.set("origin", from);
+  url.searchParams.set("destination", to);
+  url.searchParams.set("show_fields", "polyline,cost");
+  let data;
+  try {
+    const r = await fetch(url, { signal: AbortSignal.timeout(20000) });
+    data = await r.json();
+  } catch (e: any) {
+    return { error: "高德路径请求失败: " + e.message };
+  }
+  if (data.status !== "1" || !data.route?.paths?.length) {
+    return { error: "高德未找到路径: " + (data.info || data.infocode || "unknown") };
+  }
+  const routePath = data.route.paths[0];
+  const coords = String(routePath.polyline || "")
+    .split(";")
+    .filter(Boolean)
+    .map((p) => p.split(",").map(Number));
+  return {
+    error: null,
+    provider: "amap",
+    distance: routePath.distance ? Number(routePath.distance) : 0,
+    duration: routePath.cost?.duration ? Number(routePath.cost.duration) : 0,
+    geometry: coords,
+  };
+}
+
+// ---------- M2 宏观交通分析 ----------
+
+/**
+ * 路网流量带宽图数据
+ * 返回带流量属性的高速路网 GeoJSON
+ */
+export function getTrafficBandwidth(name: any = DEFAULT_PROJECT) {
+  const dir = projectDir(name);
+  if (!dir) return { error: "项目不存在" };
+
+  const hwPath = path.join(dir, "layers", "highways.geojson");
+  if (!fs.existsSync(hwPath)) {
+    return { error: "高速图层不存在，请先运行数据接入脚本" };
+  }
+
+  const geojson = JSON.parse(fs.readFileSync(hwPath, "utf8"));
+  const features = geojson.features || [];
+
+  // 统计流量分布
+  const flows = features
+    .map((f: any) => Number(f.properties?.flow_avg))
+    .filter((value: any) => Number.isFinite(value) && value > 0);
+  const flowStats = numericStats(flows);
+  const stats = {
+    count: features.length,
+    withTraffic: flows.length,
+    ...flowStats,
+  };
+
+  return { error: null, geojson, stats };
+}
+
+/**
+ * OD 期望线数据
+ * 返回模拟的市 - 县区间 OD 数据
+ */
+export function getODLines(name: any = DEFAULT_PROJECT) {
+  const dir = projectDir(name);
+  if (!dir) return { error: "项目不存在" };
+
+  const odPath = path.join(dir, "layers", "OD期望线.geojson");
+  if (!fs.existsSync(odPath)) {
+    return { error: "OD 数据不存在，请运行 generate-m2-data.mjs" };
+  }
+
+  const geojson = JSON.parse(fs.readFileSync(odPath, "utf8"));
+
+  // 按流量分级统计
+  const levels: any = { high: 0, medium: 0, low: 0 };
+  const volumes: any[] = [];
+
+  for (const f of geojson.features || []) {
+    const level = f.properties?.level;
+    if (level) levels[level] = (levels[level] || 0) + 1;
+    const vol = f.properties?.volume;
+    if (vol) volumes.push(vol);
+  }
+
+  const stats = {
+    count: geojson.features?.length || 0,
+    levels,
+    volumeStats: numericStats(volumes),
+  };
+
+  return { error: null, geojson, stats };
+}
+
+/**
+ * 多时距等时圈分析
+ * 一次性返回多个时距的等时圈
+ */
+export async function multiIsochrone({ location, mode = "driving", ranges = [15, 30, 60], rangeType = "time" }: any = {}) {
+  if (!location) return { error: "需要中心点坐标" };
+  const normalizedRanges = [...new Set((Array.isArray(ranges) ? ranges : String(ranges).split(","))
+    .map(Number)
+    .filter((range) => Number.isFinite(range) && range > 0))];
+  if (!normalizedRanges.length) return { error: "至少需要一个有效时距" };
+
+  const results: any[] = [];
+  for (const range of normalizedRanges) {
+    const r = await isochrone({ location, mode, range, rangeType });
+    if (r.error) {
+      return { error: r.error };
+    }
+    results.push({ range, ...r });
+  }
+  return { error: null, results };
+}
+
+/**
+ * 区域交换量桑基图数据
+ * 返回城市间的流量交换数据
+ */
+export function getExchangeSankey(name: any = DEFAULT_PROJECT) {
+  const dir = projectDir(name);
+  if (!dir) return { error: "项目不存在" };
+
+  const sankeyPath = path.join(dir, "layers", "区域交换量.json");
+  if (!fs.existsSync(sankeyPath)) {
+    return { error: "区域交换量数据不存在，请运行 generate-m2-data.mjs" };
+  }
+
+  const data = JSON.parse(fs.readFileSync(sankeyPath, "utf8"));
+
+  // 计算总流量
+  const totalVolume = (data.links || []).reduce((sum: number, l: any) => sum + (l.value || 0), 0);
+
+  return {
+    error: null,
+    data,
+    stats: {
+      nodes: data.nodes?.length || 0,
+      links: data.links?.length || 0,
+      totalVolume,
+    },
+  };
+}
+
+/**
+ * 路网结构统计
+ * 按公路等级分类统计
+ */
+export function getRoadStructure(name: any = DEFAULT_PROJECT) {
+  const dir = projectDir(name);
+  if (!dir) return { error: "项目不存在" };
+
+  const stats: any = {};
+
+  for (const def of LAYER_DEFS) {
+    const layerPath = path.join(dir, "layers", `${def.id}.geojson`);
+    if (fs.existsSync(layerPath)) {
+      const geojson = JSON.parse(fs.readFileSync(layerPath, "utf8"));
+      stats[def.id] = {
+        name: def.name,
+        type: def.type,
+        group: def.group,
+        count: geojson.features?.length || 0,
+      };
+    }
+  }
+
+  return { error: null, stats };
+}
+
+function numericStats(values: any[]) {
+  if (!values.length) return { min: 0, max: 0, avg: 0 };
+  return {
+    min: Math.min(...values),
+    max: Math.max(...values),
+    avg: Math.round(values.reduce((sum: number, value: any) => sum + value, 0) / values.length),
+  };
+}
+
+// ---------- M3 公交数据分析 ----------
+
+const BUS_DATA_DIR = path.join(MAPS_ROOT, "bus-xinchang");
+
+/** 读取公交线路数据 */
+export function getBusRoutes() {
+  const routesPath = path.join(BUS_DATA_DIR, "routes.geojson");
+  if (!fs.existsSync(routesPath)) {
+    return { error: "公交线路数据不存在，请复制新昌公交数据到 maps/bus-xinchang/" };
+  }
+
+  const geojson = JSON.parse(fs.readFileSync(routesPath, "utf8"));
+  const features = geojson.features || [];
+
+  // 统计
+  let urban = 0, suburban = 0, totalLength = 0;
+  for (const f of features) {
+    const type = f.properties?.type || "urban";
+    if (type === "suburban") suburban++;
+    else urban++;
+    totalLength += f.properties?.length_km || 0;
+  }
+
+  return {
+    error: null,
+    geojson,
+    stats: {
+      total: features.length,
+      urban,
+      suburban,
+      totalLength,
+    },
+  };
+}
+
+/** 读取公交站点数据 */
+export function getBusStops() {
+  const stopsPath = path.join(BUS_DATA_DIR, "stops.csv");
+  if (!fs.existsSync(stopsPath)) {
+    return { error: "站点数据不存在" };
+  }
+
+  const csv = fs.readFileSync(stopsPath, "utf8");
+  const lines = csv.split("\n").filter(Boolean);
+  const headers = lines[0]!.split(",");
+
+  const features: any[] = [];
+  for (let i = 1; i < lines.length; i++) {
+    const cols = lines[i]!.split(",");
+    if (cols.length >= 6) {
+      features.push({
+        type: "Feature",
+        properties: {
+          name: cols[0],
+          route: cols[1],
+          passengers: parseFloat(cols[5]!) || 0,
+        },
+        geometry: {
+          type: "Point",
+          coordinates: [parseFloat(cols[3]!), parseFloat(cols[2]!)],
+        },
+      });
+    }
+  }
+
+  return {
+    error: null,
+    geojson: { type: "FeatureCollection", features },
+    stats: { count: features.length },
+  };
+}
+
+/** 读取公交 OD 数据 */
+export function getBusOD(period: any = "all") {
+  const odPath = path.join(BUS_DATA_DIR, "od.csv");
+  if (!fs.existsSync(odPath)) {
+    return { error: "OD 数据不存在" };
+  }
+
+  const csv = fs.readFileSync(odPath, "utf8");
+  const lines = csv.split("\n").filter(Boolean);
+
+  const features: any[] = [];
+  let totalFlow = 0;
+
+  for (let i = 1; i < lines.length; i++) {
+    const cols = lines[i]!.split(",");
+    if (cols.length >= 10) {
+      const flow = parseFloat(cols[4]!) || 0;
+      const timePeriod = cols[5] || "all";
+
+      if (period !== "all" && timePeriod !== period) continue;
+
+      totalFlow += flow;
+
+      features.push({
+        type: "Feature",
+        properties: {
+          origin: cols[0],
+          dest: cols[1],
+          flow,
+          period: timePeriod,
+        },
+        geometry: {
+          type: "LineString",
+          coordinates: [
+            [parseFloat(cols[6]!), parseFloat(cols[7]!)],
+            [parseFloat(cols[8]!), parseFloat(cols[9]!)],
+          ],
+        },
+      });
+    }
+  }
+
+  return {
+    error: null,
+    geojson: { type: "FeatureCollection", features },
+    stats: {
+      pairs: features.length,
+      totalFlow,
+    },
+  };
+}
+
+/** 公交线网统计 */
+export function getBusStats() {
+  const routes = getBusRoutes();
+  const stops = getBusStops();
+
+  if (routes.error) return routes;
+
+  // 按类型分组
+  const byType: any = {};
+  for (const f of (routes as any).geojson.features || []) {
+    const type = f.properties?.type || "urban";
+    byType[type] = (byType[type] || 0) + 1;
+  }
+
+  return {
+    error: null,
+    stats: {
+      routes: (routes as any).stats.total,
+      stops: (stops as any).stats?.count || 0,
+      coverage: 0, // 待计算
+      byType: Object.entries(byType).map(([type, count]) => ({ type, count })),
+    },
+  };
+}

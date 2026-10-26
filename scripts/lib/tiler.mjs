@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 /**
  * 矢量瓦片生成库（CLI 与 server/map.mjs 共用）
  *
