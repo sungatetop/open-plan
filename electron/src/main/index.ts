@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain } from "electron";
+import { app, BrowserWindow, ipcMain, session } from "electron";
 import path from "node:path";
 import fs from "node:fs";
 import os from "node:os";
@@ -77,10 +77,20 @@ import {
   type SystemStatusDirectDeps
 } from "./ipc/system-status-direct";
 import {
+  KB_DIRECT_CHANNELS,
+  invokeKbDirect,
+  type KbDirectDeps
+} from "./ipc/kb-direct";
+import {
   SEARCH_MAP_SETTINGS_DIRECT_CHANNELS,
   invokeSearchMapSettingsDirect,
   type SearchMapSettingsDirectDeps
 } from "./ipc/search-map-settings-direct";
+import {
+  MAP_DIRECT_CHANNELS,
+  invokeMapDirect,
+  type MapDirectDeps
+} from "./ipc/map-direct";
 import {
   PROJECT_MANAGEMENT_DIRECT_CHANNELS,
   invokeProjectManagementDirect,
@@ -96,6 +106,12 @@ import {
   invokeFilesDirect,
   type FilesDirectDeps
 } from "./ipc/files-direct";
+import {
+  DOC_DIRECT_CHANNELS,
+  invokeDocDirect,
+  type DocDirectDeps
+} from "./ipc/doc-direct";
+import { createDocWatchRegistry } from "./ipc/doc-watch";
 import * as approvalPolicy from "./backend/agent/approval-policy";
 import * as eventStorage from "./backend/event-storage";
 import { createMemoryEventsBridge } from "./ipc/memory-events-bridge";
@@ -121,6 +137,29 @@ function loadAppPage(win: BrowserWindow): Promise<void> {
   const devUrl = process.env.ELECTRON_RENDERER_URL;
   if (devUrl) return win.loadURL(`${devUrl}/app/index.html`);
   return win.loadFile(path.join(__dirname, "../renderer/app/index.html"));
+}
+
+/**
+ * sidecar 本地服务跨源放行（F5-5 桌面形态基建）。
+ *
+ * 新 UI 渲染层（vite dev / file://）与 sidecar（http://127.0.0.1:<port>）不同源；
+ * MapLibre 引擎按 style 内绝对 URL 自取矢量瓦片 / glyphs / geojson（业务通道之外
+ * 的二进制资产面），跨源 fetch 受 CORS 约束而 sidecar 无 CORS 头。此处在默认
+ * session 对 127.0.0.1 响应统一注入 ACAO:*，窄域限本机回环地址。仅 app 渲染目标
+ * 需要（legacy-client 形态窗口直接加载 sidecar 同源页面）。
+ */
+function installSidecarCorsRelay(): void {
+  if (RENDERER_TARGET !== "app") return;
+  session.defaultSession.webRequest.onHeadersReceived(
+    { urls: ["http://127.0.0.1:*/*"] },
+    (details, callback) => {
+      const headers = { ...details.responseHeaders };
+      if (!Object.keys(headers).some((h) => h.toLowerCase() === "access-control-allow-origin")) {
+        headers["Access-Control-Allow-Origin"] = ["*"];
+      }
+      callback({ responseHeaders: headers });
+    }
+  );
 }
 
 /** OP_DESKTOP_NEW_UI=1 冒烟：加载 app 页并断言 React 真实挂载（data-app-ready）。 */
@@ -965,6 +1004,46 @@ function registerSystemStatusDirectInvokers(): void {
 }
 
 /**
+ * 知识库域通道直调开关（F5-4；S4 语义默认开，OP_DESKTOP_KB_DIRECT=0 显式回滚）。
+ * 与 AGENT_DOMAIN_ENABLED 同开时 12 条通道（op:kb:status/roots+remove/tree/search/
+ * graph/doc/ima 4 件套/export-docx）进程内直调；数据源 backend/kb 单域。
+ */
+const KB_DIRECT_ENABLED = directPathEnabled("OP_DESKTOP_KB_DIRECT");
+
+/** 知识库域通道直调注册（F5-4）：覆盖 http-forward catch-all 中 12 条 op:kb 通道。 */
+function registerKbDirectInvokers(): void {
+  if (!(AGENT_DOMAIN_ENABLED && KB_DIRECT_ENABLED)) return;
+  let depsPromise: Promise<KbDirectDeps> | null = null;
+  const ensureDeps = (): Promise<KbDirectDeps> => {
+    depsPromise ??= (async () => {
+      const kb = await import("./backend/kb");
+      return {
+        scan: (force) => kb.scan(force),
+        status: () => kb.status() as Record<string, unknown>,
+        addRoot: (dir) => kb.addRoot(dir),
+        removeRoot: (dir) => kb.removeRoot(dir),
+        getTreeLevel: (rootIdx, dirPath) => kb.getTreeLevel(rootIdx, dirPath),
+        search: (q, rootIdx, limit) => kb.search(q, rootIdx, limit),
+        getGraph: (options) => kb.getGraph(options) as Record<string, unknown>,
+        getDoc: (relPath, rootIdx) => kb.getDoc(relPath, rootIdx) as Record<string, unknown> | null,
+        imaStatus: () => kb.imaStatus() as Promise<Record<string, unknown>>,
+        imaListBases: () => kb.imaListBases(),
+        imaSearch: (query, kbId) => kb.imaSearch(query, kbId),
+        imaDoc: (mediaId) => kb.imaDoc(mediaId),
+        exportDocx: (relPath, rootIdx) => kb.exportDocx(relPath, rootIdx)
+      } satisfies KbDirectDeps;
+    })();
+    return depsPromise!;
+  };
+  for (const channel of KB_DIRECT_CHANNELS) {
+    ipcMain.removeHandler(channel);
+    ipcMain.handle(channel, async (_event, payload: InvokeEnvelope | undefined) =>
+      invokeKbDirect(channel, payload, await ensureDeps())
+    );
+  }
+}
+
+/**
  * 联网搜索配置与地图底图设置通道直调开关（D-1c；S4 语义默认开，OP_DESKTOP_SEARCH_MAP_SETTINGS_DIRECT=0
  * 显式回滚）。与 AGENT_DOMAIN_ENABLED 同开时 5 条通道（op:search:settings:get/save、
  * op:search:test、op:map:settings:get/save）进程内直调；数据源 web-search/map 两域。
@@ -998,6 +1077,139 @@ function registerSearchMapSettingsDirectInvokers(): void {
     ipcMain.removeHandler(channel);
     ipcMain.handle(channel, async (_event, payload: InvokeEnvelope | undefined) =>
       invokeSearchMapSettingsDirect(channel, payload, await ensureDeps())
+    );
+  }
+}
+
+/**
+ * 地图域通道直调开关（F5-1/F5-2；S4 语义默认开，OP_DESKTOP_MAP_DIRECT=0 显式回滚）。
+ * 与 AGENT_DOMAIN_ENABLED 同开时 39 条通道（op:map:projects 系列 / op:map:project 系列 /
+ * op:map:style / config / import / import:batch / prepare / rebuild / layer:delete /
+ * layer:get / isochrone / route + F5-2 分析可视化族 visual:sources / visual:get /
+ * traffic-bandwidth / od-lines / multi-isochrone / exchange-sankey / road-structure /
+ * demo-analysis / cambodia-od / m3:*）进程内直调；数据源 map / layer-repository /
+ * project-pack / workspace / map-visualization / cambodia-od / map-analysis /
+ * map-demo / traffic-sources 九域（B5 TS 模块已就绪）。
+ */
+const MAP_DIRECT_ENABLED = directPathEnabled("OP_DESKTOP_MAP_DIRECT");
+
+/** 地图域项目/图层族通道直调注册（F5-1/F5-2）：覆盖 http-forward catch-all 中 39 条通道。 */
+function registerMapDirectInvokers(): void {
+  if (!(AGENT_DOMAIN_ENABLED && MAP_DIRECT_ENABLED)) return;
+  let depsPromise: Promise<MapDirectDeps> | null = null;
+  const ensureDeps = (): Promise<MapDirectDeps> => {
+    depsPromise ??= (async () => {
+      const [map, layerRepo, projectPack, workspace, workspacePaths, featureFlags, visual, cambodiaOD, mapAnalysis, mapDemo, trafficSources, mapReport, batchExport, mapTemplate, builtinBrowser] = await Promise.all([
+        import("./backend/map"),
+        import("./backend/layer-repository"),
+        import("./backend/project-pack"),
+        import("./backend/workspace"),
+        import("./backend/workspace-paths"),
+        import("./backend/feature-flags"),
+        import("./backend/map-visualization"),
+        import("./backend/cambodia-od"),
+        import("./backend/map-analysis"),
+        import("./backend/map-demo"),
+        // 导入即注册内置适配器（local-file / bundled-xinchang），与 server L5186 同形态
+        import("./backend/traffic-sources"),
+        // F5-3 报告导出模板族（GIS G8/G7/G5-v1 + B4 内置浏览器底座）
+        import("./backend/map-report"),
+        import("./backend/batch-export"),
+        import("./backend/map-template"),
+        import("./backend/builtin-browser")
+      ]);
+      // G2 外部数据适配器（live-traffic-api / sql-database）：flag 关 = 不注册 =
+      // visual:sources 与 map_datasets 看不到，基线行为零变化（server L5189-5191 同款）。
+      if (featureFlags.RUNTIME_FLAGS.dataAdapters) {
+        void import("./backend/datasource-adapter-ext").catch((e) => console.warn("[data-adapters] 适配器注册失败：", (e as Error)?.message || e));
+      }
+      return {
+        listProjects: () => map.listProjects(),
+        createProject: (input) => map.createProject(input),
+        getProject: (name) => map.getProject(name) as Record<string, unknown> | null,
+        duplicateProject: (input) => map.duplicateProject(input),
+        renameProject: (input) => map.renameProject(input),
+        archiveProject: (name, archived) => map.archiveProject(name, archived),
+        deleteProject: (name) => map.deleteProject(name) as Record<string, unknown>,
+        saveStyle: (name, style) => map.saveStyle(name, style),
+        saveConfig: (name, config) => map.saveConfig(name, config),
+        importLayer: (name, layerId, geojson) => map.importLayer(name, layerId, geojson),
+        importBatch: (name, items) => map.importBatch(name, items),
+        rebuildTiles: (name, layerIds) => map.rebuildTiles(name, layerIds),
+        deleteLayer: (name, layerId) => map.deleteLayer(name, layerId),
+        getLayer: (name, layerId) => map.getLayer(name, layerId),
+        isochrone: (input) => map.isochrone(input) as Promise<Record<string, unknown>>,
+        route: (input) => map.route(input) as Promise<Record<string, unknown>>,
+        listLayers: (project, options) => layerRepo.listLayers(project, options),
+        buildProjectZip: (input) => projectPack.buildProjectZip(input),
+        getWorkspace: () => workspace.getWorkspace(),
+        projectDir: workspacePaths.PROJECT_DIR,
+        dirProbe: (dir) => {
+          if (!fs.existsSync(dir)) return { exists: false, isDirectory: false };
+          return { exists: true, isDirectory: fs.statSync(dir).isDirectory() };
+        },
+        // server 用 PATH 上的 node 跑 scripts/tools/*.mjs（L752-756 逐点转录：超时 300s、
+        // cwd=PROJECT_DIR、"node" 字面同款——桌面端与 sidecar 等价，不换 process.execPath）。
+        runScript: (script, args) =>
+          new Promise((resolve) => {
+            void import("node:child_process").then(({ execFile }) => {
+              execFile("node", [script, ...args], { cwd: workspacePaths.PROJECT_DIR, timeout: 300_000 }, (err, stdout, stderr) => {
+                resolve({ code: err ? 1 : 0, out: (stdout || "") + (stderr || "") });
+              });
+            });
+          }),
+        mapPackEnabled: () => featureFlags.RUNTIME_FLAGS.mapPack,
+        // ---- F5-2 分析可视化族 deps ----
+        getTrafficBandwidth: (name) => map.getTrafficBandwidth(name) as Record<string, unknown>,
+        getODLines: (name) => map.getODLines(name) as Record<string, unknown>,
+        multiIsochrone: (input) => map.multiIsochrone(input) as Promise<Record<string, unknown>>,
+        getExchangeSankey: (name) => map.getExchangeSankey(name) as Record<string, unknown>,
+        getRoadStructure: (name) => map.getRoadStructure(name) as Record<string, unknown>,
+        visualListSources: () => visual.listSources() as Array<{ id: string } & Record<string, unknown>>,
+        visualLoadSource: (id, params) => visual.loadSource(id, params),
+        fromTrafficBandwidth: (result) => visual.fromTrafficBandwidth(result as Record<string, unknown>),
+        fromOdLines: (result) => visual.fromOdLines(result as Record<string, unknown>),
+        fromCambodiaOd: (result) => visual.fromCambodiaOd(result as Record<string, unknown>),
+        fromDemoAnalysis: (action) => visual.fromDemoAnalysis(action as Record<string, unknown>),
+        cambodiaGetCambodiaOD: (input) => cambodiaOD.getCambodiaOD(input),
+        analysisCreateDemoAnalysis: (input) => mapAnalysis.createDemoAnalysis(input as Parameters<typeof mapAnalysis.createDemoAnalysis>[0]) as Record<string, unknown>,
+        analysisGetCambodiaOD: (input) => mapAnalysis.getCambodiaOD(input as { minFlow?: string | number }) as Record<string, unknown>,
+        getXinchangBus: (kind) => mapAnalysis.getXinchangBus(kind),
+        demoCreateDemoAnalysis: (input) => mapDemo.createDemoAnalysis(input),
+        plannedSources: () => trafficSources.PLANNED_SOURCES,
+        // ---- F5-3 报告导出模板族 deps ----
+        normalizeWorkspace: (dir) => workspace.normalizeWorkspace(String(dir ?? "")),
+        mapReportEnabled: () => featureFlags.RUNTIME_FLAGS.mapReport,
+        buildMapReport: (options) => mapReport.buildMapReport(options as Parameters<typeof mapReport.buildMapReport>[0]),
+        mapExportEnabled: () => featureFlags.RUNTIME_FLAGS.mapExport,
+        planExportJobs: (options) => batchExport.planExportJobs(options),
+        runExportQueue: (jobs, executor, opts) => batchExport.runExportQueue(jobs, executor, opts),
+        mapTemplatesEnabled: () => featureFlags.RUNTIME_FLAGS.mapTemplates,
+        runOdCommuterTemplate: (options) => mapTemplate.runOdCommuterTemplate(options as Parameters<typeof mapTemplate.runOdCommuterTemplate>[0]),
+        // 批量导出执行器复用 B4 内置浏览器底座（server L5293-5296 动态 import builtin-browser 同域）；
+        // 导出视图 URL 指向 sidecar（迁移期旧 client 仍由 sidecar 服务，等价 server PORT 语义）。
+        browserSessionKey: (clientId, threadId) => builtinBrowser.browserSessionKey(clientId, threadId),
+        browserOpen: (key, url) => builtinBrowser.browserOpen(key, url),
+        browserResize: (key, width, height) => builtinBrowser.browserResize(key, width, height),
+        browserWaitForExpression: (key, expression, opts) => builtinBrowser.browserWaitForExpression(key, expression, opts),
+        browserEvaluateValue: (key, expression) => builtinBrowser.browserEvaluateValue(key, expression),
+        browserPrintToPdf: (key) => builtinBrowser.browserPrintToPdf(key),
+        browserScreenshot: (key, options) => builtinBrowser.browserScreenshot(key, options),
+        exportViewPort: () => server?.port ?? 0,
+        ensureDir: (dir) => fs.mkdirSync(dir, { recursive: true }),
+        writeFile: (file, data) => fs.writeFileSync(file, data),
+        // ---- F5-5 style.json 动态读通道 deps ----
+        mapProjectDir: (name) => map.projectDir(name),
+        hydrateBasemapSources: (style) => map.hydrateBasemapSources(style),
+        readStyleFile: (file) => fs.readFileSync(file, "utf8")
+      } satisfies MapDirectDeps;
+    })();
+    return depsPromise;
+  };
+  for (const channel of MAP_DIRECT_CHANNELS) {
+    ipcMain.removeHandler(channel);
+    ipcMain.handle(channel, async (_event, payload: InvokeEnvelope | undefined) =>
+      invokeMapDirect(channel, payload, await ensureDeps())
     );
   }
 }
@@ -1152,6 +1364,74 @@ function registerFilesDirectInvokers(): void {
 }
 
 /**
+ * doc 族通道直调开关（F4-3；S4 语义默认开，OP_DESKTOP_DOC_DIRECT=0 显式回滚）。
+ * 与 AGENT_DOMAIN_ENABLED 同开时 7 条读通道（op:doc:open/raw/text/html/comments/
+ * outline/annotations）进程内直调：预览文件身份族 + 扩展名 kind 分发 + JSZip docx
+ * 文本提取 + renderHtml 占位页/身份注入 + 会话批注提取 + 标题大纲启发式。
+ * 写路由（annotations POST / watch / raw-save / cells）随 F4-4。
+ */
+const DOC_DIRECT_ENABLED = directPathEnabled("OP_DESKTOP_DOC_DIRECT");
+
+/** doc 族通道直调注册（F4-3）：覆盖 http-forward catch-all 中 7 条读通道。 */
+function registerDocDirectInvokers(): void {
+  if (!(AGENT_DOMAIN_ENABLED && DOC_DIRECT_ENABLED)) return;
+  let depsPromise: Promise<DocDirectDeps> | null = null;
+  // F4-4 实时预览 watch 注册表：fs.watchFile 变化 → op:doc-watch 事件推送（不经对话流）。
+  const docWatchRegistry = createDocWatchRegistry(
+    (event) => broadcastEvent({ type: event.type, data: event.data }),
+    {
+      watchFile: (path, options, listener) => fs.watchFile(path, options, (curr) => listener(curr)),
+      unwatchFile: (path) => fs.unwatchFile(path),
+      statSync: (path) => fs.statSync(path)
+    }
+  );
+  const ensureDeps = (): Promise<DocDirectDeps> => {
+    depsPromise ??= (async () => {
+      const [workspace, office, agentManager, sessionFiles, writeCoordination, filePermissionError] = await Promise.all([
+        import("./backend/workspace"),
+        import("./backend/office"),
+        import("./backend/agent/assembly"),
+        import("./backend/agent/session-files"),
+        import("./backend/agent/write-coordination"),
+        import("./backend/file-permission-error")
+      ]);
+      const manager = await agentManager.getAgentManager();
+      return {
+        getWorkspace: () => workspace.getWorkspace(),
+        normalizeWorkspace: (dir) => workspace.normalizeWorkspace(dir),
+        resolvePath: (rel, ws) => workspace.resolvePath(rel, ws),
+        setCurrentFile: (clientId, file) => manager.setCurrentFile(clientId, file),
+        officeGet: (file, target, depth) => office.get(file, target, depth),
+        renderHtml: (file) => office.renderHtml(file),
+        queryComments: (file) => office.queryComments(file),
+        runOfficecli: (args, options) => office.runOfficecli(args, options),
+        listSessionFiles: () => sessionFiles.listSessionFiles(),
+        readSessionTextCached: (found) => sessionFiles.readSessionTextCached(found as never),
+        existsSync: (p) => fs.existsSync(p),
+        statSync: (p) => fs.statSync(p),
+        readFileSync: (p) => fs.readFileSync(p),
+        // ---- F4-4 写路由依赖 ----
+        writeWorkspaceFile: (options) => writeCoordination.writeWorkspaceFile(options),
+        withWriteLockAsync: (options, callback) => writeCoordination.withWriteLockAsync(options, callback),
+        officeBatch: (file, commands) => office.batch(file, commands),
+        normalizeOfficeFailure: (error, args, result) => filePermissionError.normalizeOfficeFailure(error, args as never, result),
+        normalizeWorkspaceWriteError: (error) => filePermissionError.normalizeWorkspaceWriteError(error),
+        workspaceWriteHttpStatus: (error) => filePermissionError.workspaceWriteHttpStatus(error),
+        startDocWatch: (absPath, relativePath) => { docWatchRegistry.start(absPath, relativePath); },
+        stopDocWatch: (absPath) => { docWatchRegistry.stop(absPath); }
+      };
+    })();
+    return depsPromise;
+  };
+  for (const channel of DOC_DIRECT_CHANNELS) {
+    ipcMain.removeHandler(channel);
+    ipcMain.handle(channel, async (_event, payload: InvokeEnvelope | undefined) =>
+      invokeDocDirect(channel, payload, await ensureDeps())
+    );
+  }
+}
+
+/**
  * B2 装配层冒烟路径：动态加载装配模块并构造真实 AgentManager
  * （已迁 TS 实现 + 未迁域旧 server 过渡桥）。成功输出 AGENT_DOMAIN_ASSEMBLED，
  * 失败输出 SMOKE_FAIL 并退出。
@@ -1272,13 +1552,17 @@ if (!gotLock) {
     registerAgentProbeDiagnosticsDirectInvokers();
     registerNativeSystemDirectInvokers();
     registerSystemStatusDirectInvokers();
+    registerKbDirectInvokers();
     registerSearchMapSettingsDirectInvokers();
+    registerMapDirectInvokers();
     registerProjectManagementDirectInvokers();
     registerWorkspaceDirectInvokers();
     registerFilesDirectInvokers();
+    registerDocDirectInvokers();
     registerEventBridgeHandlers();
     registerMemoryBridgeHandlers();
     registerGlobalEventsBridgeHandlers();
+    installSidecarCorsRelay();
     mainWindow = createSplashWindow(PRELOAD_PATH);
     void bootstrap();
   });
