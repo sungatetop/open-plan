@@ -330,6 +330,47 @@ export const ingestToKb = (name: string): Promise<ChannelResponse<"op:kb:ingest"
   invokeOrThrow("op:kb:ingest", { body: { name } });
 
 // ============================================================================
+// 知识库族（本地索引 + IMA；KnowledgeBase.jsx → features/kb 迁移配套，F5-8）
+// ============================================================================
+
+export const kbStatus = (): Promise<ChannelResponse<"op:kb:status">> => invokeOrThrow("op:kb:status");
+
+export const kbAddRoot = (path: string): Promise<ChannelResponse<"op:kb:roots:add">> =>
+  invokeOrThrow("op:kb:roots:add", { body: { path } });
+
+export const kbRemoveRoot = (path: string): Promise<ChannelResponse<"op:kb:roots:remove">> =>
+  invokeOrThrow("op:kb:roots:remove", { body: { path } });
+
+/** 目录树一级：旧 api.js `root !== undefined` 才拼 query；转发器跳过空 query 值，`dir || undefined` 与旧「dir 空不拼」等价。 */
+export const kbTree = (root: number, dir?: string): Promise<ChannelResponse<"op:kb:tree">> =>
+  invokeOrThrow("op:kb:tree", { query: { root: String(root), dir: dir || undefined } });
+
+export const kbSearch = (q: string, root?: number, limit = 30): Promise<ChannelResponse<"op:kb:search">> =>
+  invokeOrThrow("op:kb:search", { query: { q, root: root !== undefined ? String(root) : undefined, limit: String(limit) } });
+
+export const kbGraph = (root?: number, include: string[] = ["links"], max = 800): Promise<ChannelResponse<"op:kb:graph">> =>
+  invokeOrThrow("op:kb:graph", {
+    query: { root: root !== undefined ? String(root) : undefined, include: include.join(","), max: String(max) }
+  });
+
+export const kbDoc = (path: string, root?: number): Promise<ChannelResponse<"op:kb:doc">> =>
+  invokeOrThrow("op:kb:doc", { query: { path, root: root !== undefined ? String(root) : undefined } });
+
+export const kbImaStatus = (): Promise<ChannelResponse<"op:kb:ima:status">> => invokeOrThrow("op:kb:ima:status");
+
+export const kbImaBases = (): Promise<ChannelResponse<"op:kb:ima:bases">> => invokeOrThrow("op:kb:ima:bases");
+
+export const kbImaSearch = (q: string, kb = ""): Promise<ChannelResponse<"op:kb:ima:search">> =>
+  invokeOrThrow("op:kb:ima:search", { query: { q, kb: kb || undefined } });
+
+export const kbImaDoc = (mediaId: string): Promise<ChannelResponse<"op:kb:ima:doc">> =>
+  invokeOrThrow("op:kb:ima:doc", { query: { media_id: mediaId } });
+
+/** 导出当前文档为 Word（KnowledgeBase.jsx 内联 fetch("/api/kb/export-docx") → IPC 通道）。 */
+export const kbExportDocx = (relPath: string, rootIdx: number): Promise<ChannelResponse<"op:kb:export-docx">> =>
+  invokeOrThrow("op:kb:export-docx", { body: { relPath, rootIdx } });
+
+// ============================================================================
 // 模型族（listModels 10s 单飞缓存逐行等价；refreshModels 立即失效缓存）
 // ============================================================================
 

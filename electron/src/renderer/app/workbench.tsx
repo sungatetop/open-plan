@@ -8,6 +8,7 @@ import FeedbackHost, { notifyError } from "../components/Feedback";
 import DocViewer, { type DocRecord } from "../components/DocViewer";
 import ChatPanel, { type ChatPanelImperativeHandle } from "../features/chat/panel";
 import MapPanel, { type MapBridgeHandlers } from "../features/map/map-panel";
+import KnowledgeBase from "../features/kb/knowledge-base";
 import TaskCenter from "../features/tasks/task-center";
 import WorkProductPanel from "../features/tasks/work-product-panel";
 import type { SessionRecord } from "../components/SessionList";
@@ -1246,6 +1247,28 @@ export default function Workbench(): React.ReactElement {
             </div>
           </div>
         )}
+        {/* F5-8 知识库模块（App.jsx 1527-1547 转录）：div.kb 为 fixed 全屏覆盖层
+            （styles.css .kb z-index:100），主 ChatPanel 无需卸载。桌面版与旧版时序差异：
+            旧版 activeModule 打开即卸载主槽，onExit 需 setTimeout(120) 等重挂；桌面版
+            仅 map 模式卸载主槽（让位共享聊天槽），kb 模式下 chatInputRef 恒有效，
+            onExit 的 @ 标记经 insertChatText 同步直达输入框（其内置 pending 队列兜底）。
+            onPromoteToAgent 沿旧形态（App.jsx 418-421）：关闭入口 + 延迟转交 Agent 任务。 */}
+        {activeModule === "knowledge" && (
+          <KnowledgeBase
+            clientId={clientId}
+            workspace={currentWorkspace}
+            project={currentProject as unknown as Record<string, unknown> | null}
+            models={models as unknown as ChatModel[]}
+            defaultModel={defaultModel}
+            onPromoteToAgent={(payload) => { setActiveModule(null); window.setTimeout(() => chatInputRef.current?.startAgentTask?.(payload), 120); }}
+            onExit={(marks) => {
+              setActiveModule(null);
+              if (marks?.length) {
+                for (const m of marks) insertChatText(m + " ");
+              }
+            }}
+          />
+        )}
         {/* F5-7 地图模块（App.jsx 1565-1615 逐点转录）：MapPanel 全屏（hideChat 分支，
             不内嵌 ChatPanel），共享 ChatPanel 常驻 .app-chat-slot.map，右缘 Resizer 调宽。
             桥接语义与旧版一致：onFileChanged/onAgentEnd 双路（工作台状态 + mapBridge），
@@ -1373,6 +1396,7 @@ export default function Workbench(): React.ReactElement {
               onPinSession={handlePinSession}
               onFreezeSession={handleFreezeSession}
               onBeforeOpenModal={() => setActiveModule(null)}
+              onOpenKnowledgeBase={() => setActiveModule("knowledge")}
               onOpenMap={() => setActiveModule("map")}
               onToggleTheme={toggleTheme}
               theme={theme}

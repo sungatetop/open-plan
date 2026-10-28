@@ -930,7 +930,9 @@ export type KbIngestRequest = { body: { name: string } };
 export type KbIngestResponse = { ok?: boolean; mdName?: string; error?: string; [key: string]: unknown };
 /** F5-4 知识库域 12 条（server L359-467）。查询参数以字符串透传，直调器内 parseInt/isNaN 归一。 */
 export type KbStatusRequest = Record<string, never>;
-export type KbStatusResponse = { fileCount?: number; roots?: string[]; [key: string]: unknown };
+/** 根目录元信息（backend/kb.ts status()：cfg.roots 逐项投影，index=数组下标）。 */
+export type KbRootMeta = { index: number; path: string; name: string; exists: boolean };
+export type KbStatusResponse = { fileCount?: number; roots?: KbRootMeta[]; [key: string]: unknown };
 export type KbRootsAddRequest = { body?: { path?: unknown } };
 export type KbRootsAddResponse = { ok: true; roots: string[]; fileCount: number };
 export type KbRootsRemoveRequest = { body?: { path?: unknown } };
