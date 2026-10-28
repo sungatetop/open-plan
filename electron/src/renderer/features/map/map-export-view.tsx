@@ -3,27 +3,30 @@
  *
  * 旧函数名为中文标识符「地图导出视图」，TS 版按规范命名 MapExportView。
  *
- * 窗口形态决策留档：
- *   - 旧形态 = sidecar 导航浏览器窗口 /?export=map 截图（服务端起导航窗口 → Emulation 视口 → 截图/PDF）；
- *   - F5-3 的 executeExportJob 已按 sidecar URL 形态转录（迁移期等价，本批不改）；
- *   - 本批迁移 MapExportView 组件使 renderer 具备导出视图渲染能力；
- *   - 窗口形态切换（离屏 BrowserWindow 加载 renderer 导出路由）留 R6 决策。
+ * 窗口形态（R6-3 定型）：主进程 offscreen BrowserWindow 加载本组件所在导出路由
+ * （app/index.html?export=map，dev 走 vite devUrl、打包走 file:// 产物；见
+ * main/export-view-window.ts），批量导出队列串行复用。旧 sidecar 导航窗口形态
+ * （/?export=map 由 sidecar 服务旧 client 渲染）随 R6 退役。
  *
- * fetch 残留处置留档：本组件的 fetch("/api/map/project") 与 stylePath("/api/map/data/:project/style.json")
- * 仅在 sidecar 导出窗口内按 sidecar origin 相对路径执行（该窗口即旧 HTTP 形态的承载者），
- * 无对应 IPC 通道需求，保持原样；renderer 主工作台不挂载本组件。
+ * 数据面通道化（R6-3）：旧 fetch("/api/map/project") 与 stylePath("/api/map/data/:project/
+ * style.json") 的 sidecar 相对路径 fetch 全部退役——项目配置走 op:map:project:get、
+ * style.json 文本走 op:map:data:style（client-api mapProject/mapDataStyleText），
+ * 样式内资产 URL 已由通道侧绝对化到 oaw-data://（R6-2）。IPC 每次调用现读文件，
+ * 旧 `?ts=` 缓存穿透不再需要。
  *
  * 职责（单一）：
  *   1. 按查询参数渲染一张铺满视口的地图（project 必填；layers 逗号分隔白名单，空 = 全部数据图层）；
- *   2. 渲染完成后置 window.__OAW_EXPORT_READY = true，供服务端轮询；
- *   3. 失败时置 window.__OAW_EXPORT_ERROR，服务端据此让该任务失败并给出原因。
+ *   2. 渲染完成后置 window.__OAW_EXPORT_READY = true，供主进程轮询；
+ *   3. 失败时置 window.__OAW_EXPORT_ERROR，主进程据此让该任务失败并给出原因。
  *
- * 服务端负责：视口尺寸（Emulation.setDeviceMetricsOverride）、截图（PNG）与 PDF（printToPDF）。
+ * 主进程负责：视口尺寸（setContentSize）、截图（capturePage→PNG）与 PDF（printToPDF）。
  * 本页面不做任何交互控件；标题条为 DOM 覆盖层，会一并进入截图/PDF。
  */
 import { useEffect, useRef } from "react";
 import { Map as MapLibreMap } from "maplibre-gl";
+import type { StyleSpecification } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
+import { mapDataStyleText, mapProject } from "../../api/client-api";
 
 declare global {
   interface Window {
@@ -39,8 +42,6 @@ const LAYER_WHITELIST: Set<string> | null = layerParam
   ? new Set(layerParam.split(/[,，;；\s]+/).map((s) => s.trim()).filter(Boolean))
   : null;
 const title = String(params.get("title") || "").trim();
-
-const stylePath = (p: string): string => `/api/map/data/${p}/style.json?ts=${Date.now()}`;
 
 function markError(message: string): void {
   window.__OAW_EXPORT_ERROR = String(message);
@@ -75,15 +76,17 @@ export default function MapExportView() {
       let center: number[] | undefined;
       let zoom: number | undefined;
       try {
-        const cfg = await fetch(`/api/map/project?name=${encodeURIComponent(project)}`, { cache: "no-store" }).then((r) => (r.ok ? r.json() : null));
-        if (Array.isArray(cfg?.config?.center) && cfg.config.center.length === 2) center = cfg.config.center;
-        if (Number.isFinite(Number(cfg?.config?.zoom))) zoom = Number(cfg.config.zoom);
-        if (cfg?.config?.name) document.title = `${cfg.config.name}${title ? ` · ${title}` : ""}`;
+        // op:map:project:get 通道（失败/404 抛错 → catch 保底默认视野，等价旧 r.ok ? json : null）
+        const cfg = await mapProject(project);
+        const config = (cfg?.config ?? {}) as { center?: unknown; zoom?: unknown; name?: string };
+        if (Array.isArray(config.center) && config.center.length === 2) center = config.center as number[];
+        if (Number.isFinite(Number(config.zoom))) zoom = Number(config.zoom);
+        if (config.name) document.title = `${config.name}${title ? ` · ${title}` : ""}`;
       } catch { /* 配置缺失时用 MapLibre 默认视野，不阻断导出 */ }
 
       if (cancelled || !containerRef.current) return;
-      // 服务端先 open 再 resize 视口；这里等视口尺寸稳定后再建图，保证画布一次就是目标尺寸
-      // （避免"默认尺寸建图 → metrics override → 画布未跟随"的空白/裁剪图）。
+      // 主进程先 open 再 setContentSize 视口；这里等视口尺寸稳定后再建图，保证画布一次就是目标尺寸
+      // （避免"默认尺寸建图 → 视口调整 → 画布未跟随"的空白/裁剪图）。
       const stableViewport = async (): Promise<{ w: number; h: number }> => {
         let previous = { w: window.innerWidth, h: window.innerHeight };
         for (let i = 0; i < 20; i += 1) {
@@ -96,9 +99,18 @@ export default function MapExportView() {
       };
       const viewport = await stableViewport();
       if (cancelled || !containerRef.current) return;
+      // op:map:data:style 通道取 style.json 文本（404/解析失败 → 显式失败原因；
+      // 旧形态靠 MapLibre 引擎内部 fetch 失败触发 error 事件，终态等价）
+      let style: unknown;
+      try {
+        style = JSON.parse(await mapDataStyleText(project));
+      } catch (e) {
+        markError(`样式加载失败：${(e as { message?: unknown })?.message || e}`);
+        return;
+      }
       map = new MapLibreMap({
         container: containerRef.current,
-        style: stylePath(project),
+        style: style as StyleSpecification,
         center: (center as [number, number]) || [120.0, 29.2],
         zoom: Number.isFinite(zoom) ? zoom : 7,
         attributionControl: false,

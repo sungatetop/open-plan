@@ -151,6 +151,7 @@ import { createMemoryEventsBridge } from "./ipc/memory-events-bridge";
 import { createGlobalEventsBridge } from "./ipc/global-events-bridge";
 import type { InvokeEnvelope, DesktopEvent } from "../shared/protocol/channels";
 import { createSplashWindow } from "./splash";
+import * as exportView from "./export-view-window";
 
 const SMOKE = process.env.OP_DESKTOP_SMOKE === "1";
 const RENDERER_TARGET = resolveRendererTarget();
@@ -1462,16 +1463,21 @@ function registerMapDirectInvokers(): void {
         runExportQueue: (jobs, executor, opts) => batchExport.runExportQueue(jobs, executor, opts),
         mapTemplatesEnabled: () => featureFlags.RUNTIME_FLAGS.mapTemplates,
         runOdCommuterTemplate: (options) => mapTemplate.runOdCommuterTemplate(options as Parameters<typeof mapTemplate.runOdCommuterTemplate>[0]),
-        // 批量导出执行器复用 B4 内置浏览器底座（server L5293-5296 动态 import builtin-browser 同域）；
-        // 导出视图 URL 指向 sidecar（迁移期旧 client 仍由 sidecar 服务，等价 server PORT 语义）。
+        // 批量导出执行器走离屏导出窗口（R6-3）：offscreen BrowserWindow 加载 renderer
+        // 导出路由（?export=map），数据面经 opDesktop 桥走 op:map:* 通道、资产面走
+        // oaw-data://，不再依赖 sidecar 旧 client；会话键仍为 builtin-browser 纯键拼接。
         browserSessionKey: (clientId, threadId) => builtinBrowser.browserSessionKey(clientId, threadId),
-        browserOpen: (key, url) => builtinBrowser.browserOpen(key, url),
-        browserResize: (key, width, height) => builtinBrowser.browserResize(key, width, height),
-        browserWaitForExpression: (key, expression, opts) => builtinBrowser.browserWaitForExpression(key, expression, opts),
-        browserEvaluateValue: (key, expression) => builtinBrowser.browserEvaluateValue(key, expression),
-        browserPrintToPdf: (key) => builtinBrowser.browserPrintToPdf(key),
-        browserScreenshot: (key, options) => builtinBrowser.browserScreenshot(key, options),
+        browserOpen: (key, url) => exportView.openExportView(key, url, { preload: PRELOAD_PATH }),
+        browserResize: (key, width, height) => exportView.resizeExportView(key, width, height),
+        browserWaitForExpression: (key, expression, opts) => exportView.waitForExportExpression(key, expression, opts),
+        browserEvaluateValue: (key, expression) => exportView.evaluateExportValue(key, expression),
+        browserPrintToPdf: (key) => exportView.printExportViewPdf(key),
+        browserScreenshot: (key, options) => exportView.screenshotExportView(key, options),
         exportViewPort: () => server?.port ?? 0,
+        exportViewUrl: (job) => exportView.buildExportViewPageUrl(job, {
+          devUrl: process.env.ELECTRON_RENDERER_URL,
+          appIndex: path.join(__dirname, "../renderer/app/index.html")
+        }),
         ensureDir: (dir) => fs.mkdirSync(dir, { recursive: true }),
         writeFile: (file, data) => fs.writeFileSync(file, data),
         // ---- F5-5 style.json 动态读通道 deps ----
@@ -1798,6 +1804,7 @@ function reportFatal(message: string, logTail?: string[]): void {
 async function shutdown(exitCode: number): Promise<void> {
   if (quitting) return;
   quitting = true;
+  exportView.closeAllExportViews();
   try { await server?.stop(); } catch { /* 忽略停止期错误 */ }
   app.exit(exitCode);
 }

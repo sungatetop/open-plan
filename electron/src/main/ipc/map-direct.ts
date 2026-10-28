@@ -59,10 +59,10 @@
  *   - op:map:template:od-commuter（L5383-5401，GIS G5-v1）：flag OAW_MAP_TEMPLATES 门 404；
  *     runOdCommuterTemplate → { ok:true, ...result }；错误 /越界|不存在|缺少|不是 OD|没有/
  *     → 400 否则 500，信封 { ok:false, error }（与 report 的 { error } 分叉，忠实转录）；
- *   - executeExportJob（L5293-5310 路由内联执行器转录）：专用浏览器会话（map-export|batch）
- *     → /?export=map 导出视图（URL 由 sidecar 提供旧 client 渲染，迁移期等价；桌面
- *     导出窗口形态留 F5-7 决策）→ 视口 → 45s 轮询就绪 → 页面错误探测 → PNG 截图/
- *     printToPDF → 落工作区 地图导出/（路径越界拒绝）；browser/fs/端口经 deps 注入。
+ *   - executeExportJob（L5293-5310 路由内联执行器转录）：专用会话（map-export|batch）
+ *     → 导出视图（R6-3 起离屏 BrowserWindow 加载 renderer 导出路由，deps 接线见
+ *     index.ts/export-view-window.ts）→ 视口 → 45s 轮询就绪 → 页面错误探测 → PNG 截图/
+ *     printToPDF → 落工作区 地图导出/（路径越界拒绝）；browser/fs/URL 经 deps 注入。
  *
  * 死路由声明（不登记通道）：/api/bus/*（routes/stops/od/stats）在 server/index.mjs
  * 有三段注册（L5720/L5860/L6113），但全部位于 L5714 `app.use("/api", 404)`
@@ -226,8 +226,12 @@ export interface MapDirectDeps {
   browserPrintToPdf: (key: string) => Promise<{ base64?: string }>;
   /** 截图（builtin-browser browserScreenshot） */
   browserScreenshot: (key: string, options?: { format?: string }) => Promise<{ base64?: string }>;
-  /** 导出视图基端口（sidecar PORT 运行时取值——装配期 server 可能未就绪，闭包读 Latest 值） */
+  /** 导出视图基端口（F5-5 style 兜底 origin 用——装配期 server 可能未就绪，闭包读 Latest 值；
+   * R6-4 随兜底逻辑退役收敛） */
   exportViewPort: () => number;
+  /** 导出视图页面 URL（R6-3 离屏窗口形态：renderer 导出路由 app/index.html?export=map，
+   * dev 走 vite devUrl、打包走 file:// 产物；接线见 index.ts → export-view-window.ts） */
+  exportViewUrl: (job: Record<string, any>) => string;
   /** 建目录（fs.mkdirSync recursive 的注入面） */
   ensureDir: (dir: string) => void;
   /** 写文件（fs.writeFileSync 的注入面） */
@@ -828,21 +832,13 @@ const mapExportBatches = new Map<string, MapExportBatchRecord>();
 let mapExportActiveBatch: string | null = null;
 let mapExportSeq = 0;
 
-/** server L5287-5291 同款导出视图 URL：/?export=map 由 sidecar 旧 client 渲染（迁移期等价；
- * 桌面导出窗口形态留 F5-7 决策）。job.project/title 缺省时 URLSearchParams 产生 "undefined"
- * 字面——与 server 同款行为，不修。 */
-function buildExportViewUrl(job: Record<string, any>, port: number): string {
-  const qs = new URLSearchParams({ export: "map", project: job.project, title: job.title });
-  if (job.layers?.length) qs.set("layers", job.layers.join(","));
-  return `http://127.0.0.1:${port}/?${qs.toString()}`;
-}
-
-/** server L5293-5310 路由内联执行器逐点转录：专用浏览器会话（map-export|batch，独立实例
- * 不干扰用户面板）→ /?export=map → 视口 → 45s 轮询就绪 → 页面错误探测 → PNG 截图 /
- * printToPDF → 产物落工作区 地图导出/（路径越界拒绝）。browser/fs 经 deps 注入。 */
+/** server L5293-5310 路由内联执行器逐点转录：专用会话（map-export|batch，独立实例
+ * 不干扰用户面板）→ 导出视图（R6-3 起离屏 BrowserWindow，URL 由 deps.exportViewUrl
+ * 构建）→ 视口 → 45s 轮询就绪 → 页面错误探测 → PNG 截图 / printToPDF → 产物落工作区
+ * 地图导出/（路径越界拒绝）。browser/fs/URL 经 deps 注入。 */
 async function executeExportJob(job: Record<string, any>, workspace: string, deps: MapDirectDeps): Promise<{ file: string; bytes: number }> {
   const key = deps.browserSessionKey("map-export", "batch");
-  await deps.browserOpen(key, buildExportViewUrl(job, deps.exportViewPort()));
+  await deps.browserOpen(key, deps.exportViewUrl(job));
   await deps.browserResize(key, job.width, job.height);
   await deps.browserWaitForExpression(key, "window.__OAW_EXPORT_READY === true", { timeoutMs: 45000 });
   const pageError = await deps.browserEvaluateValue(key, "window.__OAW_EXPORT_ERROR || ''").catch(() => "");

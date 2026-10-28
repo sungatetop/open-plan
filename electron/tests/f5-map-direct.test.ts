@@ -118,6 +118,7 @@ function makeDeps(overrides: Partial<MapModule.MapDirectDeps> = {}) {
     browserPrintToPdf: vi.fn(async () => ({ base64: "UERG" })),
     browserScreenshot: vi.fn(async () => ({ base64: "UE5H" })),
     exportViewPort: vi.fn(() => 3002),
+    exportViewUrl: vi.fn((job: Record<string, any>) => `oaw-export://view/?export=map&project=${job?.project}`),
     ensureDir: vi.fn(() => undefined),
     writeFile: vi.fn(() => undefined),
     ...overrides
@@ -853,7 +854,8 @@ describe("F5-3 executeExportJob 内联转录（L5293-5310）", () => {
       expect((st as { data: { status: string } }).data.status).toBe("completed");
     });
     expect(deps.browserSessionKey).toHaveBeenCalledWith("map-export", "batch");
-    expect(deps.browserOpen).toHaveBeenCalledWith("map-export|batch", expect.stringContaining("http://127.0.0.1:3002/?export=map"));
+    expect(deps.exportViewUrl).toHaveBeenCalledWith(expect.objectContaining({ project: "p1", width: 1920, height: 1080 }));
+    expect(deps.browserOpen).toHaveBeenCalledWith("map-export|batch", "oaw-export://view/?export=map&project=p1");
     expect(deps.browserResize).toHaveBeenCalledWith("map-export|batch", 1920, 1080);
     expect(deps.browserWaitForExpression).toHaveBeenCalledWith("map-export|batch", "window.__OAW_EXPORT_READY === true", { timeoutMs: 45000 });
     expect(deps.browserEvaluateValue).toHaveBeenCalledWith("map-export|batch", "window.__OAW_EXPORT_ERROR || ''");
