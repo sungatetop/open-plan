@@ -8,6 +8,7 @@ import {
 } from "../api/client-api";
 import { sortFiles } from "../lib/FileSorting";
 import { artifactTypeInfo } from "../lib/artifact-types";
+import { flag } from "../lib/feature-flags";
 import {
   RUNNING_SESSION_STATUSES, sameWorkspacePath, samePath, formatTime, shortenCwd, formatSize
 } from "../lib/session-list";
@@ -95,6 +96,7 @@ interface SidebarProps {
   onOpenTasks?: () => void;
   onOpenMcp?: () => void;
   onOpenPiPlugins?: () => void;
+  onOpenWorkflows?: () => void;
   onOpenSettings?: (section?: string) => void;
   onOpenArtifacts?: () => void;
   onBeforeOpenModal?: () => void;
@@ -165,7 +167,7 @@ export interface SessionRecordPlus extends SessionRecord {
 interface ContextMenuState { x: number; y: number; items: ContextMenuItem[] }
 
 export default function SessionSidebar({
-  files, currentName, onOpenFile, onRefreshFiles, onUploaded, projects = [], currentProjectId = "", onProjectChange, onProjectUpdated, models = [], clientId = "", threadId = "", activeModel = "", onModelChange, workspaces = [], currentWorkspace = "", onWorkspaceChange, currentDir = "", onDirChange, onAtMention, sessions = [], unreadByThread = {}, onSelectSession, onRefreshSessions, onDeleteSession, onBatchDeleteSession, onRenameSession, onForkSession, onPinSession, onFreezeSession, onOpenSkills, onOpenAgents, onOpenKnowledgeBase, onOpenTemplates, onOpenMap, onOpenTasks, onOpenMcp, onOpenPiPlugins, onOpenSettings, onOpenArtifacts, onBeforeOpenModal, onOpenCommandPalette, onToggleTheme, theme = "dark", loadStatus = {}, changedFiles
+  files, currentName, onOpenFile, onRefreshFiles, onUploaded, projects = [], currentProjectId = "", onProjectChange, onProjectUpdated, models = [], clientId = "", threadId = "", activeModel = "", onModelChange, workspaces = [], currentWorkspace = "", onWorkspaceChange, currentDir = "", onDirChange, onAtMention, sessions = [], unreadByThread = {}, onSelectSession, onRefreshSessions, onDeleteSession, onBatchDeleteSession, onRenameSession, onForkSession, onPinSession, onFreezeSession, onOpenSkills, onOpenAgents, onOpenKnowledgeBase, onOpenTemplates, onOpenMap, onOpenTasks, onOpenMcp, onOpenPiPlugins, onOpenWorkflows, onOpenSettings, onOpenArtifacts, onBeforeOpenModal, onOpenCommandPalette, onToggleTheme, theme = "dark", loadStatus = {}, changedFiles
 }: SidebarProps) {
   const changedFilesSet: Set<string> = changedFiles ?? new Set<string>();
   const fileRef = useRef<HTMLInputElement | null>(null);
@@ -750,6 +752,10 @@ export default function SessionSidebar({
           <button onClick={() => onOpenTasks?.()}><Icon name="list" size={16} /><span><strong>任务中心</strong><small>并行任务与历史</small></span></button>
           <button onClick={() => onOpenMcp?.()}><Icon name="plug" size={16} /><span><strong>MCP</strong><small>外部工具与服务</small></span></button>
           <button onClick={() => onOpenPiPlugins?.()}><Icon name="package" size={16} /><span><strong>Pi 插件</strong><small>官方目录与扩展</small></span></button>
+          {/* F6-1：领域工作流（App.jsx 1873-1883 flag 门控语义的桌面等价，默认关零影响） */}
+          {flag("domainWorkflows") && onOpenWorkflows && (
+            <button onClick={() => onOpenWorkflows?.()}><Icon name="flow" size={16} /><span><strong>工作流</strong><small>领域工作流与预检</small></span></button>
+          )}
         </div>
       )}
 

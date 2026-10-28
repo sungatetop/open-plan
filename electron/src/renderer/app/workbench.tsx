@@ -9,6 +9,11 @@ import DocViewer, { type DocRecord } from "../components/DocViewer";
 import ChatPanel, { type ChatPanelImperativeHandle } from "../features/chat/panel";
 import MapPanel, { type MapBridgeHandlers } from "../features/map/map-panel";
 import KnowledgeBase from "../features/kb/knowledge-base";
+import SkillsManager from "../features/skills/skills-manager";
+import AgentMarket from "../features/agents/agent-market";
+import IntegrationsCenter from "../features/integrations/integrations-center";
+import TemplateLibrary from "../features/templates/template-library";
+import WorkflowLauncher from "../features/workflow/workflow-launcher";
 import TaskCenter from "../features/tasks/task-center";
 import WorkProductPanel from "../features/tasks/work-product-panel";
 import type { SessionRecord } from "../components/SessionList";
@@ -325,6 +330,13 @@ export default function Workbench(): React.ReactElement {
     const marker = isDir ? rel + "/" : rel;
     insertChatText(`@${marker}`);
   }, [insertChatText]);
+
+  // Skills/知识库的只读 Chat 转 Agent（App.jsx 418-421 转录）：关闭入口后把
+  // 问题、引用和上下文交给主 ChatPanel，用户确认后再发送，避免检索入口隐式产生写入。
+  const promoteToAgent = useCallback((payload: Record<string, unknown>) => {
+    setActiveModule(null);
+    window.setTimeout(() => chatInputRef.current?.startAgentTask?.(payload), 120);
+  }, []);
 
   useEffect(() => {
     currentThreadRef.current = threadId;
@@ -1269,6 +1281,69 @@ export default function Workbench(): React.ReactElement {
             }}
           />
         )}
+        {/* F6-1 外围·业务面板（App.jsx 1973-2009 / 1548-1563 转录）：Skills 技能广场 /
+            智能体广场 / 集成中心（MCP+Pi 插件双入口同组件）/ 模板库 / 领域工作流。
+            旧版 SkillsManager/AgentMarket 为 open+fullPage 弹层、模板库为 .tpl fixed
+            全屏层、领域工作流为右栏画布页签（flag domainWorkflows 门控）；桌面版统一
+            挂载为模块视图：前四者组件自带全屏层（module-view/.tpl，与 kb 同型，主
+            ChatPanel 不卸载），领域工作流入口在侧栏能力页（flag 门控），挂载补
+            module-view 头部（App.jsx 1901-1902 closeWorkflows 的桌面等价）。onExit 的
+            @ 标记经 insertChatText 同步直达输入框（其内置 pending 队列兜底）。 */}
+        {activeModule === "skills" && (
+          <SkillsManager
+            open
+            fullPage
+            onClose={() => setActiveModule(null)}
+            clientId={clientId}
+            workspace={currentWorkspace}
+            project={currentProject as unknown as Record<string, unknown> | null}
+            models={models as unknown as ChatModel[]}
+            defaultModel={defaultModel}
+            onPromoteToAgent={promoteToAgent}
+            onAtMention={(value) => insertChatText(String(value || "").startsWith("@") ? value : `@${value}`)}
+          />
+        )}
+        {activeModule === "agents" && (
+          <AgentMarket
+            open
+            fullPage
+            onClose={() => setActiveModule(null)}
+            onAtMention={insertChatText}
+            onPromoteToAgent={promoteToAgent}
+            workspace={currentWorkspace}
+          />
+        )}
+        {(activeModule === "mcp" || activeModule === "piPlugins") && (
+          <IntegrationsCenter
+            kind={activeModule === "mcp" ? "mcp" : "piPlugins"}
+            open
+            onClose={() => setActiveModule(null)}
+          />
+        )}
+        {activeModule === "templates" && (
+          <TemplateLibrary
+            onExit={(marks) => {
+              // 返回时统一把累积的 @标记 插入对话（支持一次多个；App.jsx 1551-1558 转录）
+              setActiveModule(null);
+              if (marks?.length) {
+                for (const m of marks) insertChatText(m);
+              }
+            }}
+            onOpenFile={(name) => { markPreviewManual(); setActiveModule(null); void openDocFile(name); }}
+            onAtMention={insertChatText}
+          />
+        )}
+        {activeModule === "workflows" && (
+          <div className="module-view">
+            <div className="module-head">
+              <button className="module-back" onClick={() => setActiveModule(null)} title="返回对话"><Icon name="back" size={15} /></button>
+              <div className="module-brand-heading"><Logo size={22} /><span><h2>工作流</h2><p>领域工作流：阶段 / 工具白名单 / 预算 / 产物契约与预检试算</p></span></div>
+            </div>
+            <div className="module-body module-workflows-body">
+              <WorkflowLauncher onClose={() => setActiveModule(null)} />
+            </div>
+          </div>
+        )}
         {/* F5-7 地图模块（App.jsx 1565-1615 逐点转录）：MapPanel 全屏（hideChat 分支，
             不内嵌 ChatPanel），共享 ChatPanel 常驻 .app-chat-slot.map，右缘 Resizer 调宽。
             桥接语义与旧版一致：onFileChanged/onAgentEnd 双路（工作台状态 + mapBridge），
@@ -1397,6 +1472,12 @@ export default function Workbench(): React.ReactElement {
               onFreezeSession={handleFreezeSession}
               onBeforeOpenModal={() => setActiveModule(null)}
               onOpenKnowledgeBase={() => setActiveModule("knowledge")}
+              onOpenSkills={() => setActiveModule("skills")}
+              onOpenAgents={() => setActiveModule("agents")}
+              onOpenTemplates={() => setActiveModule("templates")}
+              onOpenMcp={() => setActiveModule("mcp")}
+              onOpenPiPlugins={() => setActiveModule("piPlugins")}
+              onOpenWorkflows={() => setActiveModule("workflows")}
               onOpenMap={() => setActiveModule("map")}
               onToggleTheme={toggleTheme}
               theme={theme}
