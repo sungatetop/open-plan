@@ -200,6 +200,11 @@ export const DESKTOP_CHANNELS = {
   "op:map:m3:station-heatmap": { method: "GET", path: "/api/m3/station-heatmap" },
   "op:map:m3:od-lines": { method: "GET", path: "/api/m3/od-lines" },
   "op:map:m3:network-stats": { method: "GET", path: "/api/m3/network-stats" },
+  // ---- 地图域报告导出模板族（F5-3：map-direct 直调；GIS G8 报告 / G7 批量导出 / G5-v1 OD 通勤模板） ----
+  "op:map:report": { method: "POST", path: "/api/map/report" },
+  "op:map:export:batch:start": { method: "POST", path: "/api/map/export/batch" },
+  "op:map:export:batch:status": { method: "GET", path: "/api/map/export/batch" },
+  "op:map:template:od-commuter": { method: "POST", path: "/api/map/template/od-commuter" },
 
   // ---- 项目族（SettingsPanel 项目管理分节；批7b：App 项目列表） ----
   "op:projects:list": { method: "GET", path: "/api/projects" },
@@ -1039,6 +1044,15 @@ export type MapMultiIsochroneRequest = { body?: { location?: unknown; mode?: str
 export type MapDemoAnalysisRequest = { query?: { analysis?: string; region?: string; project?: string; count?: string | number } };
 export type MapCambodiaOdRequest = { query?: { minFlow?: string | number } };
 export type MapM3Request = Record<string, never>;
+/** F5-3 报告导出模板族（GIS G8/G7/G5-v1，server L5259-5401）。 */
+export type MapReportRequest = { body?: { workspace?: string; project?: unknown; title?: unknown; sections?: unknown; images?: unknown; fileName?: unknown } };
+export type MapReportResponse = { ok: true; file: string; fileName: string; blocks: number; images: number };
+export type MapExportBatchStartRequest = { body?: { workspace?: string; projects?: unknown; layerSets?: unknown; sizes?: unknown; formats?: unknown; title?: unknown } };
+export type MapExportBatchStartResponse = { ok: true; batchId: string; total: number; skipped: unknown; jobs: Array<Record<string, unknown>> };
+export type MapExportBatchStatusRequest = { query?: { id?: string } };
+export type MapExportBatchStatusResponse = { ok: true; id: string; status: string; total: number; skipped: unknown; summary: unknown; error: string; createdAt: string; finishedAt: string };
+export type MapTemplateOdCommuterRequest = { body?: { workspace?: string; path?: unknown; title?: unknown; bands?: unknown; project?: unknown; fileName?: unknown } };
+export type MapTemplateOdCommuterResponse = { ok: true } & Record<string, unknown>;
 
 // ---- 项目族 ----
 
@@ -1247,6 +1261,10 @@ export interface DesktopChannelProtocol {
   "op:map:m3:station-heatmap": { request: MapM3Request; response: Record<string, unknown> };
   "op:map:m3:od-lines": { request: MapM3Request; response: Record<string, unknown> };
   "op:map:m3:network-stats": { request: MapM3Request; response: Record<string, unknown> };
+  "op:map:report": { request: MapReportRequest; response: MapReportResponse };
+  "op:map:export:batch:start": { request: MapExportBatchStartRequest; response: MapExportBatchStartResponse };
+  "op:map:export:batch:status": { request: MapExportBatchStatusRequest; response: MapExportBatchStatusResponse };
+  "op:map:template:od-commuter": { request: MapTemplateOdCommuterRequest; response: MapTemplateOdCommuterResponse };
 
   "op:projects:list": { request: ProjectListRequest; response: ProjectListResponse };
   "op:projects:create": { request: ProjectCreateRequest; response: Record<string, unknown> };
