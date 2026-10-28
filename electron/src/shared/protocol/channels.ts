@@ -218,6 +218,9 @@ export const DESKTOP_CHANNELS = {
   "op:map:export:batch:start": { method: "POST", path: "/api/map/export/batch" },
   "op:map:export:batch:status": { method: "GET", path: "/api/map/export/batch" },
   "op:map:template:od-commuter": { method: "POST", path: "/api/map/template/od-commuter" },
+  // F5-5：style.json 动态读通道（server L592-608 正则路由：hydrate 底图 + 相对瓦片 URL 绝对化；
+  // 桌面形态扩展 glyphs/data 一并绝对化到 sidecar origin，渲染层与 sidecar 不同源）
+  "op:map:data:style": { method: "GET", path: "/api/map/data/:project/style.json" },
 
   // ---- 项目族（SettingsPanel 项目管理分节；批7b：App 项目列表） ----
   "op:projects:list": { method: "GET", path: "/api/projects" },
@@ -1028,6 +1031,10 @@ export type MapRebuildRequest = { body?: { name?: string; layerIds?: string[] | 
 export type MapRebuildResponse = { ok?: boolean; layers?: unknown; error?: string };
 export type MapLayerDeleteRequest = { body?: { name?: string; layerId?: string } };
 export type MapLayerGetRequest = { query?: { name?: string; layer?: string } };
+/** F5-5：style.json 动态读（server L592 正则路由 :project 单段参数）。 */
+export type MapDataStyleRequest = { query?: { project?: string } };
+/** style 动态响应 → JSON 文本载数据（旧版 fetch text → styleHash 消费形态不变）。 */
+export type MapDataStyleResponse = { text?: string; error?: string };
 export type MapIsochroneRequest = { body?: { location?: string; mode?: string; range?: number; rangeType?: string } };
 export type MapIsochroneResponse = { ok?: boolean; center?: unknown; cost?: unknown; polygons?: unknown; error?: string };
 export type MapRouteRequest = { body?: { from?: string; to?: string; mode?: string; provider?: string } };
@@ -1290,6 +1297,8 @@ export interface DesktopChannelProtocol {
   "op:map:project:layer:get": { request: MapProjectLayerNamedRequest; response: Record<string, unknown> };
   "op:map:project:layer:delete": { request: MapProjectLayerNamedRequest; response: Record<string, unknown> };
   "op:map:project:isochrone": { request: MapProjectIsochroneRequest; response: Record<string, unknown> };
+  // ---- 地图域 style.json 动态读通道（F5-5） ----
+  "op:map:data:style": { request: MapDataStyleRequest; response: MapDataStyleResponse };
 
   // ---- 地图域分析可视化族（F5-2） ----
   "op:map:visual:sources": { request: MapVisualSourcesRequest; response: MapVisualSourcesResponse };

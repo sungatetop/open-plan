@@ -458,6 +458,24 @@ export const mapSettingsSave = (basemaps: unknown): Promise<ChannelResponse<"op:
   invokeOrThrow("op:map:settings:save", { body: { basemaps } });
 
 // ============================================================================
+// 地图项目/图层族（F5-5 画布层消费端点；对齐 client/src/api.js 同名函数语义）
+// ============================================================================
+
+/** mapImportLayer（MapViewer 导入 GeoJSON/SHP）：成功返回 { ok, tiles, ... }。 */
+export const mapImportLayer = (name: string, layerId: string, geojson: unknown): Promise<ChannelResponse<"op:map:import">> =>
+  invokeOrThrow("op:map:import", { body: { name, layerId, geojson } });
+
+/** mapGetLayer（AttributeTable 属性表 / MapViewer 边界标注数据）：返回 { features, ... }。 */
+export const mapGetLayer = (name: string, layerId: string): Promise<ChannelResponse<"op:map:layer:get">> =>
+  invokeOrThrow("op:map:layer:get", { query: { name, layer: layerId } });
+
+/** style.json 动态读文本（MapViewer 加载/轮询热更：旧 fetch(STYLE_PATH).text() → IPC 通道）。 */
+export const mapDataStyleText = async (project: string): Promise<string> => {
+  const r = await invokeOrThrow("op:map:data:style", { query: { project } });
+  return String((r as { text?: string }).text ?? "");
+};
+
+// ============================================================================
 // 项目族
 // ============================================================================
 
