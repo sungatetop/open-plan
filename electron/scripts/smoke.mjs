@@ -1,7 +1,7 @@
 /**
  * 桌面端冒烟：以 OP_DESKTOP_SMOKE=1 启动 Electron 应用。
- * 默认（legacy-client）：主进程用自带 Node 拉起旧 server，/api/status 就绪后输出 SMOKE_OK 退出。
- * OP_DESKTOP_NEW_UI=1（app）：就绪后加载新 UI 应用页，断言 React 挂载后输出 SMOKE_NEW_UI_OK 退出。
+ * R6-1 起新 UI（app 页）为默认形态：主进程拉起本地服务，就绪并完成 agent 域
+ * 装配（AGENT_DOMAIN_ASSEMBLED）后加载 app 页，断言 React 挂载输出 SMOKE_NEW_UI_OK 退出。
  * 断言输出包含对应锚点且进程退出码为 0。
  */
 import { spawn } from "node:child_process";
@@ -15,8 +15,7 @@ const require = createRequire(import.meta.url);
 const electronBin = require("electron");
 const here = path.dirname(fileURLToPath(import.meta.url));
 
-const newUi = process.env.OP_DESKTOP_NEW_UI === "1";
-const expectedAnchor = newUi ? "SMOKE_NEW_UI_OK" : "SMOKE_OK";
+const expectedAnchor = "SMOKE_NEW_UI_OK";
 const failAnchors = ["SMOKE_FAIL", "SMOKE_NEW_UI_FAIL"];
 
 const timeoutMs = Number(process.env.SMOKE_TIMEOUT_MS || 180000);

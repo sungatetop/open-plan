@@ -109,6 +109,14 @@ window.fetch = (async (input: unknown) => {
   return { ok: false, status: 404, json: async () => ({}) } as unknown as Response;
 }) as typeof fetch;
 
+// 新侧假桥（R6-1 起 TS feature-flags 快照走 op:status:get 通道；statusReply 取当前值）
+(window as unknown as Record<string, unknown>).opDesktop = {
+  invoke: async (channel: string) =>
+    channel === "op:status:get"
+      ? { ok: true, status: 200, data: statusReply }
+      : { ok: false, status: 404, data: {} }
+};
+
 /* ------------------------------ 双侧模块（stub 后加载） ------------------------------ */
 
 const TsMachine = await import("../src/renderer/features/chat/event-machine");

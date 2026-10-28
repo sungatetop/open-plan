@@ -1,11 +1,11 @@
 /**
  * 前端运行开关（与服务端 feature-flags.mjs 对应的只读消费端）。
  *
- * 服务端经 /api/status 的 runtimeFlags 快照下发（评审 R8 管道）；
+ * 快照经 op:status:get 通道下发（评审 R8 管道；BRD-009 架构性等价替换：
+ * 旧内联 fetch("/api/status") → IPC 通道，client/src/feature-flags.js 仍走 HTTP 对拍）。
  * 快照到达前所有开关按「关闭」处理 —— 关闭即基线行为，因此早期渲染天然安全。
- *
- * 与 client/src/feature-flags.js 逐函数等价（tests/f1-feature-flags-parity.test.ts 对拍强制）。
  */
+import { getStatus } from "../api/client-api";
 
 let snapshot: Record<string, unknown> = {};
 
@@ -15,9 +15,10 @@ export const flagsReady: Promise<void> = new Promise((resolve) => { flagsReadyRe
 
 export async function initRuntimeFlags(): Promise<void> {
   try {
-    const r = await fetch("/api/status", { cache: "no-store" }).then((x) => x.json());
-    if (r && typeof r === "object" && r.runtimeFlags && typeof r.runtimeFlags === "object") {
-      snapshot = r.runtimeFlags;
+    const status = await getStatus();
+    const flags: unknown = status.runtimeFlags;
+    if (flags && typeof flags === "object") {
+      snapshot = flags as Record<string, unknown>;
     }
   } catch {
     // 拉取失败保持全关 = 基线行为，无需降级逻辑

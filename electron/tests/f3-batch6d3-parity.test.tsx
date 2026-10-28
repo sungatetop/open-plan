@@ -147,6 +147,8 @@ let runsListInvokeReply: (() => InvokeResultLike) | null = null;
 let promptInvokeReply: (() => InvokeResultLike) | null = null;
 
 function defaultInvokeReply(channel: string): InvokeResultLike {
+  // R6-1 起 TS feature-flags 快照走 op:status:get 通道（与旧侧 /api/status 同源 statusReply）
+  if (channel === "op:status:get") return { ok: true, status: 200, data: statusReply };
   if (channel === "op:agent:prompt" && promptInvokeReply) return promptInvokeReply();
   if (channel === "op:agent:prompt") return { ok: false, status: 404, data: { error: "请求失败" } };
   if (channel === "op:agent:abort") return { ok: true, status: 200, data: { cancelled: true } };

@@ -194,7 +194,7 @@ function installSidecarCorsRelay(): void {
   );
 }
 
-/** OP_DESKTOP_NEW_UI=1 冒烟：加载 app 页并断言 React 真实挂载（data-app-ready）。 */
+/** 冒烟（R6-1 起默认形态即 app）：加载 app 页并断言 React 真实挂载（data-app-ready）。 */
 async function smokeNewUi(): Promise<void> {
   const win = mainWindow;
   if (!win) {
@@ -1754,9 +1754,11 @@ async function bootstrap(): Promise<void> {
           void shutdown(0);
           return;
         }
-        if (AGENT_DOMAIN_ENABLED) assembleAgentDomainInBackground();
+        if (AGENT_DOMAIN_ENABLED && !SMOKE) assembleAgentDomainInBackground();
         if (RENDERER_TARGET === "app") {
           if (SMOKE) {
+            // B2 装配层冒烟：默认形态（app，R6-1 门控退役）下同样先装配，成功后才验 React 挂载
+            if (AGENT_DOMAIN_ENABLED && !(await assembleAgentDomainForSmoke())) return;
             void smokeNewUi();
             return;
           }

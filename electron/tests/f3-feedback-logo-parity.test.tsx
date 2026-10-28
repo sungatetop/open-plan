@@ -151,6 +151,13 @@ describe("Feedback TS 版与 client Feedback.jsx 等价（feedbackV2 开：toast
     window.alert = (msg?: string) => { alerts.push(String(msg)); };
     window.confirm = (msg?: string) => { confirmCalls.push(String(msg)); return true; };
     // 双侧 flag 模块各自拉同一份 runtimeFlags 快照
+    // （R6-1 起 TS 侧走 op:status:get 通道假桥，client 侧仍走 fetch）
+    (window as unknown as Record<string, unknown>).opDesktop = {
+      invoke: async (channel: string) =>
+        channel === "op:status:get"
+          ? { ok: true, status: 200, data: { runtimeFlags: { feedbackV2: true } } }
+          : { ok: false, status: 404, data: {} }
+    };
     vi.stubGlobal("fetch", vi.fn(async () => ({ json: async () => ({ runtimeFlags: { feedbackV2: true } }) })) as unknown as typeof fetch);
     await tsFlags.initRuntimeFlags();
     await clientFlags.initRuntimeFlags();
@@ -160,6 +167,7 @@ describe("Feedback TS 版与 client Feedback.jsx 等价（feedbackV2 开：toast
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    delete (window as unknown as Record<string, unknown>).opDesktop;
     globalThis.fetch = originalFetch;
     window.alert = originalAlert;
     window.confirm = originalConfirm;
