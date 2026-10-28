@@ -706,10 +706,14 @@ export default function Workbench(): React.ReactElement {
     }
   }, [clientId, threadId, currentWorkspace, refreshFiles]);
 
-  // 点击文档 tab 切换（App.jsx 1944 onSwitchTab 直传）。
+  // O-P2：用户主动打开/切换预览时记录时间戳，autoTab 10s 内不抢用户主动权（L1025 消费）。
+  const markPreviewManual = useCallback(() => { previewTabManualAtRef.current = Date.now(); }, []);
+
+  // 点击文档 tab 切换（App.jsx 1944 onSwitchTab 直传；页签切换视为用户主动操作，O-P2 记时戳）。
   const switchDocTab = useCallback((tabId: string) => {
+    markPreviewManual();
     setDocActiveTab(tabId);
-  }, []);
+  }, [markPreviewManual]);
 
   // 关闭文档 tab（App.jsx 909-926 closeTab 逐行转录；IPC 形态以代际递增替代 abort）。
   const closeDocTab = useCallback((tabId: string) => {
@@ -829,11 +833,14 @@ export default function Workbench(): React.ReactElement {
       // 从消息里解析会话关联的文件，尝试打开（历史文本先显示，关联文档后台打开，
       // 不阻塞会话切换；文档预览随 F4-3 激活（openDocFile）。
       const fileMatch = findSessionFileMatch(msgs);
-      if (fileMatch) void openDocFile(fileMatch.trim(), conversationId, resumedWorkspace || undefined);
+      if (fileMatch) {
+        markPreviewManual(); // 用户主动选择会话触发的文件打开
+        void openDocFile(fileMatch.trim(), conversationId, resumedWorkspace || undefined);
+      }
     } catch (e) {
       if (loadSeq === sessionLoadSeqRef.current) notifyError("加载会话失败: " + (e as Error).message);
     }
-  }, [clientId, currentWorkspace, openDocFile]);
+  }, [clientId, currentWorkspace, markPreviewManual, openDocFile]);
 
   // 重试恢复当前历史会话的 Agent：成功后才允许继续对话。
   const retrySessionResume = useCallback(async (silentFlag?: unknown) => {
@@ -1186,7 +1193,7 @@ export default function Workbench(): React.ReactElement {
               <div className="module-brand-heading"><Logo size={22} /><span><h2>成果</h2><p>查看、验收、固定和回滚工作产物</p></span></div>
             </div>
             <div className="module-body module-artifacts-body">
-              <WorkProductPanel tab="artifacts" clientId={clientId} threadId={threadId} workspace={currentWorkspace} projectId={currentProject?.id || ""} currentSessionId={currentSessionId || ""} selectedRunId={changesRunId} artifactScope={artifactScope} onArtifactScopeChange={setArtifactScope} refreshToken={artifactVersion} onOpenFile={(name: string, thread?: string, cwd?: string) => { setActiveModule(null); void openDocFile(name, thread, cwd); }} />
+              <WorkProductPanel tab="artifacts" clientId={clientId} threadId={threadId} workspace={currentWorkspace} projectId={currentProject?.id || ""} currentSessionId={currentSessionId || ""} selectedRunId={changesRunId} artifactScope={artifactScope} onArtifactScopeChange={setArtifactScope} refreshToken={artifactVersion} onOpenFile={(name: string, thread?: string, cwd?: string) => { markPreviewManual(); setActiveModule(null); void openDocFile(name, thread, cwd); }} />
             </div>
           </div>
         )}
@@ -1197,7 +1204,7 @@ export default function Workbench(): React.ReactElement {
               <div className="module-brand-heading"><Logo size={22} /><span><h2>改动</h2><p>按 Run 归属查看本轮文件改动与内容差异</p></span></div>
             </div>
             <div className="module-body module-artifacts-body">
-              <WorkProductPanel tab="changes" clientId={clientId} threadId={threadId} workspace={currentWorkspace} projectId={currentProject?.id || ""} currentSessionId={currentSessionId || ""} selectedRunId={changesRunId} refreshToken={artifactVersion} onOpenFile={(name: string, thread?: string, cwd?: string) => { setActiveModule(null); void openDocFile(name, thread, cwd); }} />
+              <WorkProductPanel tab="changes" clientId={clientId} threadId={threadId} workspace={currentWorkspace} projectId={currentProject?.id || ""} currentSessionId={currentSessionId || ""} selectedRunId={changesRunId} refreshToken={artifactVersion} onOpenFile={(name: string, thread?: string, cwd?: string) => { markPreviewManual(); setActiveModule(null); void openDocFile(name, thread, cwd); }} />
             </div>
           </div>
         )}
@@ -1216,6 +1223,16 @@ export default function Workbench(): React.ReactElement {
                 onSwitchTab={switchDocTab}
                 onCloseTab={closeDocTab}
                 loading={docLoading}
+                onSendToAgent={insertChatText}
+                onInsertContext={(text: string) => {
+                  // 标注「发给 Agent」：优先写入 ChatPanel 输入框的选区上下文；
+                  // 输入框句柄不可用时降级为纯文本插入（保底不丢内容）。
+                  if (chatInputRef.current?.insertContext) {
+                    chatInputRef.current.insertContext(text);
+                    return;
+                  }
+                  insertChatText(`[选区上下文]\n${text}\n[/选区上下文]`);
+                }}
               />
             </div>
           </div>
@@ -1225,7 +1242,7 @@ export default function Workbench(): React.ReactElement {
             <SessionSidebar
               files={files}
               currentName=""
-              onOpenFile={(name) => openDocFile(name)}
+              onOpenFile={(name) => { markPreviewManual(); openDocFile(name); }}
               onRefreshFiles={() => void refreshFiles()}
               onUploaded={() => void refreshFiles()}
               projects={projects}
@@ -1406,7 +1423,7 @@ export default function Workbench(): React.ReactElement {
                 historyThreadId={historyThreadId}
                 historyWindow={historyWindow}
                 onNewSession={() => void handleNewSession()}
-                onOpenFile={(...args: unknown[]) => openDocFile(String(args[0] ?? ""))}
+                onOpenFile={(...args: unknown[]) => { markPreviewManual(); openDocFile(String(args[0] ?? "")); }}
                 referenceFiles={files.map((file) => currentDir ? currentDir + "/" + file.name : file.name)}
                 sessions={visibleSessions}
                 onSelectSession={handleSelectSession}

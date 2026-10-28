@@ -182,14 +182,21 @@ export const DESKTOP_CHANNELS = {
   "op:system:open": { method: "POST", path: "/api/system/open" },
   "op:system:reveal": { method: "POST", path: "/api/system/reveal" },
 
-  // ---- 文档预览族（F4-3：读路由；写路由随 F4-4） ----
+  // ---- 文档预览族（F4-3 读路由 + F4-4 写路由：annotations POST / raw-save / cells / edit / office / watch） ----
   "op:doc:open": { method: "GET", path: "/api/doc/:name" },
   "op:doc:raw": { method: "GET", path: "/api/doc/:name/raw" },
   "op:doc:text": { method: "GET", path: "/api/doc/:name/text" },
   "op:doc:html": { method: "GET", path: "/api/doc/:name/html" },
   "op:doc:comments": { method: "GET", path: "/api/doc/:name/comments" },
   "op:doc:outline": { method: "GET", path: "/api/doc/:name/outline" },
-  "op:doc:annotations": { method: "GET", path: "/api/doc/:name/annotations" }
+  "op:doc:annotations": { method: "GET", path: "/api/doc/:name/annotations" },
+  "op:doc:annotations-save": { method: "POST", path: "/api/doc/:name/annotations" },
+  "op:doc:raw-save": { method: "POST", path: "/api/doc/:name/raw-save" },
+  "op:doc:cells": { method: "POST", path: "/api/doc/:name/cells" },
+  "op:doc:edit": { method: "POST", path: "/api/doc/edit" },
+  "op:office:run": { method: "POST", path: "/api/office" },
+  "op:doc:watch": { method: "GET", path: "/api/doc/:name/watch" },
+  "op:doc:watch-stop": { method: "POST", path: "/api/doc/:name/watch/stop" }
 } as const satisfies Record<string, { method: HttpMethod; path: string }>;
 
 export type DesktopChannelId = keyof typeof DESKTOP_CHANNELS;
@@ -820,6 +827,37 @@ export type DocOutlineResponse = { outline?: Array<{ level: number; text: string
 export type DocAnnotationsRequest = { params: { name: string }; query?: DocQuery };
 export type DocAnnotationsResponse = { annotations?: Array<Record<string, unknown>>; identity?: DocFileIdentity; [key: string]: unknown };
 
+// ---- 文档写路由族（F4-4：POST 通道直调；行号锚点均指 server/index.mjs） ----
+
+/** 划词标注保存（POST /api/doc/:name/annotations，L537-549）：body.annotations 数组整体落盘。 */
+export type DocAnnotationsSaveRequest = { params: { name: string }; query?: DocQuery; body: { annotations: unknown[] } };
+export type DocAnnotationsSaveResponse = { ok?: boolean; workspace?: string; path?: string; status?: string; size?: number; count?: number; identity?: DocFileIdentity; [key: string]: unknown };
+
+/** docx 重打包保存（POST /api/doc/:name/raw-save，L1334-1352）：base64 解码后带 PK 头校验写回。 */
+export type DocRawSaveRequest = { params: { name: string }; query?: DocQuery; body: { base64: string } };
+export type DocRawSaveResponse = { ok?: boolean; workspace?: string; path?: string; status?: string; size?: number; identity?: DocFileIdentity; [key: string]: unknown };
+
+/** Excel 单元格保存（POST /api/doc/:name/cells，L1242-1262）：ref → batch set 命令。 */
+export type DocCellsRequest = { params: { name: string }; body: { sheet: string; cells: Array<{ ref: string; value: unknown }> } };
+export type DocCellsResponse = { ok?: boolean; result?: unknown; [key: string]: unknown };
+
+/** docx 富文本编辑代理（POST /api/doc/edit，L1303-1331）：props 全值 String 归一后 batch。 */
+export type DocEditRequest = { body: { file: string; commands: Array<Record<string, unknown>> } };
+export type DocEditResponse = { ok?: boolean; result?: unknown; [key: string]: unknown };
+
+/** officecli 通用直通（POST /api/office，L1265-1298）：白名单命令 + mutating 写锁。
+ * HTTP 形态响应含 requestId；IPC 信封无对应（语义差异在直调器模块头声明）。 */
+export type OfficeRunRequest = { body: { args: unknown[] } };
+export type OfficeRunResponse = { ok?: boolean; code?: number; stdout?: string; stderr?: string; json?: unknown; [key: string]: unknown };
+
+/** 实时预览 watch（GET /api/doc/:name/watch，L1218-1230）：HTTP 形态启动 officecli watch
+ * 子进程返回渲染服务 URL；IPC 形态为 fs.watchFile 变化检测 + op:doc-watch 事件推送
+ * （CSP 'self' 禁止 http iframe + 桌面端禁 HTTP 通道原则），响应不含 url/port。 */
+export type DocWatchRequest = { params: { name: string }; query?: DocQuery };
+export type DocWatchResponse = { ok?: boolean; identity?: DocFileIdentity; [key: string]: unknown };
+export type DocWatchStopRequest = { params: { name: string }; query?: DocQuery };
+export type DocWatchStopResponse = { ok?: boolean; [key: string]: unknown };
+
 // ---- 知识库族 ----
 
 export type KbIngestRequest = { body: { name: string } };
@@ -977,6 +1015,13 @@ export interface DesktopChannelProtocol {
   "op:doc:comments": { request: DocCommentsRequest; response: DocCommentsResponse };
   "op:doc:outline": { request: DocOutlineRequest; response: DocOutlineResponse };
   "op:doc:annotations": { request: DocAnnotationsRequest; response: DocAnnotationsResponse };
+  "op:doc:annotations-save": { request: DocAnnotationsSaveRequest; response: DocAnnotationsSaveResponse };
+  "op:doc:raw-save": { request: DocRawSaveRequest; response: DocRawSaveResponse };
+  "op:doc:cells": { request: DocCellsRequest; response: DocCellsResponse };
+  "op:doc:edit": { request: DocEditRequest; response: DocEditResponse };
+  "op:office:run": { request: OfficeRunRequest; response: OfficeRunResponse };
+  "op:doc:watch": { request: DocWatchRequest; response: DocWatchResponse };
+  "op:doc:watch-stop": { request: DocWatchStopRequest; response: DocWatchStopResponse };
 
   "op:kb:ingest": { request: KbIngestRequest; response: KbIngestResponse };
 
@@ -1048,6 +1093,9 @@ export type ChannelResponse<C extends DesktopChannelId> = DesktopChannelProtocol
 // ============================================================================
 
 export const EVENT_PUSH_CHANNEL = "op:event";
+
+/** doc 实时预览变化事件类型（F4-4：main/ipc/doc-watch.ts 推送；event-stream.ts 按非对话流帧过滤）。 */
+export const DOC_WATCH_EVENT_TYPE = "op:doc-watch";
 
 /**
  * 对话流事件信封（server/agent.mjs emit 的通道事件原样转发）。

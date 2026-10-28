@@ -581,6 +581,36 @@ export const fetchDocOutline = (name: string, options: DocQueryOptions = {}): Pr
 export const fetchDocAnnotations = (name: string, options: DocQueryOptions = {}): Promise<ChannelResponse<"op:doc:annotations">> =>
   invokeOrThrow("op:doc:annotations", { params: { name }, query: docQuery(options) });
 
+// ---- F4-4 写路由封装 ----
+
+/** 划词标注保存（POST /api/doc/:name/annotations；server L537-549）。 */
+export const saveDocAnnotations = (name: string, annotations: unknown[], options: DocQueryOptions = {}): Promise<ChannelResponse<"op:doc:annotations-save">> =>
+  invokeOrThrow("op:doc:annotations-save", { params: { name }, query: docQuery(options), body: { annotations } });
+
+/** docx 重打包保存（POST /api/doc/:name/raw-save；server L1334-1352）。 */
+export const saveDocRaw = (name: string, base64: string, options: DocQueryOptions = {}): Promise<ChannelResponse<"op:doc:raw-save">> =>
+  invokeOrThrow("op:doc:raw-save", { params: { name }, query: docQuery(options), body: { base64 } });
+
+/** Excel 单元格保存（POST /api/doc/:name/cells；server L1242-1262，无显式 cwd）。 */
+export const saveDocCells = (name: string, sheet: string, cells: Array<{ ref: string; value: unknown }>): Promise<ChannelResponse<"op:doc:cells">> =>
+  invokeOrThrow("op:doc:cells", { params: { name }, body: { sheet, cells } });
+
+/** docx 富文本编辑代理（POST /api/doc/edit；server L1303-1331，无显式 cwd）。 */
+export const docEdit = (file: string, commands: Array<Record<string, unknown>>): Promise<ChannelResponse<"op:doc:edit">> =>
+  invokeOrThrow("op:doc:edit", { body: { file, commands } });
+
+/** officecli 通用直通（POST /api/office；server L1265-1298）。 */
+export const runOffice = (args: unknown[]): Promise<ChannelResponse<"op:office:run">> =>
+  invokeOrThrow("op:office:run", { body: { args } });
+
+/** 开启实时预览（GET /api/doc/:name/watch；IPC 形态为 fs.watchFile + op:doc-watch 事件）。 */
+export const fetchDocWatch = (name: string, options: DocQueryOptions = {}): Promise<ChannelResponse<"op:doc:watch">> =>
+  invokeOrThrow("op:doc:watch", { params: { name }, query: docQuery(options) });
+
+/** 停止实时预览（POST /api/doc/:name/watch/stop）。 */
+export const stopDocWatch = (name: string, options: DocQueryOptions = {}): Promise<ChannelResponse<"op:doc:watch-stop">> =>
+  invokeOrThrow("op:doc:watch-stop", { params: { name }, query: docQuery(options) });
+
 // ============================================================================
 // 本地工具（无 HTTP）
 // ============================================================================

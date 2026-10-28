@@ -39,11 +39,11 @@ function extractRoutes(source: string): ExtractedRoutes {
   return { stringRoutes, regexRoutePrefixes };
 }
 
-/** 非 chat 域路由豁免前缀（后续里程碑按域进入通道清单时从这里移除）。 */
+/** 非 chat 域路由豁免前缀（后续里程碑按域进入通道清单时从这里移除）。
+ * F4-4：/api/doc 与 /api/office 读写路由已全部入通道清单，豁免移除。 */
 const EXEMPT_PREFIXES = [
   "/api/map",
   "/api/kb",
-  "/api/doc",
   "/api/templates",
   "/api/browser",
   "/api/m3",
@@ -65,8 +65,7 @@ const EXEMPT_PREFIXES = [
   "/api/system",
   "/api/open-in-explorer",
   "/api/models",
-  "/api/diagnostics",
-  "/api/office"
+  "/api/diagnostics"
 ] as const;
 
 /** /api/agent/ 下尚未纳入通道清单的管理配置面逐条豁免（已入通道的移除，重叠测试即红）；chat 链路路由必须进通道清单。 */
@@ -106,11 +105,11 @@ const extracted = extractRoutes(source);
 describe("channels manifest 对账", () => {
   it("通道清单规约：op: 前缀、族:动作命名、数量钉住（扩清单需同步更新对账）", () => {
     const channelKeys = Object.keys(DESKTOP_CHANNELS);
-    expect(channelKeys.length).toBe(114);
+    expect(channelKeys.length).toBe(121);
     for (const key of channelKeys) {
       expect(key.startsWith("op:")).toBe(true);
     }
-    // 通道族：status / sessions / runs / artifacts / agent / memory / files / doc / kb / models
+    // 通道族：status / sessions / runs / artifacts / agent / memory / files / doc / office / kb / models
     //   / search / map / projects / workspace / workspaces / file-roots / system
     const families = new Set(channelKeys.map((key) => key.split(":")[1]));
     expect([...families].sort()).toEqual([
@@ -123,6 +122,7 @@ describe("channels manifest 对账", () => {
       "map",
       "memory",
       "models",
+      "office",
       "projects",
       "runs",
       "search",
