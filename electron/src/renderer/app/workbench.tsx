@@ -1,6 +1,10 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import SessionSidebar, { type FileRecord, type ProjectRecord, type WorkspaceRecord } from "../components/SessionSidebar";
-import type { ModelRecord } from "../components/SettingsPanel";
+import SettingsPanel, { type ModelRecord, type ProjectListItem } from "../components/SettingsPanel";
+import MemoryTab from "../components/MemoryTab";
+import CommandPalette from "../components/CommandPalette";
+import BrowserPanel from "../components/BrowserPanel";
+import type { SubagentBlock } from "../components/SubagentDetailPanel";
 import Resizer from "../components/Resizer";
 import Icon from "../components/Icon";
 import Logo from "../components/Logo";
@@ -74,9 +78,11 @@ import { useTheme } from "./theme";
  *
  * 迁移期偏差（后续域收口后接线，均已在调用点批注）：
  *   - open()/文档标签/预览画布 → F4-3 已激活（op:doc:open + DocViewer 模块视图）；
- *   - onBrowserActivity/浏览器侧栏/工作区画布 → F4+；
- *   - CommandPalette（Ctrl+K）/SettingsPanel/TaskCenter 挂载 → F5/F4；
- *   - MapPanel/mapContexts/mapBridge → F5-7 已激活（地图模块 + 共享 ChatPanel 桥接）；activeModule 模块面板 → 随各域收口补挂。
+ *   - MapPanel/mapContexts/mapBridge → F5-7 已激活（地图模块 + 共享 ChatPanel 桥接）；
+ *   - F6-2 已激活：浏览器/子代理/设置/任务/成果模块视图 + CommandPalette（Ctrl/Cmd+K）
+ *     + ChatPanel onBrowserActivity/onOpenSubagent/onSubagentUpdate 接线。旧工作区画布
+ *     双页签（工作产物/浏览器，App.jsx 1841-1930）在新 UI 收敛为 activeModule 互斥模块视图，
+ *     browserPanelOpen/previewOpen/workspaceTabPref 三个开合态不再保留。
  */
 
 // 启动加载分区文案：失败提示与重试按钮按分区说明，避免只报一句笼统错误。
@@ -199,6 +205,15 @@ export default function Workbench(): React.ReactElement {
   const [artifactScope, setArtifactScope] = useState("session");
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [activeModule, setActiveModule] = useState<string | null>(null); // 模块面板挂载随 F4/F5/F6 补齐，状态先行保留
+  // F6-2 外围·系统面板（App.jsx 173-184 转录）：设置模块页签与初始节、命令面板、
+  // 浏览器活动徽标（O-P3）、浏览器全屏、子代理详情。旧画布 browserPanelOpen/
+  // previewOpen 双开态在新 UI 收敛为 activeModule 互斥模块视图（见头注释）。
+  const [settingsModuleTab, setSettingsModuleTab] = useState("settings");
+  const [settingsSection, setSettingsSection] = useState("model");
+  const [paletteOpen, setPaletteOpen] = useState(false); // 命令面板（Ctrl/Cmd+K）
+  const [browserActivityPing, setBrowserActivityPing] = useState(0); // O-P3：手关浏览器后的活动徽标
+  const [browserFullscreen, setBrowserFullscreen] = useState(false);
+  const [subagentDetail, setSubagentDetail] = useState<SubagentBlock | null>(null); // 点开子代理卡片后展示的完整过程
   // F4-3 doc 域·预览画布（App.jsx tabs/activeTab/docLoading 逐行转录；旧形态落在
   // 预览画布右栏，新 UI 以 activeModule="doc" 模块视图承接）：
   const [docTabs, setDocTabs] = useState<DocRecord[]>([]);
@@ -1015,6 +1030,58 @@ export default function Workbench(): React.ReactElement {
   }, []);
 
   // ============================================================================
+  // F6-2 外围·系统面板回调（App.jsx 208-210 / 249-271 / 741-750 / 896-907 转录）
+  // ============================================================================
+
+  // 浏览器模块关闭时退出全屏（App.jsx 208-210 browserPanelOpen 判断的模块态等价）。
+  useEffect(() => {
+    if (activeModule !== "browser") setBrowserFullscreen(false);
+  }, [activeModule]);
+
+  // Agent 调用 browser_* 时自动打开浏览器模块视图。信号来自对话流里的工具事件
+  // （ChatPanel tool_start → deps.onBrowserActivity），不为此常驻帧流订阅。
+  // 旧形态的窄屏让位/恢复（O-P7 previewOpen juggling）随画布收敛为模块视图而裁剪。
+  const handleBrowserActivity = useCallback(() => {
+    if (browserAutoOpenBlockedRef.current) {
+      // O-P3（OAW_BROWSER_BADGE，默认关）：手关后不再静默丢弃本轮浏览器活动，顶栏开关亮徽标
+      if (flag("browserBadge")) setBrowserActivityPing((value) => value + 1);
+      return;
+    }
+    setBrowserActivityPing(0);
+    setActiveModule("browser");
+  }, []);
+  const closeBrowserPanel = useCallback(() => {
+    browserAutoOpenBlockedRef.current = true;
+    setActiveModule(null);
+  }, []);
+
+  // 全局 Ctrl/Cmd+K 切换命令面板（App.jsx 741-750 逐行转录）
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && (event.key === "k" || event.key === "K")) {
+        event.preventDefault();
+        setPaletteOpen((value) => !value);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  // 子代理卡片 → 「子代理」模块视图：展示该子代理的思考 / 回复 / 工具调用完整过程。
+  // 传入的是点击时刻的 block 快照；运行中想看最新过程可再次点击卡片。
+  const openSubagentDetail = useCallback((data: unknown) => {
+    setSubagentDetail(((data || null) as SubagentBlock | null));
+    setActiveModule("subagent");
+  }, []);
+
+  // 子代理运行中：ChatPanel 推送最新 block，若正是正在看的那个则原地刷新（实时更新思考/回复/工具）
+  const handleSubagentUpdate = useCallback((_thread: string | null, block: unknown) => {
+    const next = block as SubagentBlock | null;
+    if (!next?.id) return;
+    setSubagentDetail((prev) => (prev && prev.id === next.id ? next : prev));
+  }, []);
+
+  // ============================================================================
   // run_finished 消费（App.jsx 1287-1329 逐行转录，预览打开随 F4 裁剪）
   // ============================================================================
 
@@ -1344,6 +1411,77 @@ export default function Workbench(): React.ReactElement {
             </div>
           </div>
         )}
+        {/* F6-2 外围·系统面板（App.jsx 2024-2040 / 2052-2068 / 画布浏览器页签 1852-1916 转录）：
+            设置（页签：设置 | 记忆与沉淀）/ 内置浏览器（含全屏与关闭，模块态等价旧画布头按钮）/
+            任务中心（fullPage）/ 子代理详情。旧画布双开态收敛为 activeModule 互斥模块视图。 */}
+        {activeModule === "settings" && (
+          <div className="module-view">
+            <div className="module-head">
+              <button className="module-back" onClick={() => setActiveModule(null)} title="返回对话"><Icon name="back" size={15} /></button>
+              <div className="module-brand-heading"><Logo size={22} /><span><h2>设置</h2><p>外观、模型、项目运行和工作区记忆</p></span></div>
+              <div className="module-head-tabs">
+                <button className={settingsModuleTab === "settings" ? "active" : ""} onClick={() => setSettingsModuleTab("settings")}>设置</button>
+                <button className={settingsModuleTab === "memory" ? "active" : ""} onClick={() => setSettingsModuleTab("memory")}>记忆与沉淀</button>
+              </div>
+            </div>
+            <div className="module-body module-settings-body">
+              {settingsModuleTab === "memory"
+                ? <MemoryTab workspace={currentWorkspace} projectId={currentProject?.id || ""} />
+                : <SettingsPanel project={currentProject as unknown as Record<string, unknown> | null} projects={projects as unknown as ProjectListItem[]} currentWorkspace={currentWorkspace} models={models as unknown as ModelRecord[]} defaultModel={defaultModel} activeModel={selectedModel} clientId={clientId} threadId={threadId} initialSection={settingsSection} onModelChange={setSelectedModel} onModelsRefresh={syncModelCatalog} onProjectUpdated={() => void refreshProjects()} onProjectSelect={(id) => { setActiveModule(null); handleProjectChange(id); }} />}
+            </div>
+          </div>
+        )}
+        {activeModule === "browser" && (
+          <div className={`module-view module-browser-view ${browserFullscreen ? "browser-fullscreen" : ""}`}>
+            <div className="module-head">
+              <button className="module-back" onClick={() => setActiveModule(null)} title="返回对话"><Icon name="back" size={15} /></button>
+              <div className="module-brand-heading"><Logo size={22} /><span><h2>内置浏览器</h2><p>Agent 与你共用的可视化网页空间，可直接接管操作</p></span></div>
+              <span className="module-head-actions">
+                {/* App.jsx 1904-1914 画布头全屏/关闭按钮逐行转录（模块态等价） */}
+                <button
+                  className="btn-icon"
+                  onClick={() => setBrowserFullscreen((value) => !value)}
+                  title={browserFullscreen ? "退出浏览器全屏" : "浏览器铺满工作区"}
+                  aria-label={browserFullscreen ? "退出浏览器全屏" : "浏览器铺满工作区"}
+                >
+                  <Icon name={browserFullscreen ? "minimize" : "maximize"} size={14} />
+                </button>
+                <button className="btn-icon" onClick={closeBrowserPanel} title="隐藏内置浏览器" aria-label="隐藏内置浏览器"><Icon name="close" size={14} /></button>
+              </span>
+            </div>
+            <div className="module-body module-browser-body">
+              <BrowserPanel clientId={clientId} threadId={threadId} fullscreen={browserFullscreen} onToggleFullscreen={() => setBrowserFullscreen((value) => !value)} />
+            </div>
+          </div>
+        )}
+        {activeModule === "subagent" && (
+          <div className="module-view">
+            <div className="module-head">
+              <button className="module-back" onClick={() => setActiveModule(null)} title="返回对话"><Icon name="back" size={15} /></button>
+              <div className="module-brand-heading"><Logo size={22} /><span><h2>子代理</h2><p>查看子 Agent 的思考 / 回复 / 工具调用完整过程</p></span></div>
+            </div>
+            <div className="module-body module-artifacts-body">
+              <WorkProductPanel workspace={currentWorkspace} projectId={currentProject?.id || ""} currentSessionId={currentSessionId || ""} tab="subagent" subagentBlock={subagentDetail} />
+            </div>
+          </div>
+        )}
+        {activeModule === "tasks" && (
+          <TaskCenter
+            fullPage
+            onClose={() => setActiveModule(null)}
+            sessions={visibleSessions}
+            projects={projects}
+            currentProjectId={currentProject?.id || ""}
+            currentWorkspace={currentWorkspace}
+            currentThreadId={threadId}
+            currentSessionId={currentSessionId || ""}
+            unreadCount={Object.values(unreadByThread).reduce((sum, count) => sum + Number(count || 0), 0)}
+            onSelectSession={handleSelectSession}
+            onFocusRun={() => { chatInputRef.current?.focusRun?.(); }}
+            onOpenRun={handleOpenRun}
+            eventVersion={eventVersion}
+          />
+        )}
         {/* F5-7 地图模块（App.jsx 1565-1615 逐点转录）：MapPanel 全屏（hideChat 分支，
             不内嵌 ChatPanel），共享 ChatPanel 常驻 .app-chat-slot.map，右缘 Resizer 调宽。
             桥接语义与旧版一致：onFileChanged/onAgentEnd 双路（工作台状态 + mapBridge），
@@ -1429,6 +1567,9 @@ export default function Workbench(): React.ReactElement {
               onForkSession={async (id: string) => { await handleForkSession(id); }}
               onPinSession={handlePinSession}
               onFreezeSession={handleFreezeSession}
+              onOpenSubagent={openSubagentDetail}
+              onSubagentUpdate={handleSubagentUpdate}
+              onBrowserActivity={handleBrowserActivity}
             />
           </div>
         )}
@@ -1479,6 +1620,15 @@ export default function Workbench(): React.ReactElement {
               onOpenPiPlugins={() => setActiveModule("piPlugins")}
               onOpenWorkflows={() => setActiveModule("workflows")}
               onOpenMap={() => setActiveModule("map")}
+              onOpenTasks={() => setActiveModule("tasks")}
+              onOpenSettings={(section = "settings") => {
+                // App.jsx 1661 转录：记忆入口开 memory 页签；其余按节打开设置页签
+                if (section === "memory") setSettingsModuleTab("memory");
+                else { setSettingsModuleTab("settings"); setSettingsSection(section === "project" ? "project" : "model"); }
+                setActiveModule("settings");
+              }}
+              onOpenArtifacts={() => setActiveModule("artifacts")}
+              onOpenCommandPalette={() => setPaletteOpen(true)}
               onToggleTheme={toggleTheme}
               theme={theme}
             />
@@ -1542,9 +1692,28 @@ export default function Workbench(): React.ReactElement {
                 </button>
               </div>
               <span className={`conversation-status ${conversationPhase ? "working" : ""}`}><i /> {conversationPhase || "待命"}</span>
+              {/* F6-2：内置浏览器开关（旧顶栏 topbar-tools 菜单项 App.jsx 1750 → 常驻按钮；
+                  O-P3 徽标：手关后浏览器有新活动时亮点提示）。 */}
+              <button
+                type="button"
+                className={`btn-sm topbar-browser-toggle ${activeModule === "browser" ? "active" : ""}`}
+                aria-pressed={activeModule === "browser"}
+                onClick={() => {
+                  if (activeModule === "browser") closeBrowserPanel();
+                  else {
+                    browserAutoOpenBlockedRef.current = false;
+                    setBrowserActivityPing(0);
+                    setActiveModule("browser");
+                  }
+                }}
+                title={activeModule === "browser" ? "隐藏内置浏览器" : "显示内置浏览器"}
+              >
+                <Icon name="globe" size={14} /><span>浏览器</span>
+                {browserActivityPing > 0 && activeModule !== "browser" && <i className="browser-activity-dot" aria-hidden="true" />}
+              </button>
               {/* F4-1：任务中心（R11 任务运行面）——触发钮常驻 topbar，浮层 Portal 定位；
                   会话匹配打开对应对话，onFocusRun 等价滚动到最新运行处（新 ChatPanel focusRun
-                  无 runId 参数）。fullPage 模块视图随模块导航（F5/F6）再挂。 */}
+                  无 runId 参数）。fullPage 模块视图已随 F6-2 挂载（activeModule === "tasks"）。 */}
               <TaskCenter
                 sessions={sessions}
                 projects={projects}
@@ -1644,11 +1813,25 @@ export default function Workbench(): React.ReactElement {
                 onForkSession={async (id: string) => { await handleForkSession(id); }}
                 onPinSession={handlePinSession}
                 onFreezeSession={handleFreezeSession}
+                onOpenSubagent={openSubagentDetail}
+                onSubagentUpdate={handleSubagentUpdate}
+                onBrowserActivity={handleBrowserActivity}
               />
             </div>
             )}
           </div>
         </div>
+        {/* F6-2：命令面板（Ctrl/Cmd+K 全局切换，App.jsx 741-750 / 2013-2023 转录）。
+            onOpenFile 对齐侧栏文件入口（markPreviewManual + openDocFile）。 */}
+        <CommandPalette
+          open={paletteOpen}
+          onClose={() => setPaletteOpen(false)}
+          onOpenFile={(name) => { markPreviewManual(); void openDocFile(String(name ?? "")); }}
+          onKb={() => setActiveModule("knowledge")}
+          onTpl={() => setActiveModule("templates")}
+          onMap={() => setActiveModule("map")}
+          onSession={(session) => { void handleSelectSession(session as SessionRecord); }}
+        />
       </div>
     </AppErrorBoundary>
   );

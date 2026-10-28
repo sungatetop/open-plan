@@ -109,7 +109,7 @@ type ProjectRecord = {
   } | null;
 };
 
-type ProjectListItem = {
+export type ProjectListItem = {
   id: string;
   name?: string;
   description?: string;

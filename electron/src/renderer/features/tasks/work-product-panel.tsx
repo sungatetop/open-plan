@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { confirmArtifactAcceptance, getRun, getRunAcceptance, listPublishedArtifacts, listRuns, publishArtifact, rollbackPublishedArtifact } from "../../api/client-api";
 import Icon from "../../components/Icon";
 import { notifyError } from "../../components/Feedback";
+import SubagentDetailPanel, { type SubagentBlock } from "../../components/SubagentDetailPanel";
 import { artifactStatusInfo } from "../../lib/AcceptanceStatus";
 import FileChangesPanel from "./file-changes-panel";
 import { projectRunView } from "../../lib/run-display-projection";
@@ -20,7 +21,7 @@ import { projectRunView } from "../../lib/run-display-projection";
  * 桌面形态等价说明：
  *   - 旧 client 刷新由根级事件流的 refreshToken 驱动（artifactVersion），新形态由
  *     createGlobalEventFeed 消费 IPC 全局事件桥后 bump 同名 state，语义一致；
- *   - tab==="subagent" 分支随 SubagentDetailPanel（chat 域组件）迁移后补齐，本批不含；
+ *   - tab==="subagent" 分支 F6-2 随 SubagentDetailPanel（chat 域组件）迁移接入；
  *   - onOpenFile 在旧形态指向 App.open（应用内文档查看器），新形态指向 workbench
  *     openDocFile（F4-3 doc 域激活前为 no-op），调用时序与三参签名保持一致。
  */
@@ -343,17 +344,17 @@ function RunChangesPanel({ workspace, projectId, currentSessionId, selectedRunId
 export interface WorkProductPanelProps extends ArtifactPanelProps {
   clientId?: string;
   threadId?: string;
-  /** B03 页签：document（默认，透传 children）/ changes / artifacts；subagent 随 SubagentDetailPanel 迁移后补齐 */
+  /** B03 页签：document（默认，透传 children）/ changes / artifacts / subagent（F6-2 补齐） */
   tab?: string;
-  /** 子代理详情数据（subagent 页签消费；本批未启用，保留接口位） */
-  subagentBlock?: RunRecord | null;
+  /** 子代理详情数据（subagent 页签消费，workbench onOpenSubagent 打开） */
+  subagentBlock?: SubagentBlock | null;
   children?: React.ReactNode;
 }
 
-export default function WorkProductPanel({ tab, workspace, projectId, currentSessionId, selectedRunId = "", artifactScope = "session", onArtifactScopeChange, refreshToken = 0, onOpenFile, children }: WorkProductPanelProps) {
-  // B03：右栏页签 —— 预览 / 改动 / 产物；subagent 为按需打开的「子代理详情」页
-  //（SubagentDetailPanel 未迁移，分支随其迁移后补齐，见模块头注释）。
+export default function WorkProductPanel({ tab, workspace, projectId, currentSessionId, selectedRunId = "", artifactScope = "session", onArtifactScopeChange, refreshToken = 0, onOpenFile, subagentBlock, children }: WorkProductPanelProps) {
+  // B03：右栏页签 —— 预览 / 改动 / 产物；subagent 为按需打开的「子代理详情」页（F6-2 接入）。
   if (tab === "changes") return <RunChangesPanel workspace={workspace} projectId={projectId} currentSessionId={currentSessionId} selectedRunId={selectedRunId} refreshToken={refreshToken} onOpenFile={onOpenFile} />;
   if (tab === "artifacts") return <ArtifactPanel workspace={workspace} projectId={projectId} currentSessionId={currentSessionId} selectedRunId={selectedRunId} artifactScope={artifactScope} onArtifactScopeChange={onArtifactScopeChange} refreshToken={refreshToken} onOpenFile={onOpenFile} />;
+  if (tab === "subagent") return <SubagentDetailPanel block={subagentBlock} />;
   return children;
 }

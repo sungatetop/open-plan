@@ -140,3 +140,19 @@ export async function stopAgentEvents(request?: { client?: string }): Promise<vo
   if (!api) return;
   await api.stopAgentEvents(request).catch(() => undefined);
 }
+
+/**
+ * 订阅内置浏览器帧流（F6-2：main 侧 subscribeBrowser 推桥 → op:browser-stream 事件，
+ * 替代旧 EventSource GET /api/browser/stream 建立序）。watch 注册表同 (client, thread)
+ * 去重；无桥（web 形态）抛错由调用方 catch。
+ */
+export function watchBrowserStream(client: string, thread = "", frames = true): Promise<EventWatchResult> {
+  return requireDesktopApi().watchBrowserStream({ client, thread, frames });
+}
+
+/** 停止内置浏览器帧流订阅（对齐 SSE req close 的订阅者数量递减语义）；无桥时为空操作。 */
+export async function unwatchBrowserStream(client: string, thread = ""): Promise<void> {
+  const api = getDesktopApi();
+  if (!api) return;
+  await api.stopBrowserStream({ client, thread }).catch(() => undefined);
+}

@@ -920,6 +920,45 @@ export const tplFiles = (relPath: string): Promise<ChannelResponse<"op:templates
   invokeOrThrow("op:templates:files", { params: { path: relPath } });
 
 // ============================================================================
+// 内置浏览器族（F6-2；对齐 client/src/api.js L136-151 签名与出参语义）
+// ============================================================================
+
+/** browserState（BrowserPanel：旧 api.js browserState → GET /api/browser/state）。 */
+export const browserState = (client: string, thread: string): Promise<ChannelResponse<"op:browser:state">> =>
+  invokeOrThrow("op:browser:state", { query: { client, thread: thread || "" } });
+
+/** browserOpen（BrowserPanel：旧 api.js browserOpen → POST /api/browser/open；失败 400 → throw 带 code）。 */
+export const browserOpen = (client: string, thread: string, url: string): Promise<ChannelResponse<"op:browser:open">> =>
+  invokeOrThrow("op:browser:open", { body: { client, thread, url } });
+
+/** browserInput（BrowserPanel CDP 输入队列：旧 api.js browserInput → POST /api/browser/input，
+ *  body 除 client/thread 外整体透传）。 */
+export const browserInput = (payload: Record<string, unknown> = {}): Promise<ChannelResponse<"op:browser:input">> =>
+  invokeOrThrow("op:browser:input", { body: payload });
+
+/** browserClose（BrowserPanel：旧 api.js browserClose → POST /api/browser/close）。 */
+export const browserClose = (client: string, thread: string, { force = false }: { force?: boolean } = {}): Promise<ChannelResponse<"op:browser:close">> =>
+  invokeOrThrow("op:browser:close", { body: { client, thread, force } });
+
+/** browserReset（BrowserPanel 可恢复异常自愈：旧 api.js browserReset → POST /api/browser/reset）。 */
+export const browserReset = (client: string, thread: string): Promise<ChannelResponse<"op:browser:reset">> =>
+  invokeOrThrow("op:browser:reset", { body: { client, thread } });
+
+/** browserStreamPause（B3 自适应推流：旧 api.js browserStreamPause → POST /api/browser/stream-pause）。 */
+export const browserStreamPause = (payload: Record<string, unknown> = {}): Promise<ChannelResponse<"op:browser:stream-pause">> =>
+  invokeOrThrow("op:browser:stream-pause", { body: payload });
+
+/** browserFullpage（B4 整页截图：旧 api.js browserFullpage → POST /api/browser/fullpage）。 */
+export const browserFullpage = (payload: Record<string, unknown> = {}): Promise<ChannelResponse<"op:browser:fullpage">> =>
+  invokeOrThrow("op:browser:fullpage", { body: payload });
+
+/** browserPdf（B4 整页 PDF：旧 api.js browserPdf → POST /api/browser/pdf）。 */
+export const browserPdf = (payload: Record<string, unknown> = {}): Promise<ChannelResponse<"op:browser:pdf">> =>
+  invokeOrThrow("op:browser:pdf", { body: payload });
+
+
+
+// ============================================================================
 // 本地工具（无 HTTP）
 // ============================================================================
 

@@ -110,3 +110,44 @@ body {
   color: var(--app-text-dim);
   font-size: 14px;
 }
+
+/* ===== F6-2 外围·系统面板：浏览器模块视图（module-view 基础规则在 client/src/styles.css） ===== */
+
+/* 浏览器全屏：脱离 module-view 的 absolute 定位上下文，铺满整窗（等价旧画布全屏层级） */
+.module-browser-view.browser-fullscreen {
+  position: fixed;
+  inset: 0;
+  z-index: 260;
+}
+
+.module-browser-body {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.module-browser-body > .browser-panel {
+  flex: 1;
+  min-height: 0;
+}
+
+/* 模块头右侧动作区（全屏/关闭）；与 module-head-tabs 的 margin-left:auto 对齐 */
+.module-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+
+/* 顶栏浏览器开关：为活动徽标（.browser-activity-dot 为 absolute）提供定位上下文 */
+.topbar-browser-toggle {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.topbar-browser-toggle .browser-activity-dot {
+  top: 3px;
+  right: 3px;
+}
