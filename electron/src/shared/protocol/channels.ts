@@ -156,6 +156,34 @@ export const DESKTOP_CHANNELS = {
   "op:map:settings:get": { method: "GET", path: "/api/map/settings" },
   "op:map:settings:save": { method: "POST", path: "/api/map/settings" },
 
+  // ---- 地图域项目图层族（F5-1：map-direct 直调；项目生命周期/样式配置/导入/瓦片/图层/空间查询） ----
+  "op:map:projects:list": { method: "GET", path: "/api/map/projects" },
+  "op:map:projects:create": { method: "POST", path: "/api/map/projects" },
+  "op:map:project:get": { method: "GET", path: "/api/map/project" },
+  "op:map:project:export": { method: "GET", path: "/api/map/project/export" },
+  "op:map:projects:duplicate": { method: "POST", path: "/api/map/projects/duplicate" },
+  "op:map:projects:rename": { method: "POST", path: "/api/map/projects/rename" },
+  "op:map:projects:archive": { method: "POST", path: "/api/map/projects/archive" },
+  "op:map:projects:delete": { method: "POST", path: "/api/map/projects/delete" },
+  "op:map:style:save": { method: "POST", path: "/api/map/style" },
+  "op:map:config:save": { method: "POST", path: "/api/map/config" },
+  "op:map:import": { method: "POST", path: "/api/map/import" },
+  "op:map:import:batch": { method: "POST", path: "/api/map/import-batch" },
+  "op:map:prepare": { method: "POST", path: "/api/map/prepare" },
+  "op:map:rebuild": { method: "POST", path: "/api/map/rebuild" },
+  "op:map:layer:delete": { method: "POST", path: "/api/map/layer/delete" },
+  "op:map:layer:get": { method: "GET", path: "/api/map/layer" },
+  "op:map:isochrone": { method: "POST", path: "/api/map/isochrone" },
+  "op:map:route": { method: "POST", path: "/api/map/route" },
+  "op:map:project:detail": { method: "GET", path: "/api/map/project/:name" },
+  "op:map:project:style:save": { method: "POST", path: "/api/map/project/:name/style" },
+  "op:map:project:config:save": { method: "POST", path: "/api/map/project/:name/config" },
+  "op:map:project:import": { method: "POST", path: "/api/map/project/:name/import" },
+  "op:map:project:rebuild-tiles": { method: "POST", path: "/api/map/project/:name/rebuild-tiles" },
+  "op:map:project:layer:get": { method: "GET", path: "/api/map/project/:name/layer/:layerId" },
+  "op:map:project:layer:delete": { method: "DELETE", path: "/api/map/project/:name/layer/:layerId" },
+  "op:map:project:isochrone": { method: "POST", path: "/api/map/project/:name/isochrone" },
+
   // ---- 项目族（SettingsPanel 项目管理分节；批7b：App 项目列表） ----
   "op:projects:list": { method: "GET", path: "/api/projects" },
   "op:projects:create": { method: "POST", path: "/api/projects" },
@@ -897,6 +925,75 @@ export type SearchSettingsTestRequest = { body: { backend: string; draft?: unkno
 
 export type MapSettingsSaveRequest = { body: { basemaps: unknown } };
 
+// ---- 地图域项目图层族（F5-1，对齐 server/index.mjs L615-796 / L5438-5506 实际结构） ----
+
+export type MapProjectsListRequest = Record<string, never>;
+export type MapProjectsListResponse = { projects?: Array<Record<string, unknown>> };
+export type MapProjectsCreateRequest = { body?: { project?: unknown; name?: unknown; baseProject?: unknown } };
+export type MapProjectsCreateResponse = {
+  ok?: boolean;
+  project?: unknown;
+  config?: Record<string, unknown>;
+  style?: Record<string, unknown>;
+  files?: unknown[];
+  error?: string;
+  code?: string;
+};
+export type MapProjectGetRequest = { query?: { name?: string; workspace?: string } };
+/** 项目详情 + layerViews 增补（归属视图失败时无该字段，server L639-643 静默语义）。 */
+export type MapProjectGetResponse = Record<string, unknown>;
+export type MapProjectExportRequest = { query?: { name?: string; tiles?: string | number } };
+/** zip 二进制流式响应 → buffer base64 载数据（HTTP Content-Disposition/X-Pack-Manifest 头语义内联承载）。 */
+export type MapProjectExportResponse = {
+  ok?: boolean;
+  fileName?: string;
+  manifest?: { project?: unknown; files?: number; bytes?: number };
+  buffer?: string;
+  error?: string;
+  code?: string;
+};
+export type MapProjectsDuplicateRequest = { body?: { project?: unknown; name?: unknown } };
+export type MapProjectsRenameRequest = { body?: { project?: unknown; name?: unknown } };
+export type MapProjectsArchiveRequest = { body?: { project?: unknown; archived?: boolean } };
+export type MapProjectsDeleteRequest = { body?: { project?: unknown } };
+export type MapProjectsLifecycleResponse = {
+  ok?: boolean;
+  project?: unknown;
+  config?: Record<string, unknown>;
+  error?: string;
+  code?: string;
+};
+export type MapStyleSaveRequest = { body?: { name?: string; style?: unknown } };
+export type MapConfigSaveRequest = { body?: { name?: string; config?: unknown } };
+export type MapOkResponse = { ok?: boolean; error?: string };
+export type MapImportRequest = { body?: { name?: string; layerId?: string; geojson?: unknown } };
+export type MapImportBatchRequest = { body?: { name?: string; items?: unknown[] } };
+export type MapPrepareRequest = { body?: { srcDir?: string } };
+export type MapPrepareResponse = { ok?: boolean; prepare?: string; tiles?: string; error?: string };
+export type MapRebuildRequest = { body?: { name?: string; layerIds?: string[] | null } };
+export type MapRebuildResponse = { ok?: boolean; layers?: unknown; error?: string };
+export type MapLayerDeleteRequest = { body?: { name?: string; layerId?: string } };
+export type MapLayerGetRequest = { query?: { name?: string; layer?: string } };
+export type MapIsochroneRequest = { body?: { location?: string; mode?: string; range?: number; rangeType?: string } };
+export type MapIsochroneResponse = { ok?: boolean; center?: unknown; cost?: unknown; polygons?: unknown; error?: string };
+export type MapRouteRequest = { body?: { from?: string; to?: string; mode?: string; provider?: string } };
+export type MapRouteResponse = {
+  ok?: boolean;
+  provider?: string;
+  distance?: number;
+  duration?: number;
+  geometry?: unknown;
+  error?: string;
+};
+export type MapProjectNamedRequest = { params: { name: string } };
+export type MapProjectLayerNamedRequest = { params: { name: string; layerId: string } };
+export type MapProjectStyleSaveRequest = { params: { name: string }; body?: { style?: unknown } };
+export type MapProjectConfigSaveRequest = { params: { name: string }; body?: { config?: unknown } };
+export type MapProjectImportRequest = { params: { name: string }; body?: { layerId?: string; geojson?: unknown } };
+export type MapProjectRebuildTilesRequest = { params: { name: string } };
+export type MapProjectRebuildTilesResponse = { ok?: boolean; results?: unknown; error?: string };
+export type MapProjectIsochroneRequest = { params: { name: string }; body?: Record<string, unknown> };
+
 // ---- 项目族 ----
 
 export type ProjectListRequest = { query?: { type?: string; status?: string; sort?: string; pinned?: string } };
@@ -1061,6 +1158,34 @@ export interface DesktopChannelProtocol {
 
   "op:map:settings:get": { request: Record<string, never>; response: Record<string, unknown> };
   "op:map:settings:save": { request: MapSettingsSaveRequest; response: Record<string, unknown> };
+
+  // ---- 地图域项目图层族（F5-1） ----
+  "op:map:projects:list": { request: MapProjectsListRequest; response: MapProjectsListResponse };
+  "op:map:projects:create": { request: MapProjectsCreateRequest; response: MapProjectsCreateResponse };
+  "op:map:project:get": { request: MapProjectGetRequest; response: MapProjectGetResponse };
+  "op:map:project:export": { request: MapProjectExportRequest; response: MapProjectExportResponse };
+  "op:map:projects:duplicate": { request: MapProjectsDuplicateRequest; response: MapProjectsLifecycleResponse };
+  "op:map:projects:rename": { request: MapProjectsRenameRequest; response: MapProjectsLifecycleResponse };
+  "op:map:projects:archive": { request: MapProjectsArchiveRequest; response: MapProjectsLifecycleResponse };
+  "op:map:projects:delete": { request: MapProjectsDeleteRequest; response: MapProjectsLifecycleResponse };
+  "op:map:style:save": { request: MapStyleSaveRequest; response: MapOkResponse };
+  "op:map:config:save": { request: MapConfigSaveRequest; response: MapOkResponse };
+  "op:map:import": { request: MapImportRequest; response: Record<string, unknown> };
+  "op:map:import:batch": { request: MapImportBatchRequest; response: Record<string, unknown> };
+  "op:map:prepare": { request: MapPrepareRequest; response: MapPrepareResponse };
+  "op:map:rebuild": { request: MapRebuildRequest; response: MapRebuildResponse };
+  "op:map:layer:delete": { request: MapLayerDeleteRequest; response: Record<string, unknown> };
+  "op:map:layer:get": { request: MapLayerGetRequest; response: Record<string, unknown> };
+  "op:map:isochrone": { request: MapIsochroneRequest; response: MapIsochroneResponse };
+  "op:map:route": { request: MapRouteRequest; response: MapRouteResponse };
+  "op:map:project:detail": { request: MapProjectNamedRequest; response: Record<string, unknown> };
+  "op:map:project:style:save": { request: MapProjectStyleSaveRequest; response: MapOkResponse };
+  "op:map:project:config:save": { request: MapProjectConfigSaveRequest; response: MapOkResponse };
+  "op:map:project:import": { request: MapProjectImportRequest; response: Record<string, unknown> };
+  "op:map:project:rebuild-tiles": { request: MapProjectRebuildTilesRequest; response: MapProjectRebuildTilesResponse };
+  "op:map:project:layer:get": { request: MapProjectLayerNamedRequest; response: Record<string, unknown> };
+  "op:map:project:layer:delete": { request: MapProjectLayerNamedRequest; response: Record<string, unknown> };
+  "op:map:project:isochrone": { request: MapProjectIsochroneRequest; response: Record<string, unknown> };
 
   "op:projects:list": { request: ProjectListRequest; response: ProjectListResponse };
   "op:projects:create": { request: ProjectCreateRequest; response: Record<string, unknown> };
