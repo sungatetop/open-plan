@@ -1,5 +1,5 @@
 /**
- * 临时图层注册表（阶段 0 · 修 X5）
+ * 临时图层注册表（阶段 0 · 修 X5）——client/src/layer-registry.js 逐行等价迁移（F5-7，BRD-009）。
  *
  * 问题：MapViewer 应用样式时走全量 `map.setStyle(style, { diff: false })`，
  * 这会清掉所有不在样式文件里的图层。而地图上有几类图层是"临时但需要留在
@@ -15,34 +15,37 @@
  *   - replay 必须是幂等的：内部先清理自己的图层再重新添加，
  *     这样重复调用不会叠加，也不会因为图层已存在而抛错。
  *   - 单个 replay 失败不影响其它 replay（各自的绘制问题各自承担）。
- *
- * 与 client/src/layer-registry.js 逐函数等价（tests/f1-layer-registry-parity.test.ts 对拍强制）。
  */
 
-const replaysByMap = new WeakMap<object, Map<string, unknown>>();
+/** 地图实例宽松形态（MapLibre Map 及其测试桩都满足；仅做 WeakMap 分组键 + 回传）。 */
+type MapInstanceLike = object;
+
+type ReplayFn = (map: MapInstanceLike) => void;
+
+const replaysByMap = new WeakMap<MapInstanceLike, Map<string, ReplayFn>>();
 
 /** 登记/覆盖一个临时层的重放器。 */
-export function registerLayerReplay(map: unknown, key: unknown, replay: unknown): boolean {
+export function registerLayerReplay(map: MapInstanceLike | null | undefined, key: string | number, replay: ReplayFn): boolean {
   if (!map || !key || typeof replay !== "function") return false;
-  let bucket = replaysByMap.get(map as object);
+  let bucket = replaysByMap.get(map);
   if (!bucket) {
-    bucket = new Map();
-    replaysByMap.set(map as object, bucket);
+    bucket = new Map<string, ReplayFn>();
+    replaysByMap.set(map, bucket);
   }
   bucket.set(String(key), replay);
   return true;
 }
 
 /** 取消登记（例如用户主动清除该临时层时）。 */
-export function unregisterLayerReplay(map: unknown, key: unknown): boolean {
-  const bucket = map ? replaysByMap.get(map as object) : null;
+export function unregisterLayerReplay(map: MapInstanceLike | null | undefined, key: string | number): boolean {
+  const bucket = map ? replaysByMap.get(map) : null;
   if (!bucket) return false;
   return bucket.delete(String(key));
 }
 
 /** 当前已登记的键（供调试与测试断言）。 */
-export function listLayerReplayKeys(map: unknown): string[] {
-  const bucket = map ? replaysByMap.get(map as object) : null;
+export function listLayerReplayKeys(map: MapInstanceLike | null | undefined): string[] {
+  const bucket = map ? replaysByMap.get(map) : null;
   return bucket ? [...bucket.keys()] : [];
 }
 
@@ -50,23 +53,24 @@ export function listLayerReplayKeys(map: unknown): string[] {
  * 重放全部已登记的临时层。由 MapViewer 在样式重载完成后调用。
  * 返回成功重放的条数，便于调试日志与测试断言。
  */
-export function replayTemporaryLayers(map: unknown): number {
-  const bucket = map ? replaysByMap.get(map as object) : null;
+export function replayTemporaryLayers(map: MapInstanceLike | null | undefined): number {
+  if (!map) return 0;
+  const bucket = replaysByMap.get(map);
   if (!bucket || !bucket.size) return 0;
   let done = 0;
   for (const [key, replay] of bucket) {
     try {
-      (replay as (m: unknown) => void)(map);
+      replay(map);
       done += 1;
     } catch (error) {
       // 单条失败不能连累其它临时层；宁缺一层也不能整块地图空掉。
-      console.warn(`[图层注册表] 临时层 ${key} 重放失败：`, (error as { message?: unknown } | null | undefined)?.message || error);
+      console.warn(`[图层注册表] 临时层 ${key} 重放失败：`, (error as Error)?.message || error);
     }
   }
   return done;
 }
 
 /** 清空某张地图的全部登记（地图销毁时调用，避免残留引用）。 */
-export function clearLayerRegistry(map: unknown): void {
-  if (map) replaysByMap.delete(map as object);
+export function clearLayerRegistry(map: MapInstanceLike | null | undefined): void {
+  if (map) replaysByMap.delete(map);
 }

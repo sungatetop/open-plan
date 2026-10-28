@@ -7,6 +7,7 @@ import Logo from "../components/Logo";
 import FeedbackHost, { notifyError } from "../components/Feedback";
 import DocViewer, { type DocRecord } from "../components/DocViewer";
 import ChatPanel, { type ChatPanelImperativeHandle } from "../features/chat/panel";
+import MapPanel, { type MapBridgeHandlers } from "../features/map/map-panel";
 import TaskCenter from "../features/tasks/task-center";
 import WorkProductPanel from "../features/tasks/work-product-panel";
 import type { SessionRecord } from "../components/SessionList";
@@ -69,7 +70,7 @@ import { useTheme } from "./theme";
  *   - open()/文档标签/预览画布 → F4-3 已激活（op:doc:open + DocViewer 模块视图）；
  *   - onBrowserActivity/浏览器侧栏/工作区画布 → F4+；
  *   - CommandPalette（Ctrl+K）/SettingsPanel/TaskCenter 挂载 → F5/F4；
- *   - MapPanel/mapContexts → F6；activeModule 模块面板 → 随各域收口补挂。
+ *   - MapPanel/mapContexts/mapBridge → F5-7 已激活（地图模块 + 共享 ChatPanel 桥接）；activeModule 模块面板 → 随各域收口补挂。
  */
 
 // 启动加载分区文案：失败提示与重试按钮按分区说明，避免只报一句笼统错误。
@@ -203,6 +204,12 @@ export default function Workbench(): React.ReactElement {
   const [, setFlagsTick] = useState(0);
   const [conversationMode, setConversationMode] = useState("chat");
   const [conversationPhase, setConversationPhase] = useState("");
+  // F5-7 地图模块（App.jsx 177/238/335 转录）：地图模式保留 Agent 对话（共享 ChatPanel，
+  // 消息与事件流连续）；按线程记忆地图项目与视口上下文；bridgeRef 把 ChatPanel 的
+  // onMapAction/onFileChanged/onAgentEnd 回调转发给挂载中的 MapPanel。
+  const [mapContexts, setMapContexts] = useState<Record<string, { mapProject?: string } & Record<string, unknown>>>({});
+  const [mapChatVisible, setMapChatVisible] = useState(true); // 地图模式对话栏可独立隐藏
+  const mapBridgeRef = useRef<MapBridgeHandlers | null>(null);
   const [clientId] = useState(getClientId);
   const [threadId, setThreadId] = useState<string>(() => {
     let saved: string | null = null;
@@ -994,7 +1001,6 @@ export default function Workbench(): React.ReactElement {
     setActiveModule("artifacts");
   }, []);
 
-
   // ============================================================================
   // run_finished 消费（App.jsx 1287-1329 逐行转录，预览打开随 F4 裁剪）
   // ============================================================================
@@ -1164,6 +1170,9 @@ export default function Workbench(): React.ReactElement {
   const busyDetail = (sessionResumeError?.detail ?? null) as Record<string, unknown> | null;
   const busyForMs = Number(busyDetail?.busyForMs ?? 0);
   const busyActiveRunId = String(busyDetail?.activeRunId || "");
+  // F5-7 地图模块（App.jsx 239-240 转录）：当前线程的地图视口上下文与项目名。
+  const currentMapContext = mapContexts[threadId] || null;
+  const currentMapProject = String(currentMapContext?.mapProject || "zhejiang-map");
 
   return (
     <AppErrorBoundary>
@@ -1237,6 +1246,97 @@ export default function Workbench(): React.ReactElement {
             </div>
           </div>
         )}
+        {/* F5-7 地图模块（App.jsx 1565-1615 逐点转录）：MapPanel 全屏（hideChat 分支，
+            不内嵌 ChatPanel），共享 ChatPanel 常驻 .app-chat-slot.map，右缘 Resizer 调宽。
+            桥接语义与旧版一致：onFileChanged/onAgentEnd 双路（工作台状态 + mapBridge），
+            onMapAction/onOpenFile 纯桥接；onViewportChange 整体替换线程上下文（旧语义）。 */}
+        {activeModule === "map" && (
+          <MapPanel
+            onExit={() => setActiveModule(null)}
+            onOpenFile={(...args: unknown[]) => { markPreviewManual(); void openDocFile(String(args[0] ?? "")); }}
+            clientId={clientId}
+            threadId={threadId}
+            workspace={currentWorkspace}
+            models={models as unknown as ChatModel[]}
+            defaultModel={defaultModel}
+            onAgentEnd={handleAgentEnd}
+            onNewSession={() => void handleNewSession()}
+            historyMessages={historyMessages}
+            sessions={visibleSessions}
+            currentSessionId={currentSessionId}
+            onSelectSession={handleSelectSession}
+            onSessionChange={handleSessionChange}
+            onRefreshSessions={() => void refreshSessions()}
+            onFocusRun={() => { chatInputRef.current?.focusRun?.(); }}
+            onProjectChange={(name) => setMapContexts((prev) => ({ ...prev, [threadId]: { ...(prev[threadId] || {}), mapProject: name } }))}
+            conversationMode={conversationMode}
+            onModeChange={(next) => {
+              // 与主对话的模式切换同源：先让 ChatPanel 真正切模式，成功后再更新状态，
+              // 避免"按钮变了但 Agent 还是旧模式"（App.jsx 1586-1591 原样转录）。
+              const switched = chatInputRef.current?.setMode?.(next);
+              if (switched !== false) setConversationMode(next);
+            }}
+            hideChat
+            chatVisible={mapChatVisible}
+            onToggleChat={() => setMapChatVisible((value) => !value)}
+            bridgeRef={mapBridgeRef}
+            onViewportChange={(context) => setMapContexts((prev) => ({ ...prev, [threadId]: context }))}
+            insertChatText={insertChatText}
+          />
+        )}
+        {activeModule === "map" && mapChatVisible && (
+          <div className="app-chat-slot map">
+            <ChatPanel
+              ref={chatInputRef}
+              clientId={clientId}
+              threadId={threadId}
+              workspace={currentWorkspace}
+              project={currentProject as unknown as Record<string, unknown> | null}
+              frozen={Boolean(currentSession?.frozen)}
+              compact
+              onFileChanged={(changed) => {
+                handleFileChanged(changed);
+                mapBridgeRef.current?.onFileChanged?.(changed);
+              }}
+              onMapAction={(action) => mapBridgeRef.current?.onMapAction?.(action)}
+              currentDoc={`地图项目:${currentMapProject}`}
+              mapContext={currentMapContext}
+              mapProject={currentMapProject}
+              models={models as unknown as ChatModel[]}
+              defaultModel={defaultModel}
+              selectedModel={selectedModel}
+              onModelChange={setSelectedModel}
+              onAgentEnd={() => {
+                handleAgentEnd();
+                mapBridgeRef.current?.onAgentEnd?.();
+              }}
+              onRunFinished={handleRunFinished}
+              onOpenRunChanges={openChangesForRun}
+              onOpenRunArtifacts={openArtifactsForRun}
+              onModeChange={setConversationMode}
+              onPhaseChange={setConversationPhase}
+              historyMessages={historyMessages}
+              historyThreadId={historyThreadId}
+              historyWindow={historyWindow}
+              onNewSession={() => void handleNewSession()}
+              onOpenFile={(...args: unknown[]) => { mapBridgeRef.current?.onOpenFile?.(...args); }}
+              referenceFiles={files.map((file) => currentDir ? currentDir + "/" + file.name : file.name)}
+              sessions={visibleSessions}
+              onSelectSession={handleSelectSession}
+              onSessionChange={handleSessionChange}
+              onRefreshSessions={() => void refreshSessions()}
+              onDeleteSession={handleDeleteSession}
+              onBatchDeleteSession={async (ids: string[]) => { await handleBatchDeleteSessions(ids); }}
+              unreadByThread={unreadByThread}
+              onForkSession={async (id: string) => { await handleForkSession(id); }}
+              onPinSession={handlePinSession}
+              onFreezeSession={handleFreezeSession}
+            />
+          </div>
+        )}
+        {activeModule === "map" && mapChatVisible && (
+          <Resizer className="map-chat-resizer" side="right" min={300} max={620} cssVar="--map-chat-w" />
+        )}
         {sidebarOpen && (
           <>
             <SessionSidebar
@@ -1273,6 +1373,7 @@ export default function Workbench(): React.ReactElement {
               onPinSession={handlePinSession}
               onFreezeSession={handleFreezeSession}
               onBeforeOpenModal={() => setActiveModule(null)}
+              onOpenMap={() => setActiveModule("map")}
               onToggleTheme={toggleTheme}
               theme={theme}
             />
@@ -1400,6 +1501,9 @@ export default function Workbench(): React.ReactElement {
                 <button className="btn-xs" onClick={() => setRestoredRunHint(null)}>忽略</button>
               </div>
             )}
+            {/* F5-7：地图模式下主聊天槽卸载（App.jsx 1616 条件挂载语义等价）——共享 ChatPanel
+                已迁至 .app-chat-slot.map，主槽退场保证 chatInputRef 挂到地图槽实例上。 */}
+            {activeModule !== "map" && (
             <div className="center-chat-slot">
               <ChatPanel
                 ref={chatInputRef}
@@ -1437,6 +1541,7 @@ export default function Workbench(): React.ReactElement {
                 onFreezeSession={handleFreezeSession}
               />
             </div>
+            )}
           </div>
         </div>
       </div>

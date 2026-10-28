@@ -514,6 +514,88 @@ export const mapReport = (payload: Record<string, unknown> = {}): Promise<Channe
   invokeOrThrow("op:map:report", { body: payload || {} });
 
 // ============================================================================
+// 地图项目生命周期/样式配置/导入瓦片族（F5-7 map-panel 消费端点；逐一对齐 client/src/api.js）
+// ============================================================================
+
+/** mapProjects（项目清单）：GET /api/map/projects，返回 { projects, ... }。 */
+export const mapProjects = (): Promise<ChannelResponse<"op:map:projects:list">> =>
+  invokeOrThrow("op:map:projects:list");
+
+/** mapCreateProject：POST { project, name, baseProject }，旧默认 baseProject="zhejiang-map"。 */
+export const mapCreateProject = (project: string, name: string, baseProject = "zhejiang-map"): Promise<ChannelResponse<"op:map:projects:create">> =>
+  invokeOrThrow("op:map:projects:create", { body: { project, name, baseProject } });
+
+/** mapProject（项目详情 + layerViews 归属视图）：旧实现空值参数不进查询串。 */
+export const mapProject = (name: string, workspace = ""): Promise<ChannelResponse<"op:map:project:get">> => {
+  const query: NonNullable<ChannelRequest<"op:map:project:get">["query"]> = {};
+  if (name) query.name = name;
+  // 图层归属视图需要工作区身份：共享数据集 + 本工作区自有图层（阶段 1）。
+  if (workspace) query.workspace = workspace;
+  return invokeOrThrow("op:map:project:get", { query });
+};
+
+/** mapSaveStyle：POST { name, style }（style.json 全量写 + 服务端热更新）。 */
+export const mapSaveStyle = (name: string, style: unknown): Promise<ChannelResponse<"op:map:style:save">> =>
+  invokeOrThrow("op:map:style:save", { body: { name, style } });
+
+/** mapSaveConfig：POST { name, config }（map.config.json 全量写）。 */
+export const mapSaveConfig = (name: string, config: unknown): Promise<ChannelResponse<"op:map:config:save">> =>
+  invokeOrThrow("op:map:config:save", { body: { name, config } });
+
+/** mapDeleteLayer：POST { name, layerId }（数据与瓦片一并移除）。 */
+export const mapDeleteLayer = (name: string, layerId: string): Promise<ChannelResponse<"op:map:layer:delete">> =>
+  invokeOrThrow("op:map:layer:delete", { body: { name, layerId } });
+
+/** mapRebuild：POST { name, layerIds }（旧实现 layerIds 可省略）。 */
+export const mapRebuild = (name: string, layerIds?: string[] | null): Promise<ChannelResponse<"op:map:rebuild">> =>
+  invokeOrThrow("op:map:rebuild", { body: { name, layerIds: layerIds ?? null } });
+
+/** mapImportBatch：POST { name, items }，返回 { layers, ... }（逐层 ok/tiles/error）。 */
+export const mapImportBatch = (name: string, items: unknown[]): Promise<ChannelResponse<"op:map:import:batch">> =>
+  invokeOrThrow("op:map:import:batch", { body: { name, items } });
+
+/** mapPrepare（目录一键生成）：POST { srcDir }，返回 { ok, prepare, tiles }。 */
+export const mapPrepare = (srcDir: string): Promise<ChannelResponse<"op:map:prepare">> =>
+  invokeOrThrow("op:map:prepare", { body: { srcDir } });
+
+/** mapIsochrone（等时圈）：POST { location, mode, range, rangeType }。旧 body 另带 name（项目名，
+ *  server /api/map/isochrone 不消费该字段），通道载荷按 schema 只传服务端实际读取的四元组。 */
+export const mapIsochrone = (params: { location?: string; mode?: string; range?: number; rangeType?: string }): Promise<ChannelResponse<"op:map:isochrone">> =>
+  invokeOrThrow("op:map:isochrone", {
+    body: { location: params.location, mode: params.mode, range: params.range, rangeType: params.rangeType }
+  });
+
+/** mapRoute（路径规划）：POST { from, to, mode, provider }，返回 { provider, distance, duration, geometry }。 */
+export const mapRoute = (params: { from?: string; to?: string; mode?: string; provider?: string }): Promise<ChannelResponse<"op:map:route">> =>
+  invokeOrThrow("op:map:route", {
+    body: { from: params.from, to: params.to, mode: params.mode, provider: params.provider }
+  });
+
+/** mapDuplicateProject：POST { project, name }，返回 { ok, project, config }。 */
+export const mapDuplicateProject = (project: string, name: string): Promise<ChannelResponse<"op:map:projects:duplicate">> =>
+  invokeOrThrow("op:map:projects:duplicate", { body: { project, name } });
+
+/** mapRenameProject：POST { project, name }。 */
+export const mapRenameProject = (project: string, name: string): Promise<ChannelResponse<"op:map:projects:rename">> =>
+  invokeOrThrow("op:map:projects:rename", { body: { project, name } });
+
+/** mapArchiveProject：POST { project, archived }，旧默认 archived=true。 */
+export const mapArchiveProject = (project: string, archived = true): Promise<ChannelResponse<"op:map:projects:archive">> =>
+  invokeOrThrow("op:map:projects:archive", { body: { project, archived } });
+
+/** mapDeleteProject：POST { project }（移入回收目录 .trash）。 */
+export const mapDeleteProject = (project: string): Promise<ChannelResponse<"op:map:projects:delete">> =>
+  invokeOrThrow("op:map:projects:delete", { body: { project } });
+
+/** mapExportBatch（G7 批量导出·flag OAW_MAP_EXPORT 默认关）：POST 载荷整体透传，返回 { batchId, total, skipped }。 */
+export const mapExportBatch = (payload: Record<string, unknown> = {}): Promise<ChannelResponse<"op:map:export:batch:start">> =>
+  invokeOrThrow("op:map:export:batch:start", { body: payload || {} });
+
+/** mapExportStatus：GET ?id=，返回 { status, summary, ... }。 */
+export const mapExportStatus = (id: string): Promise<ChannelResponse<"op:map:export:batch:status">> =>
+  invokeOrThrow("op:map:export:batch:status", { query: { id } });
+
+// ============================================================================
 // 项目族
 // ============================================================================
 

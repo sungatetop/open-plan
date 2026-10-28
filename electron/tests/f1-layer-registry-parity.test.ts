@@ -22,7 +22,7 @@ function runOps(mod: typeof desktop, warnings: unknown[][]): unknown[] {
   out.push(mod.registerLayerReplay(mapA, 0, replayOk)); // falsy key → false
   out.push(mod.registerLayerReplay(null, "k", replayOk)); // 空 map → false
   out.push(mod.registerLayerReplay(undefined, "k", replayOk));
-  out.push(mod.registerLayerReplay(mapA, "k2", "not-a-fn")); // replay 非函数 → false
+  out.push(mod.registerLayerReplay(mapA, "k2", "not-a-fn" as unknown as (m: object) => void)); // replay 非函数 → false
   out.push(mod.registerLayerReplay(mapB, "b1", replayOk));
   out.push(mod.listLayerReplayKeys(mapA));
   out.push(mod.listLayerReplayKeys(mapB));
@@ -45,8 +45,8 @@ function runOps(mod: typeof desktop, warnings: unknown[][]): unknown[] {
   out.push(mod.clearLayerRegistry(null)); // no-op
   out.push(received.length); // replay 实际被调用次数
   out.push(received.every((m) => m === mapA || m === mapB)); // 收到的是本侧 map 实例
-  out.push(catchThrow(() => mod.registerLayerReplay("primitive", "k", replayOk))); // WeakMap 原始键 → 抛错
-  out.push(mod.unregisterLayerReplay("primitive", "k")); // get 不抛 → false
+  out.push(catchThrow(() => mod.registerLayerReplay("primitive" as unknown as object, "k", replayOk))); // WeakMap 原始键 → 抛错
+  out.push(mod.unregisterLayerReplay("primitive" as unknown as object, "k")); // get 不抛 → false
   return out;
 }
 
