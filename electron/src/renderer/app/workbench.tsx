@@ -1485,7 +1485,11 @@ export default function Workbench(): React.ReactElement {
         {/* F5-7 地图模块（App.jsx 1565-1615 逐点转录）：MapPanel 全屏（hideChat 分支，
             不内嵌 ChatPanel），共享 ChatPanel 常驻 .app-chat-slot.map，右缘 Resizer 调宽。
             桥接语义与旧版一致：onFileChanged/onAgentEnd 双路（工作台状态 + mapBridge），
-            onMapAction/onOpenFile 纯桥接；onViewportChange 整体替换线程上下文（旧语义）。 */}
+            onMapAction/onOpenFile 纯桥接；onViewportChange 合并写入线程上下文（R5 收口
+            统一决策：旧 App.jsx L1596 整体替换会抹掉 onProjectChange 记下的 mapProject，
+            导致切换地图项目后再平移/缩放，ChatPanel 的 mapProject 载荷与提示注入回退
+            zhejiang-map、agent map 工具对错误项目执行——属旧端实现事故非设计意图，
+            按 evident intent 修正为合并写入；旧 client 迁移期不动，随 R6 退役）。 */}
         {activeModule === "map" && (
           <MapPanel
             onExit={() => setActiveModule(null)}
@@ -1516,7 +1520,7 @@ export default function Workbench(): React.ReactElement {
             chatVisible={mapChatVisible}
             onToggleChat={() => setMapChatVisible((value) => !value)}
             bridgeRef={mapBridgeRef}
-            onViewportChange={(context) => setMapContexts((prev) => ({ ...prev, [threadId]: context }))}
+            onViewportChange={(context) => setMapContexts((prev) => ({ ...prev, [threadId]: { ...(prev[threadId] || {}), ...context } }))}
             insertChatText={insertChatText}
           />
         )}
