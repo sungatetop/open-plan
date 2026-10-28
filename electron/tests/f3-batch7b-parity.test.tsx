@@ -29,6 +29,11 @@ import { dirname, resolve } from "node:path";
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 
+// E 组 workbench 全链路挂载用例单跑即达 3~4.6s，整文件串行满载下会越过默认 5s
+// 超时并连锁污染同文件后续用例（2026-10-26 甄别：stash 基线同样失败，非功能回归），
+// 本文件统一放宽到 30s。
+vi.setConfig({ testTimeout: 30_000 });
+
 // jsdom 无滚动 API：ChatPanel 跟随滚动 effect 静默化（沿批7a 基建）
 (Element.prototype as unknown as Record<string, unknown>).scrollTo = () => {};
 (Element.prototype as unknown as Record<string, unknown>).scrollIntoView = () => {};

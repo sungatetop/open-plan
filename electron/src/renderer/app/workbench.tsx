@@ -7,6 +7,7 @@ import Logo from "../components/Logo";
 import FeedbackHost, { notifyError } from "../components/Feedback";
 import ChatPanel, { type ChatPanelImperativeHandle } from "../features/chat/panel";
 import TaskCenter from "../features/tasks/task-center";
+import WorkProductPanel from "../features/tasks/work-product-panel";
 import type { SessionRecord } from "../components/SessionList";
 import {
   normalizeHistoryMessages,
@@ -179,7 +180,10 @@ export default function Workbench(): React.ReactElement {
   // 明细随全局事件即时刷新）；F4-2 起 artifactVersion 值由 WorkProductPanel 消费
   // （产物/改动面板的 refreshToken，bump 源不变：createGlobalEventFeed + run_finished）。
   const [eventVersion, setEventVersion] = useState(0);
-  const [, setArtifactVersion] = useState(0);
+  const [artifactVersion, setArtifactVersion] = useState(0);
+  // 右栏「改动/产物」的 runId 与范围（App.jsx:180-181）：chat 结果卡交付入口带 runId 打开。
+  const [changesRunId, setChangesRunId] = useState("");
+  const [artifactScope, setArtifactScope] = useState("session");
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [activeModule, setActiveModule] = useState<string | null>(null); // 模块面板挂载随 F4/F5/F6 补齐，状态先行保留
   // 运行开关快照到达后的重渲染触发器（值本身不参与渲染，只用来让 flag() 派生的状态重算）。
@@ -642,7 +646,10 @@ export default function Workbench(): React.ReactElement {
   // ============================================================================
 
   const handleSelectSession = useCallback(async (session: SessionRecord) => {
-    // 会话切换：重置右栏“改动/产物”的 runId 与范围随 F4 域补齐（changesRunId/artifactScope）。
+    // 会话切换：重置右栏"改动/产物"的 runId 与范围，
+    // 避免上一个会话的"本轮产物"污染到当前会话（用户反馈的跨会话污染）。
+    setChangesRunId("");
+    setArtifactScope("session");
     const loadSeq = ++sessionLoadSeqRef.current;
     // 选择历史同样推进统一导航代际：在途的新建/工作区切换不得覆盖本次结果。
     navGenerationRef.current += 1;
@@ -875,6 +882,20 @@ export default function Workbench(): React.ReactElement {
     }, 200);
   }, [refreshSessions]);
 
+  // B03：结果卡的交付入口 → 对应模块面板（带 runId，保证"本轮"语义；App.jsx 1271-1284）。
+  // 旧形态落在预览画布右栏页签；新 UI 预览画布随 F4-3（DocViewer）补挂，本批先以
+  // activeModule 模块视图承接，RunChangesPanel/ArtifactPanel 的 props 语义不变。
+  const openChangesForRun = useCallback((runId: unknown = "") => {
+    setChangesRunId(String(runId || ""));
+    setActiveModule("changes");
+  }, []);
+  const openArtifactsForRun = useCallback((runId: unknown = "") => {
+    setChangesRunId(String(runId || ""));
+    setArtifactScope(runId ? "run" : "session");
+    setActiveModule("artifacts");
+  }, []);
+
+
   // ============================================================================
   // run_finished 消费（App.jsx 1287-1329 逐行转录，预览打开随 F4 裁剪）
   // ============================================================================
@@ -1045,6 +1066,33 @@ export default function Workbench(): React.ReactElement {
             <Icon name="warning" size={14} />
             <span>{loadFailureText}</span>
             <button className="btn-xs" onClick={retryStartupLoads} disabled={loadRetrying}>{loadRetrying ? "重试中…" : "重试"}</button>
+          </div>
+        )}
+        {/* F4-2：改动/产物模块视图（App.jsx 2041-2051 逐行转录）。旧形态的 chat 结果卡
+            交付入口开在预览画布右栏页签（openChangesForRun/openArtifactsForRun），新 UI
+            预览画布随 F4-3（DocViewer）补挂，先以模块视图承接——产物视图补充
+            selectedRunId/artifactScope/onArtifactScopeChange 以承载「本轮」范围语义。
+            fullPage 任务中心模块随 F5/F6 模块导航再挂。 */}
+        {activeModule === "artifacts" && (
+          <div className="module-view">
+            <div className="module-head">
+              <button className="module-back" onClick={() => setActiveModule(null)} title="返回对话"><Icon name="back" size={15} /></button>
+              <div className="module-brand-heading"><Logo size={22} /><span><h2>成果</h2><p>查看、验收、固定和回滚工作产物</p></span></div>
+            </div>
+            <div className="module-body module-artifacts-body">
+              <WorkProductPanel tab="artifacts" clientId={clientId} threadId={threadId} workspace={currentWorkspace} projectId={currentProject?.id || ""} currentSessionId={currentSessionId || ""} selectedRunId={changesRunId} artifactScope={artifactScope} onArtifactScopeChange={setArtifactScope} refreshToken={artifactVersion} onOpenFile={(name: string, thread?: string, cwd?: string) => { setActiveModule(null); void openDocFile(name, thread, cwd); }} />
+            </div>
+          </div>
+        )}
+        {activeModule === "changes" && (
+          <div className="module-view">
+            <div className="module-head">
+              <button className="module-back" onClick={() => setActiveModule(null)} title="返回对话"><Icon name="back" size={15} /></button>
+              <div className="module-brand-heading"><Logo size={22} /><span><h2>改动</h2><p>按 Run 归属查看本轮文件改动与内容差异</p></span></div>
+            </div>
+            <div className="module-body module-artifacts-body">
+              <WorkProductPanel tab="changes" clientId={clientId} threadId={threadId} workspace={currentWorkspace} projectId={currentProject?.id || ""} currentSessionId={currentSessionId || ""} selectedRunId={changesRunId} refreshToken={artifactVersion} onOpenFile={(name: string, thread?: string, cwd?: string) => { setActiveModule(null); void openDocFile(name, thread, cwd); }} />
+            </div>
           </div>
         )}
         {sidebarOpen && (
@@ -1225,6 +1273,8 @@ export default function Workbench(): React.ReactElement {
                 onModelChange={setSelectedModel}
                 onAgentEnd={handleAgentEnd}
                 onRunFinished={handleRunFinished}
+                onOpenRunChanges={openChangesForRun}
+                onOpenRunArtifacts={openArtifactsForRun}
                 onModeChange={setConversationMode}
                 onPhaseChange={setConversationPhase}
                 historyMessages={historyMessages}
