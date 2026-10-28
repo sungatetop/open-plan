@@ -184,6 +184,23 @@ export const DESKTOP_CHANNELS = {
   "op:map:project:layer:delete": { method: "DELETE", path: "/api/map/project/:name/layer/:layerId" },
   "op:map:project:isochrone": { method: "POST", path: "/api/map/project/:name/isochrone" },
 
+  // ---- 地图域分析可视化族（F5-2：map-direct 直调；统一可视化/M2 分析/演示数据/M3 新昌公交） ----
+  "op:map:visual:sources": { method: "GET", path: "/api/map/visual/sources" },
+  "op:map:visual:get": { method: "GET", path: "/api/map/visual" },
+  "op:map:traffic-bandwidth": { method: "GET", path: "/api/map/traffic-bandwidth" },
+  "op:map:od-lines": { method: "GET", path: "/api/map/od-lines" },
+  "op:map:multi-isochrone": { method: "POST", path: "/api/map/multi-isochrone" },
+  "op:map:exchange-sankey": { method: "GET", path: "/api/map/exchange-sankey" },
+  "op:map:road-structure": { method: "GET", path: "/api/map/road-structure" },
+  // legacy 路径 /api/map/demo-analysis 与 /api/demo/cambodia-od（server L799-808 先注册生效段；
+  // bus 族 /api/bus/* 为 L5714 404 catch-all 遮蔽的死路由，不登记通道，随 R6 退役）
+  "op:map:demo-analysis": { method: "GET", path: "/api/map/demo-analysis" },
+  "op:map:cambodia-od": { method: "GET", path: "/api/demo/cambodia-od" },
+  "op:map:m3:bus-routes": { method: "GET", path: "/api/m3/bus-routes" },
+  "op:map:m3:station-heatmap": { method: "GET", path: "/api/m3/station-heatmap" },
+  "op:map:m3:od-lines": { method: "GET", path: "/api/m3/od-lines" },
+  "op:map:m3:network-stats": { method: "GET", path: "/api/m3/network-stats" },
+
   // ---- 项目族（SettingsPanel 项目管理分节；批7b：App 项目列表） ----
   "op:projects:list": { method: "GET", path: "/api/projects" },
   "op:projects:create": { method: "POST", path: "/api/projects" },
@@ -994,6 +1011,35 @@ export type MapProjectRebuildTilesRequest = { params: { name: string } };
 export type MapProjectRebuildTilesResponse = { ok?: boolean; results?: unknown; error?: string };
 export type MapProjectIsochroneRequest = { params: { name: string }; body?: Record<string, unknown> };
 
+// ---- 地图域分析可视化族（F5-2，对齐 server/index.mjs L5194-5254 / L5508-5585 / L799-825 实际结构） ----
+
+export type MapVisualSourcesRequest = Record<string, never>;
+export type MapVisualSourcesResponse = { sources?: Array<Record<string, unknown>>; planned?: unknown[] };
+/** dataset 分发入参（server L5202-5215：minFlow 取自 query.threshold）。 */
+export type MapVisualGetRequest = {
+  query?: {
+    dataset?: string;
+    kind?: string;
+    path?: string;
+    measure?: string;
+    project?: string;
+    threshold?: string | number;
+    region?: string;
+    workspace?: string;
+    url?: string;
+    db?: string;
+    sql?: string;
+  };
+};
+export type MapVisualGetResponse = { descriptor?: Record<string, unknown>; error?: string; available?: string[] };
+/** M2 分析四路由（traffic-bandwidth/od-lines/exchange-sankey/road-structure）：载荷整体透传。 */
+export type MapAnalysisQueryRequest = { query?: { project?: string } };
+export type MapMultiIsochroneRequest = { body?: { location?: unknown; mode?: string; ranges?: unknown; rangeType?: string } };
+/** 生效段 L799-803：query 原始透传（默认值由域内补齐）。 */
+export type MapDemoAnalysisRequest = { query?: { analysis?: string; region?: string; project?: string; count?: string | number } };
+export type MapCambodiaOdRequest = { query?: { minFlow?: string | number } };
+export type MapM3Request = Record<string, never>;
+
 // ---- 项目族 ----
 
 export type ProjectListRequest = { query?: { type?: string; status?: string; sort?: string; pinned?: string } };
@@ -1186,6 +1232,21 @@ export interface DesktopChannelProtocol {
   "op:map:project:layer:get": { request: MapProjectLayerNamedRequest; response: Record<string, unknown> };
   "op:map:project:layer:delete": { request: MapProjectLayerNamedRequest; response: Record<string, unknown> };
   "op:map:project:isochrone": { request: MapProjectIsochroneRequest; response: Record<string, unknown> };
+
+  // ---- 地图域分析可视化族（F5-2） ----
+  "op:map:visual:sources": { request: MapVisualSourcesRequest; response: MapVisualSourcesResponse };
+  "op:map:visual:get": { request: MapVisualGetRequest; response: MapVisualGetResponse };
+  "op:map:traffic-bandwidth": { request: MapAnalysisQueryRequest; response: Record<string, unknown> };
+  "op:map:od-lines": { request: MapAnalysisQueryRequest; response: Record<string, unknown> };
+  "op:map:multi-isochrone": { request: MapMultiIsochroneRequest; response: Record<string, unknown> };
+  "op:map:exchange-sankey": { request: MapAnalysisQueryRequest; response: Record<string, unknown> };
+  "op:map:road-structure": { request: MapAnalysisQueryRequest; response: Record<string, unknown> };
+  "op:map:demo-analysis": { request: MapDemoAnalysisRequest; response: Record<string, unknown> };
+  "op:map:cambodia-od": { request: MapCambodiaOdRequest; response: Record<string, unknown> };
+  "op:map:m3:bus-routes": { request: MapM3Request; response: Record<string, unknown> };
+  "op:map:m3:station-heatmap": { request: MapM3Request; response: Record<string, unknown> };
+  "op:map:m3:od-lines": { request: MapM3Request; response: Record<string, unknown> };
+  "op:map:m3:network-stats": { request: MapM3Request; response: Record<string, unknown> };
 
   "op:projects:list": { request: ProjectListRequest; response: ProjectListResponse };
   "op:projects:create": { request: ProjectCreateRequest; response: Record<string, unknown> };
