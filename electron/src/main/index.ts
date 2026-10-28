@@ -87,6 +87,13 @@ import {
   type SkillsDirectDeps
 } from "./ipc/skills-direct";
 import {
+  BROWSER_DIRECT_CHANNELS,
+  invokeBrowserDirect,
+  createBrowserWatchRegistry,
+  BROWSER_STREAM_EVENT_TYPE,
+  type BrowserDirectDeps
+} from "./ipc/browser-direct";
+import {
   WORKFLOWS_DIRECT_CHANNELS,
   invokeWorkflowsDirect,
   type WorkflowsDirectDeps
@@ -1080,9 +1087,9 @@ const WORKFLOWS_DIRECT_ENABLED = directPathEnabled("OP_DESKTOP_WORKFLOWS_DIRECT"
 const AGENTS_DIRECT_ENABLED = directPathEnabled("OP_DESKTOP_AGENTS_DIRECT");
 const INTEGRATIONS_DIRECT_ENABLED = directPathEnabled("OP_DESKTOP_INTEGRATIONS_DIRECT");
 const TEMPLATES_DIRECT_ENABLED = directPathEnabled("OP_DESKTOP_TEMPLATES_DIRECT");
+const BROWSER_DIRECT_ENABLED = directPathEnabled("OP_DESKTOP_BROWSER_DIRECT");
 
-/** 技能域通道直调注册（F6-1）：覆盖 http-forward catch-all 中 3 条 op:skills 通道。 */
-function registerSkillsDirectInvokers(): void {
+/** 技能域通道直调注册（F6-1）：覆盖 http-forward catch-all 中 3 条 op:skills 通道。 */function registerSkillsDirectInvokers(): void {
   if (!(AGENT_DOMAIN_ENABLED && SKILLS_DIRECT_ENABLED)) return;
   let depsPromise: Promise<SkillsDirectDeps> | null = null;
   const ensureDeps = (): Promise<SkillsDirectDeps> => {
@@ -1108,6 +1115,63 @@ function registerSkillsDirectInvokers(): void {
     ipcMain.removeHandler(channel);
     ipcMain.handle(channel, async (_event, payload: InvokeEnvelope | undefined) =>
       invokeSkillsDirect(channel, payload, await ensureDeps())
+    );
+  }
+}
+
+/**
+ * 内置浏览器域通道直调注册（F6-2）：8 条 invoke 通道 + op:browser:watch/unwatch 帧流推桥。
+ * watch/unwatch 不入 DESKTOP_CHANNELS（对齐 op:events:watch 先例），生命周期由渲染层控制，
+ * 事件经 broadcastEvent 以 BROWSER_STREAM_EVENT_TYPE（op:browser-stream）推所有窗口。
+ * 与 AGENT_DOMAIN_ENABLED 双门控：回滚旗标下 watch/unwatch 一并关闭（桌面新 UI 浏览器面板
+ * 预期走直调路径，回滚面向旧 client 验证）。
+ */
+function registerBrowserDirectInvokers(): void {
+  if (!(AGENT_DOMAIN_ENABLED && BROWSER_DIRECT_ENABLED)) return;
+  let depsPromise: Promise<BrowserDirectDeps> | null = null;
+  const ensureDeps = (): Promise<BrowserDirectDeps> => {
+    depsPromise ??= (async () => {
+      const browser = await import("./backend/builtin-browser");
+      return {
+        browserSessionKey: (clientId: string, threadId: string) => browser.browserSessionKey(clientId, threadId),
+        getBrowserSession: (key: string) => browser.getBrowserSession(key),
+        browserOpen: (key: string, url: string) => browser.browserOpen(key, url),
+        browserUserInput: (key: string, payload: Record<string, unknown>) => browser.browserUserInput(key, payload),
+        browserClose: (key: string, options: { force?: boolean; reason?: string }) => browser.browserClose(key, options),
+        resetBrowserSession: (key: string) => browser.resetBrowserSession(key),
+        browserSetStreamPaused: (key: string, paused: boolean) => browser.browserSetStreamPaused(key, paused),
+        browserFullpageScreenshot: (key: string) => browser.browserFullpageScreenshot(key),
+        browserPrintToPdf: (key: string) => browser.browserPrintToPdf(key),
+        subscribeBrowser: (key: string, handler: (type: string, data: unknown) => void) => browser.subscribeBrowser(key, handler as (type: string, data: any) => void),
+        browserSubscriberCount: (key: string) => browser.browserSubscriberCount(key)
+      } satisfies BrowserDirectDeps;
+    })();
+    return depsPromise!;
+  };
+  ipcMain.removeHandler("op:browser:watch");
+  ipcMain.handle("op:browser:watch", async (_event, request: { client?: string; thread?: string; frames?: boolean | string }) => {
+    const registry = await watchRegistry();
+    return registry.watch(request ?? {});
+  });
+  ipcMain.removeHandler("op:browser:unwatch");
+  ipcMain.handle("op:browser:unwatch", async (_event, request: { client?: string; thread?: string }) => {
+    const registry = await watchRegistry();
+    return registry.unwatch(request ?? {});
+  });
+  let registryPromise: Promise<ReturnType<typeof createBrowserWatchRegistry>> | null = null;
+  const watchRegistry = (): Promise<ReturnType<typeof createBrowserWatchRegistry>> => {
+    registryPromise ??= (async () => {
+      const deps = await ensureDeps();
+      return createBrowserWatchRegistry(deps, (event) =>
+        broadcastEvent({ type: BROWSER_STREAM_EVENT_TYPE, data: event.data } as DesktopEvent)
+      );
+    })();
+    return registryPromise!;
+  };
+  for (const channel of BROWSER_DIRECT_CHANNELS) {
+    ipcMain.removeHandler(channel);
+    ipcMain.handle(channel, async (_event, payload: InvokeEnvelope | undefined) =>
+      invokeBrowserDirect(channel, payload, await ensureDeps())
     );
   }
 }
@@ -1731,6 +1795,12 @@ async function shutdown(exitCode: number): Promise<void> {
   app.exit(exitCode);
 }
 
+// OP_DESKTOP_USER_DATA 显式重定向 userData（必须在 requestSingleInstanceLock 前生效：
+// 单例锁落在 userData 下）。冒烟/受限运行环境用：%APPDATA% 不可写时把 Chromium
+// 单例锁、窗口态与本地存储隔离到指定目录（smoke.mjs 每次运行注入一次性临时目录）。
+const userDataOverride = process.env.OP_DESKTOP_USER_DATA;
+if (userDataOverride) app.setPath("userData", path.resolve(userDataOverride));
+
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
   app.quit();
@@ -1761,6 +1831,7 @@ if (!gotLock) {
     registerSystemStatusDirectInvokers();
     registerKbDirectInvokers();
     registerSkillsDirectInvokers();
+    registerBrowserDirectInvokers();
     registerWorkflowsDirectInvokers();
     registerAgentsDirectInvokers();
     registerIntegrationsDirectInvokers();

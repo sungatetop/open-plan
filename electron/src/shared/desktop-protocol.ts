@@ -53,6 +53,23 @@ export interface OpDesktopApi {
   watchAgentEvents(request: AgentEventWatchRequest): Promise<EventWatchResult>;
   /** 停止全局 Agent 事件流订阅（省略参数 = 停当前订阅）。 */
   stopAgentEvents(request?: { client?: string }): Promise<void>;
+  /**
+   * 订阅内置浏览器帧流（F6-2：main 侧 subscribeBrowser 推桥 → op:browser-stream 事件，
+   * 替代旧 EventSource GET /api/browser/stream 建立序）。注册表同 (client, thread)
+   * 去重并重发初始 state/frame 快照；重复 watch 以最新 frames 偏好重订阅。
+   * ok=false 表示请求被拒。
+   */
+  watchBrowserStream(request: BrowserStreamWatchRequest): Promise<EventWatchResult>;
+  /** 停止浏览器帧流订阅（订阅者数量递减语义，对齐 SSE req close）。 */
+  stopBrowserStream(request?: { client?: string; thread?: string }): Promise<void>;
+}
+
+/** 浏览器帧流订阅请求（对齐 SSE 建立参数 client/thread/frames）。 */
+export interface BrowserStreamWatchRequest {
+  client: string;
+  thread?: string;
+  /** 是否推送画面帧（默认 true；false = 仅 state/tabs/closed 控制帧）。 */
+  frames?: boolean;
 }
 
 /** 对话流事件订阅请求（对齐 /api/agent/stream 查询参数）。 */

@@ -167,6 +167,18 @@ export const DESKTOP_CHANNELS = {
   "op:templates:file": { method: "GET", path: "/api/templates/file/:path" },
   "op:templates:files": { method: "GET", path: "/api/templates/files/:path" },
 
+  // ---- 内置浏览器族（F6-2：browser-direct 直调；画面流状态/导航/输入/关闭/重置/整页截图/PDF/推流暂停。
+  //      /api/browser/stream 长连接以 op:browser:watch/unwatch + op:browser-stream 事件推送替代（不入清单）；
+  //      /api/browser/shot 文件回看不迁（BrowserPanel 未消费，聊天工具卡文件走 openDocFile/file-urls）） ----
+  "op:browser:state": { method: "GET", path: "/api/browser/state" },
+  "op:browser:open": { method: "POST", path: "/api/browser/open" },
+  "op:browser:stream-pause": { method: "POST", path: "/api/browser/stream-pause" },
+  "op:browser:fullpage": { method: "POST", path: "/api/browser/fullpage" },
+  "op:browser:pdf": { method: "POST", path: "/api/browser/pdf" },
+  "op:browser:input": { method: "POST", path: "/api/browser/input" },
+  "op:browser:close": { method: "POST", path: "/api/browser/close" },
+  "op:browser:reset": { method: "POST", path: "/api/browser/reset" },
+
   // ---- 模型族（10s 单飞缓存在 renderer API 层，通道只承载传输） ----
   "op:models:list": { method: "GET", path: "/api/models" },
   "op:models:refresh": { method: "POST", path: "/api/models/refresh" },
@@ -306,8 +318,9 @@ export const DESKTOP_CHANNELS = {
 
 export type DesktopChannelId = keyof typeof DESKTOP_CHANNELS;
 
-/** SSE 长连接路由 → op:event 推送的替代关系（对账测试断言其存在于 server 路由面）。 */
-export const SSE_REPLACED_ROUTES = ["GET /api/agent/stream", "GET /api/agent/events", "GET /api/memory/stream"] as const;
+/** SSE 长连接路由 → op:event 推送的替代关系（对账测试断言其存在于 server 路由面）。
+ *  GET /api/browser/stream（F6-2）以 op:browser:watch/unwatch 生命周期 + op:browser-stream 事件推送替代。 */
+export const SSE_REPLACED_ROUTES = ["GET /api/agent/stream", "GET /api/agent/events", "GET /api/memory/stream", "GET /api/browser/stream"] as const;
 
 // ============================================================================
 // 领域载荷类型：对齐 server/index.mjs 各路由的实际请求/响应结构。
@@ -1202,6 +1215,50 @@ export type TemplatesGenerateNoticeResponse = { ok: true; name: string } | { ok?
 export type TemplatesFileRequest = { params: { path: string } };
 export type TemplatesFileResponse = { mime: string; base64: string } | { error: string };
 
+// ---- 内置浏览器族（F6-2；响应结构与 server/index.mjs L2084-2305 逐点对齐） ----
+
+/** 浏览器会话状态视图（session.stateView() 或无会话时的 inactive 默认，server L2089/L2244 同款）。 */
+export interface BrowserStateView {
+  active: boolean;
+  url: string;
+  title: string;
+  loading: boolean;
+  hasFrame?: boolean;
+  error?: string;
+  viewport?: { width: number; height: number };
+  frameSize?: { width: number; height: number };
+  ownership?: { owner: string; reason: string; leaseExpiresAt: number; secondsRemaining: number } | null;
+  [key: string]: unknown;
+}
+
+export const BROWSER_INACTIVE_STATE: BrowserStateView = {
+  active: false,
+  url: "",
+  title: "",
+  loading: false,
+  hasFrame: false,
+  ownership: { owner: "agent", reason: "", leaseExpiresAt: 0, secondsRemaining: 0 }
+};
+
+export type BrowserStateRequest = { query: { client: string; thread?: string } };
+export type BrowserStateResponse = { ok: true; state: BrowserStateView };
+export type BrowserOpenRequest = { body: { client: string; thread?: string; url?: string } };
+export type BrowserOpenResponse = { ok: true; state: BrowserStateView } | { ok: false; error: string; code?: string | null };
+export type BrowserStreamPauseRequest = { body: { client?: string; thread?: string; paused?: boolean } };
+export type BrowserStreamPauseResponse = { ok: true } | { ok: false; error: string };
+export type BrowserCaptureRequest = { body: { client?: string; thread?: string } };
+/** 整页截图 / PDF：file/base64/bytes/url（server L2122/L2134 同款字段面）。 */
+export type BrowserCaptureResponse =
+  | { ok: true; file: string; base64: string; bytes: number; url: string }
+  | { ok: false; error: string; code?: string | null };
+/** input 通道：body 除 client/thread 外整体透传 browserUserInput（action/nx/ny/key/text/... 宽类型）。 */
+export type BrowserInputRequest = { body: { client?: string; thread?: string } & Record<string, unknown> };
+export type BrowserInputResponse = { ok: true; result: unknown } | { ok: false; error: string; code?: string | null };
+export type BrowserCloseRequest = { body: { client?: string; thread?: string; force?: boolean; reason?: string } };
+export type BrowserCloseResponse = { ok: true; [key: string]: unknown } | { ok: false; error: string };
+export type BrowserResetRequest = { body: { client?: string; thread?: string } };
+export type BrowserResetResponse = { ok: true; [key: string]: unknown } | { ok: false; error: string };
+
 // ---- 模型族 ----
 
 export type ModelsListRequest = Record<string, never>;
@@ -1516,6 +1573,16 @@ export interface DesktopChannelProtocol {
   "op:templates:file": { request: TemplatesFileRequest; response: TemplatesFileResponse };
   "op:templates:files": { request: TemplatesFileRequest; response: TemplatesFileResponse };
 
+  // ---- 内置浏览器族（F6-2） ----
+  "op:browser:state": { request: BrowserStateRequest; response: BrowserStateResponse };
+  "op:browser:open": { request: BrowserOpenRequest; response: BrowserOpenResponse };
+  "op:browser:stream-pause": { request: BrowserStreamPauseRequest; response: BrowserStreamPauseResponse };
+  "op:browser:fullpage": { request: BrowserCaptureRequest; response: BrowserCaptureResponse };
+  "op:browser:pdf": { request: BrowserCaptureRequest; response: BrowserCaptureResponse };
+  "op:browser:input": { request: BrowserInputRequest; response: BrowserInputResponse };
+  "op:browser:close": { request: BrowserCloseRequest; response: BrowserCloseResponse };
+  "op:browser:reset": { request: BrowserResetRequest; response: BrowserResetResponse };
+
   "op:models:list": { request: ModelsListRequest; response: ModelsListResponse };
   "op:models:refresh": { request: Record<string, never>; response: Record<string, unknown> };
 
@@ -1636,6 +1703,11 @@ export const EVENT_PUSH_CHANNEL = "op:event";
 
 /** doc 实时预览变化事件类型（F4-4：main/ipc/doc-watch.ts 推送；event-stream.ts 按非对话流帧过滤）。 */
 export const DOC_WATCH_EVENT_TYPE = "op:doc-watch";
+
+/** 内置浏览器帧流事件类型（F6-2：main/ipc/browser-direct.ts watch 注册表经 subscribeBrowser
+ *  桥推；event-stream.ts 按非对话流帧过滤）。data 形态 { client, thread, event, payload }，
+ *  event/payload 对齐旧 SSE 消息 {type, data} 语义。 */
+export const BROWSER_STREAM_EVENT_TYPE = "op:browser-stream";
 
 /**
  * 对话流事件信封（server/agent.mjs emit 的通道事件原样转发）。

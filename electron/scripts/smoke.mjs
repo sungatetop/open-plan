@@ -6,6 +6,8 @@
  */
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -18,9 +20,12 @@ const expectedAnchor = newUi ? "SMOKE_NEW_UI_OK" : "SMOKE_OK";
 const failAnchors = ["SMOKE_FAIL", "SMOKE_NEW_UI_FAIL"];
 
 const timeoutMs = Number(process.env.SMOKE_TIMEOUT_MS || 180000);
+// 每次运行注入一次性 userData 临时目录（OP_DESKTOP_USER_DATA）：单例锁/窗口态/
+// 本地存储不落 %APPDATA%，运行完即清——不污染用户配置，也兼容受限环境。
+const smokeUserData = fs.mkdtempSync(path.join(os.tmpdir(), "guiju-smoke-"));
 const child = spawn(electronBin, ["."], {
   cwd: path.resolve(here, ".."),
-  env: { ...process.env, OP_DESKTOP_SMOKE: "1", ELECTRON_ENABLE_LOGGING: "0" },
+  env: { ...process.env, OP_DESKTOP_SMOKE: "1", OP_DESKTOP_USER_DATA: smokeUserData, ELECTRON_ENABLE_LOGGING: "0" },
   stdio: ["ignore", "pipe", "pipe"],
   windowsHide: true
 });
@@ -39,11 +44,16 @@ child.on("exit", (code) => {
   if (!settled) finish(false, `Electron 提前退出（code=${code}）\n${output.slice(-800)}`);
 });
 
+function cleanupUserData() {
+  try { fs.rmSync(smokeUserData, { recursive: true, force: true }); } catch { /* 占用残留下次系统清理 */ }
+}
+
 function finish(ok, detail) {
   if (settled) return;
   settled = true;
   clearTimeout(timer);
   try { if (process.platform === "win32") spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], { windowsHide: true }); else child.kill("SIGKILL"); } catch { /* 已退出 */ }
+  cleanupUserData();
   console.log(`\n===== smoke ${ok ? "PASSED" : "FAILED"} =====\n${detail}`);
   process.exit(ok ? 0 : 1);
 }

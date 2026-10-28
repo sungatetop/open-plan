@@ -9,6 +9,7 @@ import {
 } from "../shared/protocol/channels";
 import type {
   AgentEventWatchRequest,
+  BrowserStreamWatchRequest,
   EventWatchResult,
   OpDesktopApi,
   ServerStatusPayload,
@@ -42,7 +43,11 @@ const api: OpDesktopApi = {
   watchAgentEvents: (request: AgentEventWatchRequest): Promise<EventWatchResult> =>
     ipcRenderer.invoke("op:agent-events:watch", request),
   stopAgentEvents: (request?: { client?: string }): Promise<void> =>
-    ipcRenderer.invoke("op:agent-events:unwatch", request ?? {})
+    ipcRenderer.invoke("op:agent-events:unwatch", request ?? {}),
+  watchBrowserStream: (request: BrowserStreamWatchRequest): Promise<EventWatchResult> =>
+    ipcRenderer.invoke("op:browser:watch", request),
+  stopBrowserStream: (request?: { client?: string; thread?: string }): Promise<void> =>
+    ipcRenderer.invoke("op:browser:unwatch", request ?? {})
 };
 
 contextBridge.exposeInMainWorld("opDesktop", api);

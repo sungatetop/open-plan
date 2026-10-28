@@ -162,7 +162,7 @@ export interface IpcThreadEventTransportOptions {
 }
 
 /** op:event 中非对话流帧（记忆变更桥 / doc 实时预览 watch / SSE 命名事件 open 的降级形态）。 */
-const NON_THREAD_FRAME_TYPES = new Set(["op:memory-change", "op:sse-unknown", "op:doc-watch"]);
+const NON_THREAD_FRAME_TYPES = new Set(["op:memory-change", "op:sse-unknown", "op:doc-watch", "op:browser-stream"]);
 
 export function createIpcThreadEventTransport(
   options: IpcThreadEventTransportOptions = {}

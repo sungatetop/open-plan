@@ -47,9 +47,11 @@ function extractRoutes(source: string): ExtractedRoutes {
  * F5-4：/api/kb 全族路由（12+ingest）已入通道清单，豁免移除。
  * F6-1：/api/skills、/api/workflows、/api/domain-workflows、/api/agents、/api/integrations、
  * /api/templates 全族路由已入通道清单，豁免移除；/api/skills/preflight 与
- * /api/templates/refresh 为已实现但前端未消费的死导出路由（无通道对应），窄前缀豁免保留至消费或 R6 退役。 */
+ * /api/templates/refresh 为已实现但前端未消费的死导出路由（无通道对应），窄前缀豁免保留至消费或 R6 退役。
+ * F6-2：/api/browser 全族 8 条路由已入通道清单，豁免移除（/api/browser/stream 为 SSE 替代路由、
+ * /api/browser/shot 文件回看前端未消费不迁），窄前缀豁免保留至 R6 退役。 */
 const EXEMPT_PREFIXES = [
-  "/api/browser",
+  "/api/browser/shot",
   "/api/bus",
   "/api/files",
   "/api/file-roots",
@@ -104,18 +106,19 @@ const extracted = extractRoutes(source);
 describe("channels manifest 对账", () => {
   it("通道清单规约：op: 前缀、族:动作命名、数量钉住（扩清单需同步更新对账）", () => {
     const channelKeys = Object.keys(DESKTOP_CHANNELS);
-    expect(channelKeys.length).toBe(204);
+    expect(channelKeys.length).toBe(212);
     for (const key of channelKeys) {
       expect(key.startsWith("op:")).toBe(true);
     }
     // 通道族：status / sessions / runs / artifacts / agent / memory / files / doc / office / kb / models
-    //   / search / map / projects / workspace / workspaces / file-roots / system
-    //   / skills / workflows / agents / integrations / templates（F6-1）
+    //   / search / map / projects / workspace / workspaces / file-roots / system / browser
+    //   / skills / workflows / agents / integrations / templates（F6-1/F6-2）
     const families = new Set(channelKeys.map((key) => key.split(":")[1]));
     expect([...families].sort()).toEqual([
       "agent",
       "agents",
       "artifacts",
+      "browser",
       "doc",
       "file-roots",
       "files",
