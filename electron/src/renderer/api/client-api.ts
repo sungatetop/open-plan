@@ -476,6 +476,44 @@ export const mapDataStyleText = async (project: string): Promise<string> => {
 };
 
 // ============================================================================
+// 地图分析可视化族（F5-6 面板层消费端点；对齐 client/src/api.js 同名函数语义）
+// ============================================================================
+
+/** mapVisualSources（VisualPanel 数据源发现）：返回 { sources, planned }。 */
+export const mapVisualSources = (): Promise<ChannelResponse<"op:map:visual:sources">> =>
+  invokeOrThrow("op:map:visual:sources");
+
+/** mapVisual（统一可视化描述符）：空值参数不进查询串；error 字段抛出 + descriptor 解包。 */
+export async function mapVisual(params: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
+  const rawQuery: Record<string, string> = {};
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined && v !== null && v !== "") rawQuery[k] = String(v);
+  }
+  const r = await invokeOrThrow("op:map:visual:get", { query: rawQuery as ChannelRequest<"op:map:visual:get">["query"] });
+  // 对齐旧实现：描述符失败走 HTTP 200 + error 字段语义（不走失败信封），此处转回 throw；
+  // descriptor 缺省时回退整体（旧 `r?.descriptor || r`）
+  if (r?.error) throw new Error(r.error);
+  return (r?.descriptor || r) as Record<string, unknown>;
+}
+
+/** mapDemoAnalysis（演示分析）：query 默认值忠实转录（analysis/region/project/count 字符串化）。 */
+export const mapDemoAnalysis = (
+  params: { analysis?: string; region?: string; project?: string; count?: string | number } = {}
+): Promise<ChannelResponse<"op:map:demo-analysis">> =>
+  invokeOrThrow("op:map:demo-analysis", {
+    query: {
+      analysis: params.analysis || "heatmap",
+      region: params.region || "义乌市",
+      project: params.project || "zhejiang-map",
+      count: String(params.count || 36)
+    }
+  });
+
+/** mapReport（GIS G8 分析报告一键成文）：POST 载荷整体透传，返回 { fileName, ... }。 */
+export const mapReport = (payload: Record<string, unknown> = {}): Promise<ChannelResponse<"op:map:report">> =>
+  invokeOrThrow("op:map:report", { body: payload || {} });
+
+// ============================================================================
 // 项目族
 // ============================================================================
 
