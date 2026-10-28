@@ -6,6 +6,7 @@ import Icon from "../components/Icon";
 import Logo from "../components/Logo";
 import FeedbackHost, { notifyError } from "../components/Feedback";
 import ChatPanel, { type ChatPanelImperativeHandle } from "../features/chat/panel";
+import TaskCenter from "../features/tasks/task-center";
 import type { SessionRecord } from "../components/SessionList";
 import {
   normalizeHistoryMessages,
@@ -174,9 +175,10 @@ export default function Workbench(): React.ReactElement {
   const [files, setFiles] = useState<FileRecord[]>([]);
   const [sessions, setSessions] = useState<SessionRecord[]>([]);
   const [unreadByThread, setUnreadByThread] = useState<Record<string, number>>({});
-  // eventVersion/artifactVersion 的值仅被 TaskCenter/WorkProductPanel（F4）消费；
-  // 批7b 保留自增语义（全局事件批处理与 run_finished 路径），值暂不进入渲染。
-  const [, setEventVersion] = useState(0);
+  // eventVersion/artifactVersion：F4-1 起 eventVersion 值由 TaskCenter 消费（列表与
+  // 明细随全局事件即时刷新）；F4-2 起 artifactVersion 值由 WorkProductPanel 消费
+  // （产物/改动面板的 refreshToken，bump 源不变：createGlobalEventFeed + run_finished）。
+  const [eventVersion, setEventVersion] = useState(0);
   const [, setArtifactVersion] = useState(0);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [activeModule, setActiveModule] = useState<string | null>(null); // 模块面板挂载随 F4/F5/F6 补齐，状态先行保留
@@ -1144,6 +1146,22 @@ export default function Workbench(): React.ReactElement {
                 </button>
               </div>
               <span className={`conversation-status ${conversationPhase ? "working" : ""}`}><i /> {conversationPhase || "待命"}</span>
+              {/* F4-1：任务中心（R11 任务运行面）——触发钮常驻 topbar，浮层 Portal 定位；
+                  会话匹配打开对应对话，onFocusRun 等价滚动到最新运行处（新 ChatPanel focusRun
+                  无 runId 参数）。fullPage 模块视图随模块导航（F5/F6）再挂。 */}
+              <TaskCenter
+                sessions={sessions}
+                projects={projects}
+                currentProjectId={currentProject?.id || ""}
+                currentWorkspace={currentWorkspace}
+                currentThreadId={threadId}
+                currentSessionId={currentSessionId || ""}
+                unreadCount={Object.values(unreadByThread).reduce((sum, count) => sum + Number(count || 0), 0)}
+                onSelectSession={handleSelectSession}
+                onFocusRun={() => { chatInputRef.current?.focusRun?.(); }}
+                onOpenRun={handleOpenRun}
+                eventVersion={eventVersion}
+              />
             </div>
             {sessionResumeError && (
               <div className="session-resume-warning" role="alert">
