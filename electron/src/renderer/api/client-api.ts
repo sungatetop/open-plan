@@ -791,6 +791,135 @@ export const stopDocWatch = (name: string, options: DocQueryOptions = {}): Promi
   invokeOrThrow("op:doc:watch-stop", { params: { name }, query: docQuery(options) });
 
 // ============================================================================
+// 技能族（F6-1；op:skills:preflight / op:templates:refresh 为前端未消费死导出，不封装）
+// ============================================================================
+
+/** listSkills（SkillsManager：旧 api.js listSkills → GET /api/skills）。 */
+export const listSkills = (): Promise<ChannelResponse<"op:skills:list">> =>
+  invokeOrThrow("op:skills:list");
+
+/** exportSkill（SkillsManager 导出：旧 api.js exportSkill → POST /api/skills/export）。 */
+export const exportSkill = (name: string): Promise<ChannelResponse<"op:skills:export">> =>
+  invokeOrThrow("op:skills:export", { body: { name } });
+
+/** importSkill（SkillsManager 导入：旧 api.js importSkill → POST /api/skills/import）。 */
+export const importSkill = (payload: { name: string; description?: string; content: string; extra?: Record<string, string> }): Promise<ChannelResponse<"op:skills:import">> =>
+  invokeOrThrow("op:skills:import", { body: payload });
+
+// ============================================================================
+// 工作流族（F6-1）
+// ============================================================================
+
+/** listWorkflows（WorkflowLauncher/SkillsManager：旧 api.js listWorkflows → GET /api/workflows）。 */
+export const listWorkflows = (): Promise<ChannelResponse<"op:workflows:list">> =>
+  invokeOrThrow("op:workflows:list");
+
+/** validateWorkflow（SkillsManager：旧 api.js validateWorkflow → GET /api/workflows/:id/validate）。 */
+export const validateWorkflow = (id: string): Promise<ChannelResponse<"op:workflows:validate">> =>
+  invokeOrThrow("op:workflows:validate", { params: { id } });
+
+/** preflightDomainWorkflow（M4.4 领域工作流只读试算：旧 api.js preflightDomainWorkflow → POST /api/domain-workflows/preflight）。 */
+export const preflightDomainWorkflow = (payload: { workflowId: string; 坐标点?: unknown; 记录数?: unknown; 写回?: unknown; 产物路径?: string; 跳过校验?: boolean } & Record<string, unknown>): Promise<ChannelResponse<"op:workflows:preflight">> =>
+  invokeOrThrow("op:workflows:preflight", { body: payload });
+
+// ============================================================================
+// 智能体广场族（F6-1）
+// ============================================================================
+
+/** listAgents（AgentMarket：旧 api.js listAgents → GET /api/agents）。 */
+export const listAgents = (): Promise<ChannelResponse<"op:agents:list">> =>
+  invokeOrThrow("op:agents:list");
+
+/** createAgent（AgentMarket：旧 api.js createAgent → POST /api/agents，201/400）。 */
+export const createAgent = (payload: Record<string, unknown>): Promise<ChannelResponse<"op:agents:create">> =>
+  invokeOrThrow("op:agents:create", { body: payload || {} });
+
+/** updateAgent（AgentMarket：旧 api.js updateAgent → PATCH /api/agents/:id）。 */
+export const updateAgent = (id: string, payload: Record<string, unknown>): Promise<ChannelResponse<"op:agents:update">> =>
+  invokeOrThrow("op:agents:update", { params: { id }, body: payload || {} });
+
+/** deleteAgent（AgentMarket：旧 api.js deleteAgent → DELETE /api/agents/:id）。 */
+export const deleteAgent = (id: string): Promise<ChannelResponse<"op:agents:delete">> =>
+  invokeOrThrow("op:agents:delete", { params: { id } });
+
+// ============================================================================
+// 集成接入族（F6-1：MCP 5 + Pi 7）
+// ============================================================================
+
+/** listMcpServers（IntegrationsCenter：旧 api.js listMcpServers → GET /api/integrations/mcp/servers）。 */
+export const listMcpServers = (): Promise<ChannelResponse<"op:integrations:mcp:list">> =>
+  invokeOrThrow("op:integrations:mcp:list");
+
+/** saveMcpServer（IntegrationsCenter：旧 api.js saveMcpServer → POST /api/integrations/mcp/servers，201/400）。 */
+export const saveMcpServer = (payload: Record<string, unknown>): Promise<ChannelResponse<"op:integrations:mcp:save">> =>
+  invokeOrThrow("op:integrations:mcp:save", { body: payload || {} });
+
+/** updateMcpServer（IntegrationsCenter：旧 api.js updateMcpServer → PATCH /api/integrations/mcp/servers/:id）。 */
+export const updateMcpServer = (id: string, payload: Record<string, unknown>): Promise<ChannelResponse<"op:integrations:mcp:update">> =>
+  invokeOrThrow("op:integrations:mcp:update", { params: { id }, body: payload || {} });
+
+/** deleteMcpServer（IntegrationsCenter：旧 api.js deleteMcpServer → DELETE /api/integrations/mcp/servers/:id）。 */
+export const deleteMcpServer = (id: string): Promise<ChannelResponse<"op:integrations:mcp:delete">> =>
+  invokeOrThrow("op:integrations:mcp:delete", { params: { id } });
+
+/** testMcpServer（IntegrationsCenter：旧 api.js testMcpServer → POST /api/integrations/mcp/servers/:id/test；!ok 502 转 throw）。 */
+export const testMcpServer = (id: string): Promise<ChannelResponse<"op:integrations:mcp:test">> =>
+  invokeOrThrow("op:integrations:mcp:test", { params: { id } });
+
+/** listPiExtensions（IntegrationsCenter：旧 api.js listPiExtensions → GET /api/integrations/pi/extensions）。 */
+export const listPiExtensions = (): Promise<ChannelResponse<"op:integrations:pi:list">> =>
+  invokeOrThrow("op:integrations:pi:list");
+
+/** searchPiPackageCatalog（IntegrationsCenter：旧 api.js searchPiPackageCatalog → GET /api/integrations/pi/catalog；502 转 throw）。 */
+export const searchPiPackageCatalog = (query = "", page: number | string = 0): Promise<ChannelResponse<"op:integrations:pi:catalog">> =>
+  invokeOrThrow("op:integrations:pi:catalog", { query: { q: query, page } });
+
+/** registerInstalledPiPackage（IntegrationsCenter：旧 api.js registerInstalledPiPackage → POST /api/integrations/pi/extensions/from-package）。 */
+export const registerInstalledPiPackage = (name: string): Promise<ChannelResponse<"op:integrations:pi:from-package">> =>
+  invokeOrThrow("op:integrations:pi:from-package", { body: { name } });
+
+/** addPiExtension（IntegrationsCenter：旧 api.js addPiExtension → POST /api/integrations/pi/extensions）。 */
+export const addPiExtension = (payload: Record<string, unknown>): Promise<ChannelResponse<"op:integrations:pi:add">> =>
+  invokeOrThrow("op:integrations:pi:add", { body: payload || {} });
+
+/** updatePiExtension（IntegrationsCenter：旧 api.js updatePiExtension → PATCH /api/integrations/pi/extensions/:id）。 */
+export const updatePiExtension = (id: string, payload: Record<string, unknown>): Promise<ChannelResponse<"op:integrations:pi:update">> =>
+  invokeOrThrow("op:integrations:pi:update", { params: { id }, body: payload || {} });
+
+/** checkPiExtension（IntegrationsCenter：旧 api.js checkPiExtension → POST /api/integrations/pi/extensions/:id/check）。 */
+export const checkPiExtension = (id: string): Promise<ChannelResponse<"op:integrations:pi:check">> =>
+  invokeOrThrow("op:integrations:pi:check", { params: { id } });
+
+/** deletePiExtension（IntegrationsCenter：旧 api.js deletePiExtension → DELETE /api/integrations/pi/extensions/:id）。 */
+export const deletePiExtension = (id: string): Promise<ChannelResponse<"op:integrations:pi:delete">> =>
+  invokeOrThrow("op:integrations:pi:delete", { params: { id } });
+
+// ============================================================================
+// 模版库族（F6-1；file/files 为旧 iframe HTTP 路由的通道化：params.path 承载
+// 捕获组原文——IPC 无 URL 编码层，调用方传 relPath 原文）
+// ============================================================================
+
+/** tplList（TemplateLibrary：旧 api.js tplList → GET /api/templates?category=）。 */
+export const tplList = (category?: string): Promise<ChannelResponse<"op:templates:list">> =>
+  invokeOrThrow("op:templates:list", { query: category ? { category } : {} });
+
+/** tplContent（TemplateLibrary：旧 api.js tplContent → GET /api/templates/content?path=）。 */
+export const tplContent = (relPath: string): Promise<ChannelResponse<"op:templates:content">> =>
+  invokeOrThrow("op:templates:content", { query: { path: relPath } });
+
+/** generateNotice（TemplateLibrary 内联 fetch("/api/templates/generate-notice") → IPC 通道；500 转 throw）。 */
+export const generateNotice = (payload: Record<string, unknown> = {}): Promise<ChannelResponse<"op:templates:generate-notice">> =>
+  invokeOrThrow("op:templates:generate-notice", { body: payload || {} });
+
+/** 模板文件字节（旧 iframe GET /api/templates/file/<path>：base64+mime，渲染层拼 data URL）。 */
+export const tplFile = (relPath: string): Promise<ChannelResponse<"op:templates:file">> =>
+  invokeOrThrow("op:templates:file", { params: { path: relPath } });
+
+/** 模板文件下载字节（旧 GET /api/templates/files/<path>：base64+mime）。 */
+export const tplFiles = (relPath: string): Promise<ChannelResponse<"op:templates:files">> =>
+  invokeOrThrow("op:templates:files", { params: { path: relPath } });
+
+// ============================================================================
 // 本地工具（无 HTTP）
 // ============================================================================
 

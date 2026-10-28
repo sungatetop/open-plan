@@ -44,23 +44,22 @@ function extractRoutes(source: string): ExtractedRoutes {
  * F5-3：/api/map、/api/demo、/api/m3 全族路由已入通道清单，豁免移除（/api/map/data
  * 静态资源为 app.use 形态不在对账路由面，style.json 读通道 F5-5 已入清单 op:map:data:style）；
  * /api/bus 为 L5714 404 catch-all 遮蔽的死路由（无通道对应），豁免保留至 R6 退役。
- * F5-4：/api/kb 全族路由（12+ingest）已入通道清单，豁免移除。 */
+ * F5-4：/api/kb 全族路由（12+ingest）已入通道清单，豁免移除。
+ * F6-1：/api/skills、/api/workflows、/api/domain-workflows、/api/agents、/api/integrations、
+ * /api/templates 全族路由已入通道清单，豁免移除；/api/skills/preflight 与
+ * /api/templates/refresh 为已实现但前端未消费的死导出路由（无通道对应），窄前缀豁免保留至消费或 R6 退役。 */
 const EXEMPT_PREFIXES = [
-  "/api/templates",
   "/api/browser",
   "/api/bus",
   "/api/files",
   "/api/file-roots",
   "/api/context",
-  "/api/integrations",
   "/api/connectors",
   "/api/projects",
   "/api/workspace",
   "/api/workspaces",
-  "/api/workflows",
-  "/api/domain-workflows",
-  "/api/agents",
-  "/api/skills",
+  "/api/skills/preflight",
+  "/api/templates/refresh",
   "/api/search",
   "/api/system",
   "/api/open-in-explorer",
@@ -105,19 +104,22 @@ const extracted = extractRoutes(source);
 describe("channels manifest 对账", () => {
   it("通道清单规约：op: 前缀、族:动作命名、数量钉住（扩清单需同步更新对账）", () => {
     const channelKeys = Object.keys(DESKTOP_CHANNELS);
-    expect(channelKeys.length).toBe(177);
+    expect(channelKeys.length).toBe(204);
     for (const key of channelKeys) {
       expect(key.startsWith("op:")).toBe(true);
     }
     // 通道族：status / sessions / runs / artifacts / agent / memory / files / doc / office / kb / models
     //   / search / map / projects / workspace / workspaces / file-roots / system
+    //   / skills / workflows / agents / integrations / templates（F6-1）
     const families = new Set(channelKeys.map((key) => key.split(":")[1]));
     expect([...families].sort()).toEqual([
       "agent",
+      "agents",
       "artifacts",
       "doc",
       "file-roots",
       "files",
+      "integrations",
       "kb",
       "map",
       "memory",
@@ -127,12 +129,14 @@ describe("channels manifest 对账", () => {
       "runs",
       "search",
       "sessions",
+      "skills",
       "status",
       "system",
+      "templates",
+      "workflows",
       "workspace",
       "workspaces"
-    ]);
-  });
+    ]);  });
 
   /** 通道路由是否被正则形式路由的字面前缀覆盖（同 method 且 path 以其为前缀）。 */
   function coveredByRegexRoute(route: string): boolean {

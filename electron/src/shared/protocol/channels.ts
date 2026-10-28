@@ -128,6 +128,45 @@ export const DESKTOP_CHANNELS = {
   "op:kb:ima:doc": { method: "GET", path: "/api/kb/ima/doc" },
   "op:kb:export-docx": { method: "POST", path: "/api/kb/export-docx" },
 
+  // ---- 技能族（F6-1：skills-direct 直调；技能广场扫描/导出/导入；preflight 前端未消费不入清单） ----
+  "op:skills:list": { method: "GET", path: "/api/skills" },
+  "op:skills:export": { method: "POST", path: "/api/skills/export" },
+  "op:skills:import": { method: "POST", path: "/api/skills/import" },
+
+  // ---- 工作流族（F6-1：workflows-direct 直调；声明式工作流 + §4 领域工作流预检试算） ----
+  "op:workflows:list": { method: "GET", path: "/api/workflows" },
+  "op:workflows:validate": { method: "GET", path: "/api/workflows/:id/validate" },
+  "op:workflows:preflight": { method: "POST", path: "/api/domain-workflows/preflight" },
+
+  // ---- 智能体族（F6-1：agents-direct 直调；智能体广场自定义 Agent CRUD） ----
+  "op:agents:list": { method: "GET", path: "/api/agents" },
+  "op:agents:create": { method: "POST", path: "/api/agents" },
+  "op:agents:update": { method: "PATCH", path: "/api/agents/:id" },
+  "op:agents:delete": { method: "DELETE", path: "/api/agents/:id" },
+
+  // ---- 集成族（F6-1：integrations-direct 直调；MCP 服务与 Pi 扩展接入） ----
+  "op:integrations:mcp:list": { method: "GET", path: "/api/integrations/mcp/servers" },
+  "op:integrations:mcp:save": { method: "POST", path: "/api/integrations/mcp/servers" },
+  "op:integrations:mcp:update": { method: "PATCH", path: "/api/integrations/mcp/servers/:id" },
+  "op:integrations:mcp:delete": { method: "DELETE", path: "/api/integrations/mcp/servers/:id" },
+  "op:integrations:mcp:test": { method: "POST", path: "/api/integrations/mcp/servers/:id/test" },
+  "op:integrations:pi:list": { method: "GET", path: "/api/integrations/pi/extensions" },
+  "op:integrations:pi:catalog": { method: "GET", path: "/api/integrations/pi/catalog" },
+  "op:integrations:pi:from-package": { method: "POST", path: "/api/integrations/pi/extensions/from-package" },
+  "op:integrations:pi:add": { method: "POST", path: "/api/integrations/pi/extensions" },
+  "op:integrations:pi:update": { method: "PATCH", path: "/api/integrations/pi/extensions/:id" },
+  "op:integrations:pi:check": { method: "POST", path: "/api/integrations/pi/extensions/:id/check" },
+  "op:integrations:pi:delete": { method: "DELETE", path: "/api/integrations/pi/extensions/:id" },
+
+  // ---- 模版库族（F6-1：templates-direct 直调；列表/内容/红头通知/文件流。
+  //      file/files 为 server 正则路由转录：params.path 承载捕获组原文（IPC 直调无 URL
+  //      编码层，渲染层传 relPath 原文，直调器按「已解码捕获组」语义消费）） ----
+  "op:templates:list": { method: "GET", path: "/api/templates" },
+  "op:templates:content": { method: "GET", path: "/api/templates/content" },
+  "op:templates:generate-notice": { method: "POST", path: "/api/templates/generate-notice" },
+  "op:templates:file": { method: "GET", path: "/api/templates/file/:path" },
+  "op:templates:files": { method: "GET", path: "/api/templates/files/:path" },
+
   // ---- 模型族（10s 单飞缓存在 renderer API 层，通道只承载传输） ----
   "op:models:list": { method: "GET", path: "/api/models" },
   "op:models:refresh": { method: "POST", path: "/api/models/refresh" },
@@ -950,6 +989,219 @@ export type KbImaDocRequest = { query?: { media_id?: string } };
 export type KbExportDocxRequest = { body?: { relPath?: unknown; rootIdx?: unknown } };
 export type KbExportDocxResponse = { ok?: boolean; name?: string; error?: string; [key: string]: unknown };
 
+// ---- 技能 / 工作流 / 智能体 / 集成 / 模版库族（F6-1，对齐 server/index.mjs L2525-2737 / L414-443 / L552-586 实际结构） ----
+
+export interface SkillCatalogItem {
+  name: string;
+  description?: string;
+  category?: string;
+  source?: string;
+  path?: string;
+  [key: string]: unknown;
+}
+export type SkillsListRequest = Record<string, never>;
+export type SkillsListResponse = { skills: SkillCatalogItem[] };
+export type SkillsExportRequest = { body: { name: string } };
+export type SkillsExportResponse = {
+  ok?: boolean;
+  skill?: { name: string; description?: string; content: string; extra: Record<string, string> };
+  error?: string;
+};
+export type SkillsImportRequest = { body: { name: string; description?: string; content: string; extra?: Record<string, string> } };
+export type SkillsImportResponse = { ok: true; name: string } | { ok?: false; error: string };
+
+export interface WorkflowStageRecord {
+  id?: string;
+  title?: string;
+  tools?: string[];
+  [key: string]: unknown;
+}
+export interface DomainWorkflowArtifact {
+  id: string;
+  title?: string;
+  kind?: string;
+  required?: boolean;
+  [key: string]: unknown;
+}
+export interface DomainWorkflowRecord {
+  id: string;
+  title?: string;
+  description?: string;
+  budget?: { maxTurns?: number; maxToolCalls?: number; maxWallMs?: number; [key: string]: unknown };
+  preflight?: string[];
+  stages?: WorkflowStageRecord[];
+  tools?: string[];
+  artifacts?: DomainWorkflowArtifact[];
+  [key: string]: unknown;
+}
+export interface WorkflowViewRecord {
+  id?: string;
+  name?: string;
+  description?: string;
+  icon?: string;
+  skills?: string[];
+  prompt?: string;
+  steps?: string[];
+  missing?: string[];
+  valid?: boolean;
+  [key: string]: unknown;
+}
+export type WorkflowsListRequest = Record<string, never>;
+export type WorkflowsListResponse = {
+  workflows: WorkflowViewRecord[];
+  domain?: DomainWorkflowRecord[];
+  domainError?: string;
+};
+export type WorkflowsValidateRequest = { params: { id: string } };
+export type WorkflowsValidateResponse = {
+  ok: boolean;
+  workflow?: WorkflowViewRecord;
+  message?: string;
+  error?: string;
+};
+export type WorkflowsPreflightRequest = {
+  body: {
+    workflowId: string;
+    坐标点?: unknown;
+    记录数?: unknown;
+    写回?: unknown;
+    产物路径?: string;
+    跳过校验?: boolean;
+  }
+};
+export type WorkflowsPreflightResponse = {
+  ok: boolean;
+  workflow?: { id: string; title?: string };
+  预检?: Record<string, unknown>;
+  error?: string;
+};
+
+export interface AgentRecord {
+  id: string;
+  name?: string;
+  icon?: string;
+  description?: string;
+  desc?: string;
+  skills?: string[];
+  inputs?: string[];
+  outputs?: string[];
+  prompt?: string;
+  color?: string;
+  builtin?: boolean;
+  [key: string]: unknown;
+}
+export type AgentsListRequest = Record<string, never>;
+export type AgentsListResponse = { agents: AgentRecord[] };
+export type AgentsCreateRequest = { body?: Record<string, unknown> };
+export type AgentsMutationResponse = { ok: boolean; agent?: AgentRecord; error?: string; id?: string };
+export type AgentsUpdateRequest = { params: { id: string }; body?: Record<string, unknown> };
+export type AgentsDeleteRequest = { params: { id: string } };
+
+export interface McpToolRecord {
+  name: string;
+  description?: string;
+  annotations?: { readOnlyHint?: boolean; [key: string]: unknown };
+  [key: string]: unknown;
+}
+export interface McpServerRecord {
+  id: string;
+  name?: string;
+  transport?: string;
+  command?: string;
+  argsCount?: number;
+  endpoint?: string;
+  enabled?: boolean;
+  tools?: McpToolRecord[];
+  envKeys?: string[];
+  headerNames?: string[];
+  lastTest?: { ok?: boolean; error?: string; serverInfo?: string; [key: string]: unknown } | null;
+  [key: string]: unknown;
+}
+export type IntegrationsMcpListRequest = Record<string, never>;
+export type IntegrationsMcpListResponse = { servers: McpServerRecord[] };
+export type IntegrationsMcpSaveRequest = { body?: Record<string, unknown> };
+export type IntegrationsMcpSaveResponse = { server: McpServerRecord } | { error: string };
+export type IntegrationsMcpUpdateRequest = { params: { id: string }; body?: Record<string, unknown> };
+export type IntegrationsMcpUpdateResponse = { server: McpServerRecord } | { error: string };
+export type IntegrationsMcpDeleteRequest = { params: { id: string } };
+export type IntegrationsMcpDeleteResponse = { ok: true } | { error: string };
+export type IntegrationsMcpTestRequest = { params: { id: string } };
+export type IntegrationsMcpTestResponse = { ok: boolean; server?: McpServerRecord; error?: string; [key: string]: unknown };
+
+export interface PiExtensionRecord {
+  id: string;
+  name?: string;
+  path?: string;
+  enabled?: boolean;
+  exists?: boolean;
+  files?: string[];
+  lastCheck?: { message?: string; [key: string]: unknown } | null;
+  [key: string]: unknown;
+}
+export type IntegrationsPiListRequest = Record<string, never>;
+export type IntegrationsPiListResponse = { extensions: PiExtensionRecord[] };
+export type IntegrationsPiCatalogRequest = { query: { q?: string; page?: number | string } };
+export type IntegrationsPiCatalogResponse = {
+  items?: Array<{
+    name: string;
+    version?: string;
+    description?: string;
+    publisher?: string;
+    keywords?: string[];
+    installed?: boolean;
+    installedVersion?: string;
+    hasExtensions?: boolean;
+    galleryUrl?: string;
+    npmUrl?: string;
+    repositoryUrl?: string;
+    [key: string]: unknown;
+  }>;
+  total?: number;
+  page?: number;
+  error?: string;
+};
+export type IntegrationsPiFromPackageRequest = { body: { name: string } };
+export type IntegrationsPiAddRequest = { body?: Record<string, unknown> };
+export type IntegrationsPiMutationResponse = { extension: PiExtensionRecord } | { error: string };
+export type IntegrationsPiUpdateRequest = { params: { id: string }; body?: Record<string, unknown> };
+export type IntegrationsPiCheckRequest = { params: { id: string } };
+export type IntegrationsPiCheckResponse = { extension: PiExtensionRecord } | { error: string };
+export type IntegrationsPiDeleteRequest = { params: { id: string } };
+export type IntegrationsPiDeleteResponse = { ok: true } | { error: string };
+
+export interface TemplateCategory {
+  id: string;
+  name: string;
+  icon: string;
+}
+export interface TemplateItem {
+  id: string;
+  title: string;
+  name?: string;
+  ext: string;
+  type?: string;
+  category?: string;
+  relPath?: string;
+  size?: number;
+  [key: string]: unknown;
+}
+export type TemplatesListRequest = { query?: { category?: string } };
+export type TemplatesListResponse = { categories: TemplateCategory[]; items: TemplateItem[]; total: number };
+export type TemplatesContentRequest = { query: { path: string } };
+export type TemplatesContentResponse = {
+  type: string;
+  content?: string;
+  ext?: string;
+  size?: number;
+  relPath?: string;
+  error?: string;
+};
+export type TemplatesGenerateNoticeRequest = { body?: Record<string, unknown> };
+export type TemplatesGenerateNoticeResponse = { ok: true; name: string } | { ok?: false; error: string };
+/** 模板文件流通道响应：base64 + mime（旧路由 res.setHeader(Content-Type)+sendFile 的 IPC 等价）。 */
+export type TemplatesFileRequest = { params: { path: string } };
+export type TemplatesFileResponse = { mime: string; base64: string } | { error: string };
+
 // ---- 模型族 ----
 
 export type ModelsListRequest = Record<string, never>;
@@ -1234,6 +1486,35 @@ export interface DesktopChannelProtocol {
   "op:kb:ima:search": { request: KbImaSearchRequest; response: Record<string, unknown> };
   "op:kb:ima:doc": { request: KbImaDocRequest; response: Record<string, unknown> };
   "op:kb:export-docx": { request: KbExportDocxRequest; response: KbExportDocxResponse };
+
+  // ---- 技能 / 工作流 / 智能体 / 集成 / 模版库族（F6-1） ----
+  "op:skills:list": { request: SkillsListRequest; response: SkillsListResponse };
+  "op:skills:export": { request: SkillsExportRequest; response: SkillsExportResponse };
+  "op:skills:import": { request: SkillsImportRequest; response: SkillsImportResponse };
+  "op:workflows:list": { request: WorkflowsListRequest; response: WorkflowsListResponse };
+  "op:workflows:validate": { request: WorkflowsValidateRequest; response: WorkflowsValidateResponse };
+  "op:workflows:preflight": { request: WorkflowsPreflightRequest; response: WorkflowsPreflightResponse };
+  "op:agents:list": { request: AgentsListRequest; response: AgentsListResponse };
+  "op:agents:create": { request: AgentsCreateRequest; response: AgentsMutationResponse };
+  "op:agents:update": { request: AgentsUpdateRequest; response: AgentsMutationResponse };
+  "op:agents:delete": { request: AgentsDeleteRequest; response: AgentsMutationResponse };
+  "op:integrations:mcp:list": { request: IntegrationsMcpListRequest; response: IntegrationsMcpListResponse };
+  "op:integrations:mcp:save": { request: IntegrationsMcpSaveRequest; response: IntegrationsMcpSaveResponse };
+  "op:integrations:mcp:update": { request: IntegrationsMcpUpdateRequest; response: IntegrationsMcpUpdateResponse };
+  "op:integrations:mcp:delete": { request: IntegrationsMcpDeleteRequest; response: IntegrationsMcpDeleteResponse };
+  "op:integrations:mcp:test": { request: IntegrationsMcpTestRequest; response: IntegrationsMcpTestResponse };
+  "op:integrations:pi:list": { request: IntegrationsPiListRequest; response: IntegrationsPiListResponse };
+  "op:integrations:pi:catalog": { request: IntegrationsPiCatalogRequest; response: IntegrationsPiCatalogResponse };
+  "op:integrations:pi:from-package": { request: IntegrationsPiFromPackageRequest; response: IntegrationsPiMutationResponse };
+  "op:integrations:pi:add": { request: IntegrationsPiAddRequest; response: IntegrationsPiMutationResponse };
+  "op:integrations:pi:update": { request: IntegrationsPiUpdateRequest; response: IntegrationsPiMutationResponse };
+  "op:integrations:pi:check": { request: IntegrationsPiCheckRequest; response: IntegrationsPiCheckResponse };
+  "op:integrations:pi:delete": { request: IntegrationsPiDeleteRequest; response: IntegrationsPiDeleteResponse };
+  "op:templates:list": { request: TemplatesListRequest; response: TemplatesListResponse };
+  "op:templates:content": { request: TemplatesContentRequest; response: TemplatesContentResponse };
+  "op:templates:generate-notice": { request: TemplatesGenerateNoticeRequest; response: TemplatesGenerateNoticeResponse };
+  "op:templates:file": { request: TemplatesFileRequest; response: TemplatesFileResponse };
+  "op:templates:files": { request: TemplatesFileRequest; response: TemplatesFileResponse };
 
   "op:models:list": { request: ModelsListRequest; response: ModelsListResponse };
   "op:models:refresh": { request: Record<string, never>; response: Record<string, unknown> };

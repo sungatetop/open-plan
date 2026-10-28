@@ -82,6 +82,31 @@ import {
   type KbDirectDeps
 } from "./ipc/kb-direct";
 import {
+  SKILLS_DIRECT_CHANNELS,
+  invokeSkillsDirect,
+  type SkillsDirectDeps
+} from "./ipc/skills-direct";
+import {
+  WORKFLOWS_DIRECT_CHANNELS,
+  invokeWorkflowsDirect,
+  type WorkflowsDirectDeps
+} from "./ipc/workflows-direct";
+import {
+  AGENTS_DIRECT_CHANNELS,
+  invokeAgentsDirect,
+  type AgentsDirectDeps
+} from "./ipc/agents-direct";
+import {
+  INTEGRATIONS_DIRECT_CHANNELS,
+  invokeIntegrationsDirect,
+  type IntegrationsDirectDeps
+} from "./ipc/integrations-direct";
+import {
+  TEMPLATES_DIRECT_CHANNELS,
+  invokeTemplatesDirect,
+  type TemplatesDirectDeps
+} from "./ipc/templates-direct";
+import {
   SEARCH_MAP_SETTINGS_DIRECT_CHANNELS,
   invokeSearchMapSettingsDirect,
   type SearchMapSettingsDirectDeps
@@ -1044,6 +1069,188 @@ function registerKbDirectInvokers(): void {
 }
 
 /**
+ * 业务面板域通道直调开关（F6-1；S4 语义默认开，OP_DESKTOP_*_DIRECT=0 显式回滚）。
+ * 与 AGENT_DOMAIN_ENABLED 同开时五域 27 条通道（skills 3 / workflows 3 / agents 4 /
+ * integrations 12 / templates 5）进程内直调；数据源 skills-catalog / workflows /
+ * workflow-registry / workflow-validation / agent-management / mcp-management /
+ * pi-extension-management / pi-package-catalog / tpl / notice 十域。
+ */
+const SKILLS_DIRECT_ENABLED = directPathEnabled("OP_DESKTOP_SKILLS_DIRECT");
+const WORKFLOWS_DIRECT_ENABLED = directPathEnabled("OP_DESKTOP_WORKFLOWS_DIRECT");
+const AGENTS_DIRECT_ENABLED = directPathEnabled("OP_DESKTOP_AGENTS_DIRECT");
+const INTEGRATIONS_DIRECT_ENABLED = directPathEnabled("OP_DESKTOP_INTEGRATIONS_DIRECT");
+const TEMPLATES_DIRECT_ENABLED = directPathEnabled("OP_DESKTOP_TEMPLATES_DIRECT");
+
+/** 技能域通道直调注册（F6-1）：覆盖 http-forward catch-all 中 3 条 op:skills 通道。 */
+function registerSkillsDirectInvokers(): void {
+  if (!(AGENT_DOMAIN_ENABLED && SKILLS_DIRECT_ENABLED)) return;
+  let depsPromise: Promise<SkillsDirectDeps> | null = null;
+  const ensureDeps = (): Promise<SkillsDirectDeps> => {
+    depsPromise ??= (async () => {
+      const [skillsCatalog, workspace] = await Promise.all([
+        import("./backend/agent/skills-catalog"),
+        import("./backend/workspace")
+      ]);
+      return {
+        scanSkills: () => skillsCatalog.scanSkills().map((s) => ({ ...s })),
+        agentDir: workspace.AGENT_DIR,
+        fs: {
+          readFileSync: (p, encoding) => fs.readFileSync(p, encoding),
+          readdirSync: (p, options) => fs.readdirSync(p, options),
+          mkdirSync: (p, options) => fs.mkdirSync(p, options),
+          writeFileSync: (p, data) => fs.writeFileSync(p, data)
+        }
+      } satisfies SkillsDirectDeps;
+    })();
+    return depsPromise!;
+  };
+  for (const channel of SKILLS_DIRECT_CHANNELS) {
+    ipcMain.removeHandler(channel);
+    ipcMain.handle(channel, async (_event, payload: InvokeEnvelope | undefined) =>
+      invokeSkillsDirect(channel, payload, await ensureDeps())
+    );
+  }
+}
+
+/** 工作流域通道直调注册（F6-1）：覆盖 http-forward catch-all 中 3 条 workflows 域通道。 */
+function registerWorkflowsDirectInvokers(): void {
+  if (!(AGENT_DOMAIN_ENABLED && WORKFLOWS_DIRECT_ENABLED)) return;
+  let depsPromise: Promise<WorkflowsDirectDeps> | null = null;
+  const ensureDeps = (): Promise<WorkflowsDirectDeps> => {
+    depsPromise ??= (async () => {
+      const [workflows, skillsCatalog, workflowRegistry, workflowValidation, featureFlags] = await Promise.all([
+        import("./backend/agent/workflows"),
+        import("./backend/agent/skills-catalog"),
+        import("./backend/workflow-registry"),
+        import("./backend/workflow-validation"),
+        import("./backend/feature-flags")
+      ]);
+      return {
+        listWorkflows: (skills) => workflows.listWorkflows(skills).map((w) => ({ ...w })),
+        getWorkflow: (id, skills) => {
+          const w = workflows.getWorkflow(id, skills);
+          return w ? { ...w } : null;
+        },
+        scanSkills: () => skillsCatalog.scanSkills().map((s) => ({ ...s })),
+        domainWorkflowsEnabled: () => featureFlags.RUNTIME_FLAGS.domainWorkflows === true,
+        listDomainWorkflows: () => workflowRegistry.列出工作流(),
+        getDomainWorkflow: (id) => workflowRegistry.取工作流(id),
+        runPreflight: (workflow, context, options) => workflowValidation.运行预检(workflow, context, options)
+      } satisfies WorkflowsDirectDeps;
+    })();
+    return depsPromise!;
+  };
+  for (const channel of WORKFLOWS_DIRECT_CHANNELS) {
+    ipcMain.removeHandler(channel);
+    ipcMain.handle(channel, async (_event, payload: InvokeEnvelope | undefined) =>
+      invokeWorkflowsDirect(channel, payload, await ensureDeps())
+    );
+  }
+}
+
+/** 智能体广场通道直调注册（F6-1）：覆盖 http-forward catch-all 中 4 条 op:agents 通道。 */
+function registerAgentsDirectInvokers(): void {
+  if (!(AGENT_DOMAIN_ENABLED && AGENTS_DIRECT_ENABLED)) return;
+  let depsPromise: Promise<AgentsDirectDeps> | null = null;
+  const ensureDeps = (): Promise<AgentsDirectDeps> => {
+    depsPromise ??= (async () => {
+      const agentManagement = await import("./backend/agent-management");
+      return {
+        listAgents: () => agentManagement.listAgents(),
+        createAgent: (input) => agentManagement.createAgent(input),
+        updateAgent: (id, patch) => agentManagement.updateAgent(id, patch),
+        deleteAgent: (id) => agentManagement.deleteAgent(id)
+      } satisfies AgentsDirectDeps;
+    })();
+    return depsPromise!;
+  };
+  for (const channel of AGENTS_DIRECT_CHANNELS) {
+    ipcMain.removeHandler(channel);
+    ipcMain.handle(channel, async (_event, payload: InvokeEnvelope | undefined) =>
+      invokeAgentsDirect(channel, payload, await ensureDeps())
+    );
+  }
+}
+
+/** 集成接入通道直调注册（F6-1）：覆盖 http-forward catch-all 中 12 条 op:integrations 通道。 */
+function registerIntegrationsDirectInvokers(): void {
+  if (!(AGENT_DOMAIN_ENABLED && INTEGRATIONS_DIRECT_ENABLED)) return;
+  let depsPromise: Promise<IntegrationsDirectDeps> | null = null;
+  const ensureDeps = (): Promise<IntegrationsDirectDeps> => {
+    depsPromise ??= (async () => {
+      const [mcp, piExtensions, piCatalog] = await Promise.all([
+        import("./backend/mcp-management"),
+        import("./backend/agent/pi-extension-management"),
+        import("./backend/pi-package-catalog")
+      ]);
+      return {
+        listMcpServers: () => mcp.listMcpServers(),
+        saveMcpServer: (input) => mcp.saveMcpServer(input),
+        updateMcpServer: (id, patch) => mcp.updateMcpServer(id, patch),
+        deleteMcpServer: (id) => mcp.deleteMcpServer(id),
+        testMcpServer: (id) => mcp.testMcpServer(id),
+        listPiExtensions: () => piExtensions.listPiExtensions().map((e) => ({ ...e })),
+        addPiExtension: (input) => ({ ...piExtensions.addPiExtension(input) }),
+        updatePiExtension: (id, patch) => {
+          const e = piExtensions.updatePiExtension(id, patch);
+          return e ? { ...e } : null;
+        },
+        checkPiExtension: (id) => {
+          const e = piExtensions.checkPiExtension(id);
+          return e ? { ...e } : null;
+        },
+        deletePiExtension: (id) => piExtensions.deletePiExtension(id),
+        searchPiPackageCatalog: (query, page) => piCatalog.searchPiPackageCatalog(query, page),
+        resolveInstalledPiPackage: (name) => piCatalog.resolveInstalledPiPackage(name)
+      } satisfies IntegrationsDirectDeps;
+    })();
+    return depsPromise!;
+  };
+  for (const channel of INTEGRATIONS_DIRECT_CHANNELS) {
+    ipcMain.removeHandler(channel);
+    ipcMain.handle(channel, async (_event, payload: InvokeEnvelope | undefined) =>
+      invokeIntegrationsDirect(channel, payload, await ensureDeps())
+    );
+  }
+}
+
+/** 模版库通道直调注册（F6-1）：覆盖 http-forward catch-all 中 5 条 op:templates 通道。 */
+function registerTemplatesDirectInvokers(): void {
+  if (!(AGENT_DOMAIN_ENABLED && TEMPLATES_DIRECT_ENABLED)) return;
+  let depsPromise: Promise<TemplatesDirectDeps> | null = null;
+  const ensureDeps = (): Promise<TemplatesDirectDeps> => {
+    depsPromise ??= (async () => {
+      const [tpl, notice, workspacePaths] = await Promise.all([
+        import("./backend/tpl"),
+        import("./backend/notice"),
+        import("./backend/workspace-paths")
+      ]);
+      const projectDir = workspacePaths.PROJECT_DIR;
+      return {
+        getCategories: () => tpl.getCategories(),
+        getTemplatesByCategory: (categoryId) => tpl.getTemplatesByCategory(categoryId ?? ""),
+        getTemplateContent: (relPath) => tpl.getTemplateContent(relPath),
+        generateNotice: (input) => notice.generateNotice(input),
+        projectDir,
+        tplRoot: path.resolve(projectDir, ".."),
+        fs: {
+          existsSync: (p) => fs.existsSync(p),
+          statSync: (p) => fs.statSync(p),
+          readFileSync: (p, encoding) => fs.readFileSync(p, encoding)
+        }
+      } satisfies TemplatesDirectDeps;
+    })();
+    return depsPromise!;
+  };
+  for (const channel of TEMPLATES_DIRECT_CHANNELS) {
+    ipcMain.removeHandler(channel);
+    ipcMain.handle(channel, async (_event, payload: InvokeEnvelope | undefined) =>
+      invokeTemplatesDirect(channel, payload, await ensureDeps())
+    );
+  }
+}
+
+/**
  * 联网搜索配置与地图底图设置通道直调开关（D-1c；S4 语义默认开，OP_DESKTOP_SEARCH_MAP_SETTINGS_DIRECT=0
  * 显式回滚）。与 AGENT_DOMAIN_ENABLED 同开时 5 条通道（op:search:settings:get/save、
  * op:search:test、op:map:settings:get/save）进程内直调；数据源 web-search/map 两域。
@@ -1553,6 +1760,11 @@ if (!gotLock) {
     registerNativeSystemDirectInvokers();
     registerSystemStatusDirectInvokers();
     registerKbDirectInvokers();
+    registerSkillsDirectInvokers();
+    registerWorkflowsDirectInvokers();
+    registerAgentsDirectInvokers();
+    registerIntegrationsDirectInvokers();
+    registerTemplatesDirectInvokers();
     registerSearchMapSettingsDirectInvokers();
     registerMapDirectInvokers();
     registerProjectManagementDirectInvokers();
