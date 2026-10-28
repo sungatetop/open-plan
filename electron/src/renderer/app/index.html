@@ -3,9 +3,20 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!--
+      CSP（R6-2 修正：F2a 骨架沿袭 splash 模板的 default-src 'self' 过度限制，MapLibre
+      内联 blob worker / 瓦片 fetch / 外链底图 CDN / docx blob 图 / pdf blob iframe 全被
+      拦截——旧 client 无 CSP，本策略按 app 页实际资源面放行，语义对齐旧端）：
+      - worker-src blob:：maplibre-gl 内联 worker（vite 构建产 blob: URL）
+      - connect-src oaw-data:：R6-2 资产自持协议（maps 瓦片/geojson + glyphs 字体）
+      - connect-src https:：外部底图 CDN（高德/OSM/Carto/自定义 raster 源，旧端全放行）
+      - connect-src http://127.0.0.1:*：style 根相对路径的 sidecar origin 兜底（R6-4 收敛）
+      - img-src blob: https:：docx-preview blob 图 + markdown 外链图
+      - frame-src blob:：PDF 预览 blob iframe（srcdoc 不受 frame-src 约束，无需放行）
+    -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:"
+      content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; worker-src blob:; connect-src 'self' oaw-data: https: http://127.0.0.1:*; img-src 'self' data: blob: https:; frame-src blob:"
     />
     <title>规聚</title>
   </head>

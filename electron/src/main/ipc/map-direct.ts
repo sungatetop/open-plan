@@ -989,7 +989,10 @@ async function invokeTemplateOdCommuter(payload: InvokeEnvelope, deps: MapDirect
 /** GET /api/map/data/:project/style.json（server L592-608 动态路由逐点转录：文件缺失 404
  * { error: "style not found" }，JSON 解析失败 500，hydrate 底图注入 + 根相对瓦片 URL 绝对化）。
  * 桌面形态扩展：渲染层与 sidecar 不同源（file:// / vite dev），除 s.tiles 外将 style.glyphs
- * 与 geojson source.data 的根相对路径一并绝对化到 sidecar origin，MapLibre 资产加载可用。
+ * 与 geojson source.data 的根相对路径一并绝对化，MapLibre 资产加载可用。
+ * R6-2 资产自持：已知资产前缀改写到 oaw-data:// 自定义协议（/api/map/data/* →
+ * oaw-data://maps/*，/glyphs/* → oaw-data://glyphs/*，见 oaw-data-protocol.ts），
+ * 其余根相对路径兜底 sidecar origin（历史形态保留，随 R6-4 退役收敛）。
  * 语义差异声明：server 正则路由 ([^/]+) 对 ".." 无白名单（可达父目录，历史形态）；桌面侧
  * 沿用 map.ts projectDir 白名单收紧，非法名同 404 信封。 */
 function invokeMapDataStyle(payload: InvokeEnvelope, deps: MapDirectDeps): InvokeResult<unknown> {
@@ -999,7 +1002,12 @@ function invokeMapDataStyle(payload: InvokeEnvelope, deps: MapDirectDeps): Invok
   try {
     const style = deps.hydrateBasemapSources(JSON.parse(deps.readStyleFile(file))) as Record<string, any>;
     const origin = `http://127.0.0.1:${deps.exportViewPort()}`;
-    const absolutize = (t: unknown) => (typeof t === "string" && t.startsWith("/") ? origin + t : t);
+    const absolutize = (t: unknown) => {
+      if (typeof t !== "string" || !t.startsWith("/")) return t;
+      if (t.startsWith("/api/map/data/")) return `oaw-data://maps/${t.slice("/api/map/data/".length)}`;
+      if (t.startsWith("/glyphs/")) return `oaw-data://glyphs/${t.slice("/glyphs/".length)}`;
+      return origin + t;
+    };
     for (const s of Object.values(style.sources || {})) {
       if (Array.isArray((s as Record<string, unknown>)?.tiles)) {
         (s as Record<string, unknown>).tiles = ((s as Record<string, unknown>).tiles as unknown[]).map(absolutize);

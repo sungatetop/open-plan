@@ -144,6 +144,7 @@ import {
   type DocDirectDeps
 } from "./ipc/doc-direct";
 import { createDocWatchRegistry } from "./ipc/doc-watch";
+import { installOawDataProtocolHandler, registerOawDataSchemePrivileged } from "./oaw-data-protocol";
 import * as approvalPolicy from "./backend/agent/approval-policy";
 import * as eventStorage from "./backend/event-storage";
 import { createMemoryEventsBridge } from "./ipc/memory-events-bridge";
@@ -154,6 +155,10 @@ import { createSplashWindow } from "./splash";
 const SMOKE = process.env.OP_DESKTOP_SMOKE === "1";
 const RENDERER_TARGET = resolveRendererTarget();
 const PRELOAD_PATH = path.join(__dirname, "../preload/index.js");
+
+// R6-2 资产自持：oaw-data://maps|glyphs 特权 scheme 注册（app ready 前；handler 在
+// whenReady 内安装，锚点见 installOawDataProtocolHandler 调用处）。
+registerOawDataSchemePrivileged();
 
 /** 仓库根：out/main → out → electron → 项目根。打包形态后续里程碑再调整。 */
 function projectRoot(): string {
@@ -1847,6 +1852,16 @@ if (!gotLock) {
     registerEventBridgeHandlers();
     registerMemoryBridgeHandlers();
     registerGlobalEventsBridgeHandlers();
+    // R6-2 资产自持：oaw-data://maps（锚 WORKSPACE_DIR/maps，与 backend/map.ts MAPS_ROOT
+    // 同源）+ oaw-data://glyphs（锚 app 根 resources/glyphs，dev 即 electron/resources/glyphs）。
+    void import("./backend/workspace")
+      .then((workspace) =>
+        installOawDataProtocolHandler({
+          maps: path.join(workspace.WORKSPACE_DIR, "maps"),
+          glyphs: path.join(app.getAppPath(), "resources", "glyphs")
+        })
+      )
+      .catch((e) => console.error("[oaw-data] 协议 handler 安装失败：", (e as Error)?.message || e));
     installSidecarCorsRelay();
     mainWindow = createSplashWindow(PRELOAD_PATH);
     void bootstrap();
