@@ -43,9 +43,9 @@ function extractRoutes(source: string): ExtractedRoutes {
  * F4-4：/api/doc 与 /api/office 读写路由已全部入通道清单，豁免移除。
  * F5-3：/api/map、/api/demo、/api/m3 全族路由已入通道清单，豁免移除（/api/map/data
  * 静态资源为 app.use 形态不在对账路由面）；
- * /api/bus 为 L5714 404 catch-all 遮蔽的死路由（无通道对应），豁免保留至 R6 退役。 */
+ * /api/bus 为 L5714 404 catch-all 遮蔽的死路由（无通道对应），豁免保留至 R6 退役。
+ * F5-4：/api/kb 全族路由（12+ingest）已入通道清单，豁免移除。 */
 const EXEMPT_PREFIXES = [
-  "/api/kb",
   "/api/templates",
   "/api/browser",
   "/api/bus",
@@ -105,7 +105,7 @@ const extracted = extractRoutes(source);
 describe("channels manifest 对账", () => {
   it("通道清单规约：op: 前缀、族:动作命名、数量钉住（扩清单需同步更新对账）", () => {
     const channelKeys = Object.keys(DESKTOP_CHANNELS);
-    expect(channelKeys.length).toBe(164);
+    expect(channelKeys.length).toBe(176);
     for (const key of channelKeys) {
       expect(key.startsWith("op:")).toBe(true);
     }

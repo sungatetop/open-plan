@@ -114,6 +114,19 @@ export const DESKTOP_CHANNELS = {
 
   // ---- 知识库族（F3 批5b-5：SessionSidebar docx 存入知识库；域内其余路由仍走前缀豁免） ----
   "op:kb:ingest": { method: "POST", path: "/api/kb/ingest" },
+  // ---- 知识库域（F5-4：kb-direct 直调；本地索引 + IMA 云端 + docx 联动） ----
+  "op:kb:status": { method: "GET", path: "/api/kb/status" },
+  "op:kb:roots:add": { method: "POST", path: "/api/kb/roots" },
+  "op:kb:roots:remove": { method: "DELETE", path: "/api/kb/roots" },
+  "op:kb:tree": { method: "GET", path: "/api/kb/tree" },
+  "op:kb:search": { method: "GET", path: "/api/kb/search" },
+  "op:kb:graph": { method: "GET", path: "/api/kb/graph" },
+  "op:kb:doc": { method: "GET", path: "/api/kb/doc" },
+  "op:kb:ima:status": { method: "GET", path: "/api/kb/ima/status" },
+  "op:kb:ima:bases": { method: "GET", path: "/api/kb/ima/bases" },
+  "op:kb:ima:search": { method: "GET", path: "/api/kb/ima/search" },
+  "op:kb:ima:doc": { method: "GET", path: "/api/kb/ima/doc" },
+  "op:kb:export-docx": { method: "POST", path: "/api/kb/export-docx" },
 
   // ---- 模型族（10s 单飞缓存在 renderer API 层，通道只承载传输） ----
   "op:models:list": { method: "GET", path: "/api/models" },
@@ -912,6 +925,25 @@ export type DocWatchStopResponse = { ok?: boolean; [key: string]: unknown };
 
 export type KbIngestRequest = { body: { name: string } };
 export type KbIngestResponse = { ok?: boolean; mdName?: string; error?: string; [key: string]: unknown };
+/** F5-4 知识库域 12 条（server L359-467）。查询参数以字符串透传，直调器内 parseInt/isNaN 归一。 */
+export type KbStatusRequest = Record<string, never>;
+export type KbStatusResponse = { fileCount?: number; roots?: string[]; [key: string]: unknown };
+export type KbRootsAddRequest = { body?: { path?: unknown } };
+export type KbRootsAddResponse = { ok: true; roots: string[]; fileCount: number };
+export type KbRootsRemoveRequest = { body?: { path?: unknown } };
+export type KbRootsRemoveResponse = { ok: boolean; roots: string[] };
+export type KbTreeRequest = { query?: { root?: string; dir?: string } };
+export type KbTreeResponse = { dirs: unknown[]; files: unknown[] };
+export type KbSearchRequest = { query?: { q?: string; root?: string; limit?: string } };
+export type KbSearchResponse = { results: unknown[] };
+export type KbGraphRequest = { query?: { root?: string; include?: string; max?: string } };
+export type KbGraphResponse = Record<string, unknown>;
+export type KbDocRequest = { query?: { path?: string; root?: string } };
+export type KbDocResponse = Record<string, unknown>;
+export type KbImaSearchRequest = { query?: { q?: string; kb?: string } };
+export type KbImaDocRequest = { query?: { media_id?: string } };
+export type KbExportDocxRequest = { body?: { relPath?: unknown; rootIdx?: unknown } };
+export type KbExportDocxResponse = { ok?: boolean; name?: string; error?: string; [key: string]: unknown };
 
 // ---- 模型族 ----
 
@@ -1181,6 +1213,18 @@ export interface DesktopChannelProtocol {
   "op:doc:watch-stop": { request: DocWatchStopRequest; response: DocWatchStopResponse };
 
   "op:kb:ingest": { request: KbIngestRequest; response: KbIngestResponse };
+  "op:kb:status": { request: KbStatusRequest; response: KbStatusResponse };
+  "op:kb:roots:add": { request: KbRootsAddRequest; response: KbRootsAddResponse };
+  "op:kb:roots:remove": { request: KbRootsRemoveRequest; response: KbRootsRemoveResponse };
+  "op:kb:tree": { request: KbTreeRequest; response: KbTreeResponse };
+  "op:kb:search": { request: KbSearchRequest; response: KbSearchResponse };
+  "op:kb:graph": { request: KbGraphRequest; response: KbGraphResponse };
+  "op:kb:doc": { request: KbDocRequest; response: KbDocResponse };
+  "op:kb:ima:status": { request: Record<string, never>; response: Record<string, unknown> };
+  "op:kb:ima:bases": { request: Record<string, never>; response: Record<string, unknown> };
+  "op:kb:ima:search": { request: KbImaSearchRequest; response: Record<string, unknown> };
+  "op:kb:ima:doc": { request: KbImaDocRequest; response: Record<string, unknown> };
+  "op:kb:export-docx": { request: KbExportDocxRequest; response: KbExportDocxResponse };
 
   "op:models:list": { request: ModelsListRequest; response: ModelsListResponse };
   "op:models:refresh": { request: Record<string, never>; response: Record<string, unknown> };
