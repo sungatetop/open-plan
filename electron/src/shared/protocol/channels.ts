@@ -180,7 +180,16 @@ export const DESKTOP_CHANNELS = {
   // ---- 系统集成族（原生文件选择/系统打开/文件管理器显示） ----
   "op:system:pick-files": { method: "POST", path: "/api/system/pick-files" },
   "op:system:open": { method: "POST", path: "/api/system/open" },
-  "op:system:reveal": { method: "POST", path: "/api/system/reveal" }
+  "op:system:reveal": { method: "POST", path: "/api/system/reveal" },
+
+  // ---- 文档预览族（F4-3：读路由；写路由随 F4-4） ----
+  "op:doc:open": { method: "GET", path: "/api/doc/:name" },
+  "op:doc:raw": { method: "GET", path: "/api/doc/:name/raw" },
+  "op:doc:text": { method: "GET", path: "/api/doc/:name/text" },
+  "op:doc:html": { method: "GET", path: "/api/doc/:name/html" },
+  "op:doc:comments": { method: "GET", path: "/api/doc/:name/comments" },
+  "op:doc:outline": { method: "GET", path: "/api/doc/:name/outline" },
+  "op:doc:annotations": { method: "GET", path: "/api/doc/:name/annotations" }
 } as const satisfies Record<string, { method: HttpMethod; path: string }>;
 
 export type DesktopChannelId = keyof typeof DESKTOP_CHANNELS;
@@ -770,6 +779,47 @@ export type FileSearchResponse = {
 export type FileUploadRequest = { body: { name: string; base64: string; workspace?: string } };
 export type FileDeleteRequest = { body: { name: string; workspace?: string } };
 
+// ---- 文档预览族（F4-3：读路由；identity 形状见 renderer/lib/file-urls.ts FileIdentity） ----
+
+/** 文件身份（与 file-urls.ts FileIdentity 同构，shared 层不反向依赖 renderer）： */
+export type DocFileIdentity = {
+  workspaceId?: string;
+  cwd?: string;
+  relativePath?: string;
+  revision?: string;
+  [key: string]: unknown;
+};
+
+/** doc 域查询参数族：cwd=预览工作区（显式携带则经 normalizeWorkspace 校验）。 */
+export type DocQuery = { cwd?: string; client?: string; thread?: string; [key: string]: unknown };
+
+export type DocOpenRequest = { params: { name: string }; query?: DocQuery };
+export type DocOpenResponse = {
+  kind?: string;
+  name?: string;
+  ext?: string;
+  content?: string;
+  identity?: DocFileIdentity;
+  url?: string;
+  sheets?: unknown;
+  grids?: Record<string, unknown>;
+  [key: string]: unknown;
+};
+/** raw 原始字节：HTTP 形态为流式 sendFile + 身份响应头；IPC 形态为 base64 + mime（架构性等价替换）。 */
+export type DocRawRequest = { params: { name: string }; query?: DocQuery };
+export type DocRawResponse = { base64: string; mime: string; identity?: DocFileIdentity; [key: string]: unknown };
+export type DocTextRequest = { params: { name: string }; query?: DocQuery };
+export type DocTextResponse = { name?: string; text?: string; identity?: DocFileIdentity; [key: string]: unknown };
+/** 渲染 HTML：HTTP 形态为 text/html 响应体；IPC 形态为字符串（含注入的身份 postMessage 脚本）。 */
+export type DocHtmlRequest = { params: { name: string }; query?: DocQuery };
+export type DocHtmlResponse = { html: string; identity?: DocFileIdentity; [key: string]: unknown };
+export type DocCommentsRequest = { params: { name: string }; query?: DocQuery };
+export type DocCommentsResponse = { comments?: Array<Record<string, unknown>>; identity?: DocFileIdentity; [key: string]: unknown };
+export type DocOutlineRequest = { params: { name: string }; query?: DocQuery };
+export type DocOutlineResponse = { outline?: Array<{ level: number; text: string; path?: string }>; identity?: DocFileIdentity; [key: string]: unknown };
+export type DocAnnotationsRequest = { params: { name: string }; query?: DocQuery };
+export type DocAnnotationsResponse = { annotations?: Array<Record<string, unknown>>; identity?: DocFileIdentity; [key: string]: unknown };
+
 // ---- 知识库族 ----
 
 export type KbIngestRequest = { body: { name: string } };
@@ -919,6 +969,14 @@ export interface DesktopChannelProtocol {
   "op:files:search": { request: FileSearchRequest; response: FileSearchResponse };
   "op:files:upload": { request: FileUploadRequest; response: Record<string, unknown> };
   "op:files:delete": { request: FileDeleteRequest; response: Record<string, unknown> };
+
+  "op:doc:open": { request: DocOpenRequest; response: DocOpenResponse };
+  "op:doc:raw": { request: DocRawRequest; response: DocRawResponse };
+  "op:doc:text": { request: DocTextRequest; response: DocTextResponse };
+  "op:doc:html": { request: DocHtmlRequest; response: DocHtmlResponse };
+  "op:doc:comments": { request: DocCommentsRequest; response: DocCommentsResponse };
+  "op:doc:outline": { request: DocOutlineRequest; response: DocOutlineResponse };
+  "op:doc:annotations": { request: DocAnnotationsRequest; response: DocAnnotationsResponse };
 
   "op:kb:ingest": { request: KbIngestRequest; response: KbIngestResponse };
 

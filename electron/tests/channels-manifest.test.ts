@@ -106,16 +106,17 @@ const extracted = extractRoutes(source);
 describe("channels manifest 对账", () => {
   it("通道清单规约：op: 前缀、族:动作命名、数量钉住（扩清单需同步更新对账）", () => {
     const channelKeys = Object.keys(DESKTOP_CHANNELS);
-    expect(channelKeys.length).toBe(107);
+    expect(channelKeys.length).toBe(114);
     for (const key of channelKeys) {
       expect(key.startsWith("op:")).toBe(true);
     }
-    // 通道族：status / sessions / runs / artifacts / agent / memory / files / kb / models
+    // 通道族：status / sessions / runs / artifacts / agent / memory / files / doc / kb / models
     //   / search / map / projects / workspace / workspaces / file-roots / system
     const families = new Set(channelKeys.map((key) => key.split(":")[1]));
     expect([...families].sort()).toEqual([
       "agent",
       "artifacts",
+      "doc",
       "file-roots",
       "files",
       "kb",

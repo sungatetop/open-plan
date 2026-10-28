@@ -535,6 +535,53 @@ export const revealInSystem = (path: string): Promise<ChannelResponse<"op:system
   invokeOrThrow("op:system:reveal", { body: { path } });
 
 // ============================================================================
+// 文档预览族（F4-3 读路由 + F4-4 写路由：annotations POST / raw-save / cells / edit / office / watch）
+// ============================================================================
+
+/** doc 域查询参数族：cwd=预览工作区；client/thread 打开时记录 agent 当前工作文件。 */
+export interface DocQueryOptions {
+  cwd?: string;
+  client?: string;
+  thread?: string;
+}
+
+const docQuery = (options: DocQueryOptions = {}): NonNullable<ChannelRequest<"op:doc:open">["query"]> => {
+  const query: NonNullable<ChannelRequest<"op:doc:open">["query"]> = {};
+  if (options.cwd) query.cwd = options.cwd;
+  if (options.client) query.client = options.client;
+  if (options.thread) query.thread = options.thread;
+  return query;
+};
+
+/** 打开文档（GET /api/doc/:name）：按扩展名返回 kind 分发响应（server L1069-1111）。 */
+export const openDoc = (name: string, options: DocQueryOptions = {}): Promise<ChannelResponse<"op:doc:open">> =>
+  invokeOrThrow("op:doc:open", { params: { name }, query: docQuery(options) });
+
+/** 原始字节（GET /api/doc/:name/raw）：base64+mime，渲染层自建 blob URL。 */
+export const fetchDocRaw = (name: string, options: DocQueryOptions = {}): Promise<ChannelResponse<"op:doc:raw">> =>
+  invokeOrThrow("op:doc:raw", { params: { name }, query: docQuery(options) });
+
+/** docx 纯文本（GET /api/doc/:name/text）。 */
+export const fetchDocText = (name: string, options: DocQueryOptions = {}): Promise<ChannelResponse<"op:doc:text">> =>
+  invokeOrThrow("op:doc:text", { params: { name }, query: docQuery(options) });
+
+/** 渲染 HTML（GET /api/doc/:name/html）：含注入的身份 postMessage 脚本。 */
+export const fetchDocHtml = (name: string, options: DocQueryOptions = {}): Promise<ChannelResponse<"op:doc:html">> =>
+  invokeOrThrow("op:doc:html", { params: { name }, query: docQuery(options) });
+
+/** 批注列表（GET /api/doc/:name/comments）。 */
+export const fetchDocComments = (name: string, options: DocQueryOptions = {}): Promise<ChannelResponse<"op:doc:comments">> =>
+  invokeOrThrow("op:doc:comments", { params: { name }, query: docQuery(options) });
+
+/** 标题大纲（GET /api/doc/:name/outline）。 */
+export const fetchDocOutline = (name: string, options: DocQueryOptions = {}): Promise<ChannelResponse<"op:doc:outline">> =>
+  invokeOrThrow("op:doc:outline", { params: { name }, query: docQuery(options) });
+
+/** HTML 标注读取（GET /api/doc/:name/annotations）。 */
+export const fetchDocAnnotations = (name: string, options: DocQueryOptions = {}): Promise<ChannelResponse<"op:doc:annotations">> =>
+  invokeOrThrow("op:doc:annotations", { params: { name }, query: docQuery(options) });
+
+// ============================================================================
 // 本地工具（无 HTTP）
 // ============================================================================
 

@@ -5,6 +5,7 @@ import Resizer from "../components/Resizer";
 import Icon from "../components/Icon";
 import Logo from "../components/Logo";
 import FeedbackHost, { notifyError } from "../components/Feedback";
+import DocViewer, { type DocRecord } from "../components/DocViewer";
 import ChatPanel, { type ChatPanelImperativeHandle } from "../features/chat/panel";
 import TaskCenter from "../features/tasks/task-center";
 import WorkProductPanel from "../features/tasks/work-product-panel";
@@ -38,7 +39,12 @@ import {
   forkSession,
   pinSession,
   freezeSession,
-  cancelRun
+  cancelRun,
+  openDoc,
+  makeFileIdentity,
+  mergeFileIdentity,
+  identityMatches,
+  fileIdentityKey
 } from "../api/client-api";
 import {
   sameWorkspacePath,
@@ -60,7 +66,7 @@ import { useTheme } from "./theme";
  * 挂载 SessionSidebar + ChatPanel。
  *
  * 迁移期偏差（后续域收口后接线，均已在调用点批注）：
- *   - open()/文档标签/预览画布 → F4（doc 域）：openDocFile 为 no-op 承接调用点；
+ *   - open()/文档标签/预览画布 → F4-3 已激活（op:doc:open + DocViewer 模块视图）；
  *   - onBrowserActivity/浏览器侧栏/工作区画布 → F4+；
  *   - CommandPalette（Ctrl+K）/SettingsPanel/TaskCenter 挂载 → F5/F4；
  *   - MapPanel/mapContexts → F6；activeModule 模块面板 → 随各域收口补挂。
@@ -186,6 +192,13 @@ export default function Workbench(): React.ReactElement {
   const [artifactScope, setArtifactScope] = useState("session");
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [activeModule, setActiveModule] = useState<string | null>(null); // 模块面板挂载随 F4/F5/F6 补齐，状态先行保留
+  // F4-3 doc 域·预览画布（App.jsx tabs/activeTab/docLoading 逐行转录；旧形态落在
+  // 预览画布右栏，新 UI 以 activeModule="doc" 模块视图承接）：
+  const [docTabs, setDocTabs] = useState<DocRecord[]>([]);
+  const [docActiveTab, setDocActiveTab] = useState<string | null>(null);
+  const [docLoading, setDocLoading] = useState(false);
+  const docRequestSeqRef = useRef(0); // 打开请求代际：切文件/切工作区后旧响应一律丢弃
+  const previewTabManualAtRef = useRef(0); // O-P2：用户最近一次手动切换右栏页签的时间（页签栏随 F4-4）
   // 运行开关快照到达后的重渲染触发器（值本身不参与渲染，只用来让 flag() 派生的状态重算）。
   const [, setFlagsTick] = useState(0);
   const [conversationMode, setConversationMode] = useState("chat");
@@ -583,7 +596,10 @@ export default function Workbench(): React.ReactElement {
     currentDirRef.current = "";
     setCurrentDir("");
     setFiles([]);
-    // 切工作区时清空历史视图（doc 标签/在途打开中止随 F4 域补齐）。
+    // 切工作区时中止在途打开请求并清空标签（App.jsx 766-770），旧工作区的预览结果不得写入。
+    docRequestSeqRef.current += 1;
+    setDocTabs([]);
+    setDocActiveTab(null);
     setHistoryMessages(null);
     setHistoryWindow(null);
     setCurrentSessionId(null);
@@ -638,8 +654,80 @@ export default function Workbench(): React.ReactElement {
     void refreshFiles(nextDir);
   }, [refreshFiles]);
 
-  // 文档打开（doc 域 F4）：批7b 以 no-op 承接调用点，保持调用方时序与批注语义。
-  const openDocFile = useCallback((_name: string, _thread?: string, _cwd?: string): Promise<void> => Promise.resolve(), []);
+  // F4-3 doc 域·预览画布激活（App.jsx 824-887 open() 逐行转录；IPC 形态经 op:doc:open）。
+  const openDocFile = useCallback(async (name: string, thread?: string, cwd?: string): Promise<string | null> => {
+    const requestSeq = ++docRequestSeqRef.current;
+    // IPC 无在途可中止请求：以代际丢弃旧响应（可能来自另一个工作区的同名文件）。
+    setDocLoading(true);
+    // 容错：调用方可能只传了工作区（例如产物跨工作区打开），thread 缺失时回退到当前会话
+    const effectiveThread = thread || threadId;
+    const effectiveCwd = cwd || currentWorkspace;
+    // 打开前先构造本地身份（workspaceId + relativePath），后续所有预览请求都用它。
+    const localIdentity = makeFileIdentity({ workspaceId: effectiveCwd, cwd: effectiveCwd, relativePath: name });
+    try {
+      const doc = await openDoc(name, { cwd: effectiveCwd || undefined, client: clientId, thread: effectiveThread || "" });
+      if (requestSeq !== docRequestSeqRef.current) return null;
+      // 服务端返回的文件身份（含真实 version/hash）优先；前端核对一致后才使用，不一致则标记 failed。
+      const identity = mergeFileIdentity(localIdentity, doc?.identity);
+      const identityVerified = doc?.identity ? identityMatches(localIdentity, doc.identity) : true;
+      const id = fileIdentityKey(identity);
+      const nextDoc: DocRecord = {
+        ...doc,
+        name,
+        identity,
+        id,
+        previewRevision: identity.revision,
+        identityVerified,
+      };
+      // 文件从“本轮产物”或 Agent 自动产出打开时，直接切到文档预览，
+      // 避免用户还停留在产物列表而误以为文件没有打开。
+      setActiveModule("doc");
+      // 单次 setTabs：按「工作区 + 相对路径」去重，不同工作区的同名文件是不同标签。
+      setDocTabs((prev) => {
+        const exists = prev.find((t) => (t.id || t.name) === id);
+        if (exists) return prev.map((t) => ((t.id || t.name) === id ? { ...t, ...nextDoc } : t));
+        return [...prev, nextDoc];
+      });
+      setDocActiveTab(id);
+      setDocLoading(false);
+      return id;
+    } catch (e) {
+      const message = String((e as Error)?.message || "");
+      // 文件被移动/删除，或文件列表还是切换工作区之前的旧数据时，不弹生硬的 "not found"，
+      // 而是刷新列表并提示重新选择。
+      if (/not found|enoent|http 404/i.test(message)) {
+        try { await refreshFiles?.(); } catch {}
+        notifyError(`文件不存在或已被移动：${name}\n已刷新文件列表，请重新选择。`);
+      } else {
+        notifyError("打开失败: " + message);
+      }
+      if (requestSeq === docRequestSeqRef.current) setDocLoading(false);
+      return null;
+    }
+  }, [clientId, threadId, currentWorkspace, refreshFiles]);
+
+  // 点击文档 tab 切换（App.jsx 1944 onSwitchTab 直传）。
+  const switchDocTab = useCallback((tabId: string) => {
+    setDocActiveTab(tabId);
+  }, []);
+
+  // 关闭文档 tab（App.jsx 909-926 closeTab 逐行转录；IPC 形态以代际递增替代 abort）。
+  const closeDocTab = useCallback((tabId: string) => {
+    setDocTabs((prev) => {
+      const idx = prev.findIndex((t) => (t.id || t.name) === tabId);
+      if (idx === -1) return prev;
+      const next = prev.filter((t) => (t.id || t.name) !== tabId);
+      if (docActiveTab === tabId) {
+        // 激活相邻 tab
+        const neighbor = next[Math.min(idx, next.length - 1)];
+        setDocActiveTab(neighbor ? (neighbor.id || neighbor.name) : null);
+      }
+      return next;
+    });
+    if (docActiveTab === tabId) {
+      docRequestSeqRef.current += 1;
+    }
+  }, [docActiveTab]);
 
   // ============================================================================
   // 会话选择（App.jsx 929-1122 逐行转录，历史重建走 history-load 共享层）
@@ -665,6 +753,10 @@ export default function Workbench(): React.ReactElement {
         currentDirRef.current = "";
         setCurrentDir("");
         setFiles((switched.files || []) as unknown as FileRecord[]);
+        // 切换工作区后中止在途打开并清空标签（App.jsx 949-952）。
+        docRequestSeqRef.current += 1;
+        setDocTabs([]);
+        setDocActiveTab(null);
       } catch (e) {
         console.warn("切换到会话工作区失败，仍尝试加载历史:", (e as Error).message);
       }
@@ -735,7 +827,7 @@ export default function Workbench(): React.ReactElement {
       setHistoryWindow(sessionHistoryMetaRef.current.get(session.id) || null);
       setHistoryThreadId(conversationId);
       // 从消息里解析会话关联的文件，尝试打开（历史文本先显示，关联文档后台打开，
-      // 不阻塞会话切换；文档预览属 F4，openDocFile 为 no-op 承接）。
+      // 不阻塞会话切换；文档预览随 F4-3 激活（openDocFile）。
       const fileMatch = findSessionFileMatch(msgs);
       if (fileMatch) void openDocFile(fileMatch.trim(), conversationId, resumedWorkspace || undefined);
     } catch (e) {
@@ -930,9 +1022,23 @@ export default function Workbench(): React.ReactElement {
     }
     const status = String(result.status || "completed").toLowerCase();
     if (!["completed", "success"].includes(status)) return;
-    // B02 自动打开预览 / O-P2 autoTab：右栏画布属 F4，previewAutoOpen 快照保留（接线时直接消费）。
-    void previewAutoOpenRef.current;
-  }, []);
+    // O-P2（OAW_AUTO_TAB，默认关）：本轮产生文件产物时直达「产物」页签；
+    // 用户 10s 内手动切换过页签/打开过预览视为锁定，不抢用户主动权
+    // （手动时间戳由 markPreviewManual 在各用户入口记录，自动路径不记）。
+    if (flag("autoTab") && artifacts.length && Date.now() - previewTabManualAtRef.current > 10000) {
+      openArtifactsForRun(runId);
+      return;
+    }
+    const firstArtifact = artifacts[0];
+    if (!firstArtifact) return;
+    // B02 自动打开预览：never 从不；deliverable 仅通过验收的交付文件；requested 本轮有产物就打开
+    if (previewAutoOpenRef.current === "never") return;
+    if (previewAutoOpenRef.current === "deliverable") {
+      const acceptanceStatus = String(firstArtifact.acceptanceStatus || (firstArtifact.acceptance as Record<string, unknown> | undefined)?.status || "");
+      if (!["passed", "warning", "manual_review"].includes(acceptanceStatus)) return;
+    }
+    void openDocFile(String(firstArtifact.path), result.threadId ? String(result.threadId) : threadId, result.cwd ? String(result.cwd) : currentWorkspace);
+  }, [currentWorkspace, openDocFile, threadId]);
 
   useEffect(() => () => { if (changedFilesTimerRef.current) window.clearTimeout(changedFilesTimerRef.current); }, []);
 
@@ -1092,6 +1198,25 @@ export default function Workbench(): React.ReactElement {
             </div>
             <div className="module-body module-artifacts-body">
               <WorkProductPanel tab="changes" clientId={clientId} threadId={threadId} workspace={currentWorkspace} projectId={currentProject?.id || ""} currentSessionId={currentSessionId || ""} selectedRunId={changesRunId} refreshToken={artifactVersion} onOpenFile={(name: string, thread?: string, cwd?: string) => { setActiveModule(null); void openDocFile(name, thread, cwd); }} />
+            </div>
+          </div>
+        )}
+        {/* F4-3：doc 域·预览画布（App.jsx 预览画布 document 页签 → 新 UI 模块视图）。
+            openDocFile 打开成功即 setActiveModule("doc")，产物面板/文件树/历史会话三入口共用。 */}
+        {activeModule === "doc" && (
+          <div className="module-view module-doc-view">
+            <div className="module-head">
+              <button className="module-back" onClick={() => setActiveModule(null)} title="返回对话"><Icon name="back" size={15} /></button>
+              <div className="module-brand-heading"><Logo size={22} /><span><h2>文档</h2><p>预览工作区文档与产物，支持多标签打开</p></span></div>
+            </div>
+            <div className="module-body module-doc-body">
+              <DocViewer
+                tabs={docTabs}
+                activeTab={docActiveTab || ""}
+                onSwitchTab={switchDocTab}
+                onCloseTab={closeDocTab}
+                loading={docLoading}
+              />
             </div>
           </div>
         )}
