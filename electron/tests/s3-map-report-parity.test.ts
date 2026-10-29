@@ -1,26 +1,27 @@
 /**
- * S3-5 map-report 域对拍：probeImageSize 零依赖尺寸探测（PNG IHDR / JPEG SOF 直命中·
+ * S3-5 map-report 域：probeImageSize 零依赖尺寸探测（PNG IHDR / JPEG SOF 直命中·
  * 跳段后命中·损坏·缺失）/ normalizeSections 章节规范化全分支（截断/空跳过/非串归一/
  * 表格三拒绝）/ buildMapReport 报告组装（工作区校验·越界拒绝·图集缩放与缺图跳过·
  * 文件名清洗与时间戳）。
  *
- * 真实 IO 双跑：legacy 物理路径动态 import server/map-report.mjs、modern 静态 import
- * src/main/backend/map-report.ts，双侧各自 tmp 工作区同套断言。map-report 无模块加载期
- * env 锚点依赖，免 stubEnv。文件名时间戳与 meta 生成时间冻结 Date 双侧一致（fake timers
- * toFake:["Date"]）；断言读回结构而非产物字节（OOXML 容器内嵌时间戳双侧必不同）。
- * 蓝本 scripts/map-report-test.mjs（旧回归脚本不迁移，随域退役）。
+ * R6-7a 对拍退役改写：旧侧 server/map-report.mjs 物理路径动态 import
+ * （pathToFileURL）随 server/ 退役删除（等价性已在 S3-5 批对拍验收冻结），仅保留
+ * modern 静态 import src/main/backend/map-report.ts 的同一套绝对断言。
+ * 真实 IO tmp 工作区。map-report 无模块加载期 env 锚点依赖，免 stubEnv。
+ * 文件名时间戳与 meta 生成时间冻结 Date（fake timers toFake:["Date"]）；断言读回结构
+ * 而非产物字节（OOXML 容器内嵌时间戳必不同）。蓝本 scripts/map-report-test.mjs
+ * （旧回归脚本不迁移，随域退役）。
  */
 import { describe, expect, it, beforeAll, afterAll, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import * as modern from "../src/main/backend/map-report";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const PROJECT_ROOT = path.resolve(HERE, "../..");
 
-const IMPLS = ["legacy", "modern"] as const;
+const IMPLS = ["modern"] as const;
 type ImplKind = (typeof IMPLS)[number];
 
 function pngBuffer(width: number, height: number): Buffer {
@@ -53,14 +54,12 @@ function jpegBuffer(width: number, height: number, { appSegment = false } = {}):
   return Buffer.concat(parts);
 }
 
-describe.each(IMPLS)("map-report parity: %s", (kind: ImplKind) => {
+describe.each(IMPLS)("map-report: %s", (kind: ImplKind) => {
   const ws = fs.mkdtempSync(path.join(os.tmpdir(), `s3mr-${kind}-`));
   let impl: any;
 
   beforeAll(async () => {
-    impl = kind === "legacy"
-      ? await import(pathToFileURL(path.join(PROJECT_ROOT, "server", "map-report.mjs")).href)
-      : modern;
+    impl = modern;
     fs.writeFileSync(path.join(ws, "大图.png"), pngBuffer(960, 400));
     fs.writeFileSync(path.join(ws, "小图.png"), pngBuffer(100, 50));
     fs.writeFileSync(path.join(ws, "照片.jpg"), jpegBuffer(500, 300));
@@ -77,14 +76,14 @@ describe.each(IMPLS)("map-report parity: %s", (kind: ImplKind) => {
   });
 
   // ---- probeImageSize ----
-  it("probeImageSize：PNG IHDR / JPEG SOF 直命中与跳段命中（新旧 toEqual）", () => {
+  it("probeImageSize：PNG IHDR / JPEG SOF 直命中与跳段命中", () => {
     expect(impl.probeImageSize(path.join(ws, "大图.png"))).toEqual({ width: 960, height: 400, format: "png" });
     expect(impl.probeImageSize(path.join(ws, "小图.png"))).toEqual({ width: 100, height: 50, format: "png" });
     expect(impl.probeImageSize(path.join(ws, "照片.jpg"))).toEqual({ width: 500, height: 300, format: "jpg" });
     expect(impl.probeImageSize(path.join(ws, "带段.jpg"))).toEqual({ width: 640, height: 480, format: "jpg" });
   });
 
-  it("probeImageSize：非图/空文件/缺失 → null（新旧一致）", () => {
+  it("probeImageSize：非图/空文件/缺失 → null", () => {
     expect(impl.probeImageSize(path.join(ws, "非图.txt"))).toBeNull();
     const empty = path.join(ws, "空.png");
     fs.writeFileSync(empty, Buffer.alloc(0));
@@ -93,7 +92,7 @@ describe.each(IMPLS)("map-report parity: %s", (kind: ImplKind) => {
   });
 
   // ---- normalizeSections ----
-  it("normalizeSections：空输入/全字段章节/空标题跳过/空要点跳过（新旧 toEqual）", () => {
+  it("normalizeSections：空输入/全字段章节/空标题跳过/空要点跳过", () => {
     expect(impl.normalizeSections([])).toEqual([]);
     expect(impl.normalizeSections()).toEqual([]);
     const full = [{ heading: "现状评估", bullets: ["人口 120 万", 42], text: "  结论段落。  ", table: { headers: ["指标", "值"], rows: [["人口", "120 万"], [null, "—"]] } }];
@@ -137,7 +136,7 @@ describe.each(IMPLS)("map-report parity: %s", (kind: ImplKind) => {
     await expect(impl.buildMapReport({ workspace: ws, images: ["../越界.png"] })).rejects.toThrow("图片路径越界：../越界.png");
   });
 
-  it("buildMapReport：无图集 → h1+meta+提示段，文件名含冻结时间戳（双侧 basename 相等）", async () => {
+  it("buildMapReport：无图集 → h1+meta+提示段，文件名含冻结时间戳", async () => {
     const result = await impl.buildMapReport({ workspace: ws, title: "现状评估报告", project: "城市更新", sections: [{ heading: "结论", bullets: ["推进有序"], text: "总体可控。" }] });
     expect(result.engine).toBe("native");
     expect(result.images).toBe(0);
@@ -165,7 +164,7 @@ describe.each(IMPLS)("map-report parity: %s", (kind: ImplKind) => {
     expect(fs.statSync(result.file).size).toBeGreaterThan(0);
   });
 
-  it("buildMapReport：默认标题/空 sections/双侧一致性（结果形状+images+blocks 全等）", async () => {
+  it("buildMapReport：默认标题/空 sections（结果形状锚点）", async () => {
     const result = await impl.buildMapReport({ workspace: ws, images: ["小图.png"] });
     expect(result.images).toBe(1);
     expect(result.blocks).toBe(5); // h1 + meta + 图集 h2 + 图集表 + 1 image（无 sections 无提示段）

@@ -1,11 +1,14 @@
 /**
- * B2-17 pi-extension-management 域对拍（legacy server/pi-extension-management.mjs vs
- * modern src/main/backend/agent/pi-extension-management.ts）。
+ * B2-17 pi-extension-management 域（modern src/main/backend/agent/pi-extension-management.ts）。
  *
- * 对拍形态②（B2-3/B2-9/B2-14/B2-15/B2-16 stubEnv 模式）：APP_DATA_DIR 为模块加载期锚点
- * （CONFIG_FILE 常量，经 pi-config-management 读 OAW_DATA_DIR），双侧各自 mkdtmp 锚定 +
- * beforeAll 设 env 后动态 import；modern 侧 vi.resetModules() 重载 TS 依赖树
- * （pi-config-management/persistence-utils 同步重实例化），legacy 侧物理路径 import 一次缓存。
+ * R6-7a 对拍退役改写：旧侧 server/pi-extension-management.mjs 物理路径动态 import
+ * （pathToFileURL）随 server/ 退役删除（等价性已在 B2-17 批对拍验收冻结），仅保留
+ * modern 侧同一套绝对断言（双侧一致性 battery 与终态快照 it 一并退役）。
+ *
+ * stubEnv 模式（B2-3/B2-9/B2-14/B2-15/B2-16 先例）：APP_DATA_DIR 为模块加载期锚点
+ * （CONFIG_FILE 常量，经 pi-config-management 读 OAW_DATA_DIR），mkdtmp 锚定 +
+ * beforeAll 设 env 后 vi.resetModules() 重载 TS 依赖树动态 import
+ * （pi-config-management/persistence-utils 同步重实例化）。
  *
  * 覆盖面（全部 fs 驱动，无网络/无进程/无真实用户目录）：
  *   - 初始态：CONFIG_FILE 不存在 → listPiExtensions/enabled 两导出全空；
@@ -22,43 +25,33 @@
  *   - inspectPath 行为面（经 files 驱动）：扩展名正则（ts/js/mjs/cts 计、txt 不计）、
  *     隐藏文件与隐藏目录跳过、深度 4 目录不计（walk 入口 depth>3）、
  *     100 截断（t120 三目录各 60 文件：前两目录入口累计 60<100 放行、第三目录入口
- *     120>=100 被拒 → 恰 120 且恰两个前缀各 60，readdir 顺序无关）；
- *   - 双侧一致性 battery：终态落盘配置归一（id→<ID>、每侧根→<R>、冻结时钟统一 at）
- *     后 deep-equal。
+ *     120>=100 被拒 → 恰 120 且恰两个前缀各 60，readdir 顺序无关）。
  *
- * 口径：makeId 的 randomBytes(3) 双侧不同 → 比较面归一 <ID>；at/updatedAt 经冻结时钟
- * （fake Date）双侧一致可 deep-equal；inspectPath 的"既非目录又非文件"stat 分支
- * （win32 无法稳定构造）不在对拍面，经代码审读确认等价。
+ * 口径：makeId 的 randomBytes(3) 非确定 → id 断言正则形态；at/updatedAt 经冻结时钟
+ * （fake Date）断言 FROZEN_AT；inspectPath 的"既非目录又非文件"stat 分支
+ * （win32 无法稳定构造）不在测试面。
  */
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type * as PiExtModule from "../src/main/backend/agent/pi-extension-management";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-// tests → electron → 项目根（旧 server 锚定真实仓库，与生产 sidecar 同一加载形态）
-const PROJECT_ROOT = path.resolve(HERE, "../..");
 
 const FROZEN_AT = new Date(1_700_000_000_000).toISOString();
 
-const LEGACY_DATA = fs.mkdtempSync(path.join(os.tmpdir(), "b2-piext-legacy-"));
 const MODERN_DATA = fs.mkdtempSync(path.join(os.tmpdir(), "b2-piext-modern-"));
 
 type PiExtApi = typeof PiExtModule;
-const legacyHolder: { mod: PiExtApi | null } = { mod: null };
 const modernHolder: { mod: PiExtApi | null } = { mod: null };
 
 const IMPLS = [
-  { label: "legacy", dir: LEGACY_DATA, holder: legacyHolder, modern: false },
-  { label: "modern", dir: MODERN_DATA, holder: modernHolder, modern: true },
+  { label: "modern", dir: MODERN_DATA, holder: modernHolder },
 ] as const;
 
-/** 终态落盘快照容器（describe.each 各侧 test 8 填充，battery 比较）。 */
-const diskSnapshots: Record<string, any> = {};
-
-/** 每侧夹具：ext-src 扩展树 / single 单文件 / deep 深度链 / t120 百文件截断布局。 */
+/** 夹具：ext-src 扩展树 / single 单文件 / deep 深度链 / t120 百文件截断布局。 */
 function buildFixture(root: string): void {
   const write = (rel: string, content = "// ext\n"): void => {
     const file = path.join(root, rel);
@@ -83,32 +76,15 @@ function buildFixture(root: string): void {
   }
 }
 
-/** 归一比较面：每侧根目录 → <R>，makeId 随机 id（slug-6hex）→ <ID>。 */
-function normalize(value: any, root: string): any {
-  if (typeof value === "string") {
-    const replaced = value.split(root).join("<R>");
-    return /^[a-z0-9_-]{1,24}-[0-9a-f]{6}$/.test(replaced) ? "<ID>" : replaced;
-  }
-  if (Array.isArray(value)) return value.map((item) => normalize(item, root));
-  if (value && typeof value === "object") {
-    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, normalize(item, root)]));
-  }
-  return value;
-}
-
-describe.each(IMPLS)("pi-extension-management 对拍（$label）", ({ dir, holder, modern }) => {
+describe.each(IMPLS)("pi-extension-management（$label）", ({ dir, holder }) => {
   const m = () => holder.mod!;
   const configFile = () => path.join(dir, "集成", "pi-extensions.json");
 
   beforeAll(async () => {
     buildFixture(dir);
     process.env.OAW_DATA_DIR = dir;
-    if (modern) {
-      vi.resetModules();
-      holder.mod = (await import("../src/main/backend/agent/pi-extension-management")) as PiExtApi;
-    } else {
-      holder.mod = (await import(pathToFileURL(path.join(PROJECT_ROOT, "server", "pi-extension-management.mjs")).href)) as PiExtApi;
-    }
+    vi.resetModules();
+    holder.mod = (await import("../src/main/backend/agent/pi-extension-management")) as PiExtApi;
   });
 
   it("初始态：CONFIG_FILE 不存在 → list/enabled 三导出全空", () => {
@@ -240,21 +216,8 @@ describe.each(IMPLS)("pi-extension-management 对拍（$label）", ({ dir, holde
     expect([...byPrefix.keys()].every((prefix) => ["a", "b", "c"].includes(prefix))).toBe(true);
   });
 
-  it("终态落盘快照（供双侧一致性 battery）", () => {
-    const raw = JSON.parse(fs.readFileSync(configFile(), "utf8"));
-    expect(raw.updatedAt).toBe(FROZEN_AT);
-    diskSnapshots[modern ? "modern" : "legacy"] = normalize(raw, dir);
-  });
-
   afterAll(() => {
     fs.rmSync(dir, { recursive: true, force: true });
-  });
-});
-
-describe("pi-extension-management 双侧一致性 battery", () => {
-  it("终态落盘配置（归一 id/路径、冻结时钟统一 at）deep-equal", () => {
-    expect(diskSnapshots.legacy).toBeDefined();
-    expect(diskSnapshots.modern).toEqual(diskSnapshots.legacy);
   });
 });
 

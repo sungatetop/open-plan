@@ -1,10 +1,13 @@
 /**
- * B2-15 web-search 域对拍（legacy server/web-search.mjs vs modern src/main/backend/web-search.ts）。
+ * B2-15 web-search 域（modern src/main/backend/web-search.ts）。
  *
- * 对拍形态②（B2-3/B2-9/B2-14 stubEnv 模式）：OAW_SEARCH_CONFIG 为模块加载期锚点
- * （CONFIG_FILE 常量），双侧各自 mkdtmp 锚定 + beforeAll 设 env 后动态 import；
- * modern 侧 vi.resetModules() 重载 TS 依赖树（workspace/persistence-utils 同步重实例化），
- * legacy 侧物理路径 import 一次缓存（CONFIG_FILE 固化 LEGACY_DATA）。
+ * R6-7a 对拍退役改写：旧侧 server/web-search.mjs 物理路径动态 import
+ * （pathToFileURL）随 server/ 退役删除（等价性已在 B2-15 批对拍验收冻结），仅保留
+ * modern 侧同一套绝对断言。
+ *
+ * stubEnv 模式（B2-3/B2-9/B2-14 先例）：OAW_SEARCH_CONFIG 为模块加载期锚点
+ * （CONFIG_FILE 常量），mkdtmp 锚定 + beforeAll 设 env 后 vi.resetModules() 重载
+ * TS 依赖树动态 import（workspace/persistence-utils 同步重实例化）。
  *
  * 覆盖面：searchStoreInfo 存在性/锚点、readStoredSearchSettings/readSearchSettings
  * 默认值与环境变量注入（磁盘优先）、saveSearchSettings（backend 白名单/去尾斜杠/
@@ -13,7 +16,7 @@
  * webSearch 预网络错误（空关键词/不支持后端/未配置 SEARCH_NOT_CONFIGURED）、
  * testSearchBackend 预网络分支（不支持/未配置/draft 不落盘不标记连通性）。
  *
- * 口径：四后端真实搜索请求路径不在单元对拍面（需外网凭据，B2-14 MCP SDK 同款裁剪）；
+ * 口径：四后端真实搜索请求路径不在单元测试面（需外网凭据，B2-14 MCP SDK 同款裁剪）；
  * jina 免 Key 即 ready——任何对 jina 的 webSearch/testSearchBackend 调用都会发起真实
  * 网络请求，测试全程禁止调用。connectivity Map 进程内状态：ok/failed 标记仅经真实
  * 测试路径产生，本面只断言 untested 初值与 save 后 resetConnectivity 效果。
@@ -21,24 +24,19 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import type * as SearchModule from "../src/main/backend/web-search";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-// tests → electron → 项目根（旧 server 锚定真实仓库，与生产 sidecar 同一加载形态）
-const PROJECT_ROOT = path.resolve(HERE, "../..");
 
-const LEGACY_DATA = fs.mkdtempSync(path.join(os.tmpdir(), "b2-websearch-legacy-"));
 const MODERN_DATA = fs.mkdtempSync(path.join(os.tmpdir(), "b2-websearch-modern-"));
 
 type SearchApi = typeof SearchModule;
-const legacyHolder: { mod: SearchApi | null } = { mod: null };
 const modernHolder: { mod: SearchApi | null } = { mod: null };
 
 const IMPLS = [
-  { label: "legacy", dir: LEGACY_DATA, holder: legacyHolder, modern: false },
-  { label: "modern", dir: MODERN_DATA, holder: modernHolder, modern: true },
+  { label: "modern", dir: MODERN_DATA, holder: modernHolder },
 ] as const;
 
 const DEFAULT_SETTINGS = {
@@ -57,19 +55,15 @@ const SEARCH_STATE_KEYS = [
   "connectivityDurationMs", "label", "tone", "reason", "backends",
 ] as const;
 
-describe.each(IMPLS)("web-search 对拍（$label）", ({ dir, holder, modern }) => {
+describe.each(IMPLS)("web-search（$label）", ({ dir, holder }) => {
   const cfg = () => path.join(dir, "search.json");
   const m = () => holder.mod!;
   const readRaw = () => JSON.parse(fs.readFileSync(cfg(), "utf8"));
 
   beforeAll(async () => {
     process.env.OAW_SEARCH_CONFIG = cfg();
-    if (modern) {
-      vi.resetModules();
-      holder.mod = (await import("../src/main/backend/web-search")) as SearchApi;
-    } else {
-      holder.mod = (await import(pathToFileURL(path.join(PROJECT_ROOT, "server", "web-search.mjs")).href)) as SearchApi;
-    }
+    vi.resetModules();
+    holder.mod = (await import("../src/main/backend/web-search")) as SearchApi;
   });
 
   it("初始态：store 不存在、settings 等于默认值、searchState 全族 untested 待配置", () => {
@@ -237,12 +231,8 @@ describe.each(IMPLS)("web-search 对拍（$label）", ({ dir, holder, modern }) 
   });
 });
 
-describe("web-search 对拍：双侧常量一致", () => {
-  it("SEARCH_BACKENDS 深比较一致且 frozen", () => {
-    const legacy = legacyHolder.mod!;
-    const modern = modernHolder.mod!;
-    expect(modern.SEARCH_BACKENDS).toEqual(legacy.SEARCH_BACKENDS);
-    expect(Object.isFrozen(modern.SEARCH_BACKENDS)).toBe(true);
-    expect(Object.isFrozen(legacy.SEARCH_BACKENDS)).toBe(true);
+describe("web-search：modern 侧常量锚点", () => {
+  it("SEARCH_BACKENDS frozen", () => {
+    expect(Object.isFrozen(modernHolder.mod!.SEARCH_BACKENDS)).toBe(true);
   });
 });
