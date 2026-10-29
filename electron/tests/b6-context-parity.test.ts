@@ -6,22 +6,22 @@ import path from "node:path";
 import JSZip from "jszip";
 import XLSX from "xlsx";
 
-// B6-5 对拍：旧 server/context.mjs ↔ 新 electron/src/main/backend/agent/context.ts。
-//
-// 基建设计（双侧同流，沿 B6-4 假根范式）：
-// - vi.mock("node:url") 仅定向 fileURLToPath：旧 workspace.mjs/context.mjs 与新
-//   workspace-paths.ts 的 __dirname 分别重定向到两个假根（fakeOld/fakeNew）→ 双侧
-//   PROJECT_DIR 各自隔离（fakeOld/server ↔ fakeNew/electron/src/main/backend），
-//   .规聚会话 会话夹具与 workspace 状态文件都落在假根下，不触碰真实运行时数据。
-// - kb.mjs/tpl.mjs 属独立域（过渡桥动态引用）：vi.mock 按 resolved id 命中——旧侧
-//   import("./kb.mjs") 与新侧 6 级上跳变量 import 解析到同一物理文件，mock 双侧生效；
-//   测试只对拍 context 侧逻辑（target 解析/rootIdx 查找/文本拼装），域模块本身不在本批范围。
-// - vi.mock("node:child_process") 定向 execFile：受控 handler 覆盖 pdftotext 成功/失败兜底/
-//   OCR 链（pdftoppm 真建 png、tesseract 成功/失败/空输出），双侧 promisify 包装一致。
-// - docx/pptx 夹具用 JSZip 生成、xlsx 夹具用 XLSX.writeFile 生成，双侧各自生成相同内容。
-// - mtime/version（含 st.mtimeMs）双侧时钟必异：scrub 删除 mtime、version 归一 "<V>:…"；
-//   addFileRoot 的 root.id = sha1(双侧路径) 必异：40 位 hex 的 id/rootId 归一 "<ID>"（沿 B6-4）。
-// - fake timers 仅 toFake:["Date"]：readAt/cachedAt 冻结对齐；queueMicrotask 不受影响。
+/**
+ * B6-5 行为覆盖：context.ts（引用解析 / 文件抽取 / 会话与知识库读取）。
+ *
+ * R6-6b 对拍退役改写：旧侧 server/{workspace,context,kb,tpl}.mjs 动态 import 与 runBoth
+ * 双跑互等随 server 退役删除，仅保留 TS 侧断言（期望值此前已经双侧对拍固化）。
+ *
+ * 基建设计（沿 B6-4 假根范式）：
+ * - vi.mock("node:url") 仅定向 fileURLToPath：workspace-paths.ts 的 __dirname 重定向到
+ *   假根 fakeNew → PROJECT_DIR 落假根，.规聚会话 会话夹具与 workspace 状态文件都在假根下，
+ *   不触碰真实运行时数据。
+ * - kb/tpl 属独立域（context 经模块路径变量动态引用）：vi.mock 换绑共享 kbState/tplState。
+ * - vi.mock("node:child_process") 定向 execFile：受控 handler 覆盖 pdftotext 成功/失败兜底/
+ *   OCR 链（pdftoppm 真建 png、tesseract 成功/失败/空输出）。
+ * - docx/pptx 夹具用 JSZip 生成、xlsx 夹具用 XLSX.writeFile 生成。
+ * - fake timers 仅 toFake:["Date"]：readAt/cachedAt 冻结；queueMicrotask 不受影响。
+ */
 
 type AnyMod = Record<string, any>;
 
@@ -29,7 +29,6 @@ const hoisted = vi.hoisted(() => {
   const base = (process.env.TEMP || process.env.TMP || "/tmp").replace(/[\\/]+$/, "");
   const stamp = `${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
   return {
-    fakeOld: `${base}/oaw-b65-old-${stamp}`,
     fakeNew: `${base}/oaw-b65-new-${stamp}`,
     kbState: {
       roots: [{ name: "根甲" }, { name: "根乙" }] as Array<{ name: string }>,
@@ -45,16 +44,11 @@ const hoisted = vi.hoisted(() => {
 
 vi.mock("node:url", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:url")>();
-  const map: Array<[string, string]> = [
-    ["server/workspace.mjs", `${hoisted.fakeOld}/server/workspace.mjs`],
-    ["server/context.mjs", `${hoisted.fakeOld}/server/context.mjs`],
-    ["electron/src/main/backend/workspace-paths.ts", `${hoisted.fakeNew}/electron/src/main/backend/workspace-paths.ts`],
-  ];
+  const mapped = `${hoisted.fakeNew}/electron/src/main/backend/workspace-paths.ts`;
   return {
     ...actual,
     fileURLToPath: (url: URL | string) => {
-      const s = String(url);
-      for (const [suffix, mapped] of map) if (s.endsWith(suffix)) return mapped;
+      if (String(url).endsWith("electron/src/main/backend/workspace-paths.ts")) return mapped;
       return actual.fileURLToPath(url as URL);
     },
   };
@@ -80,19 +74,8 @@ vi.mock("node:child_process", async (importOriginal) => {
   };
 });
 
-vi.mock("../../server/kb.mjs", () => ({
-  scan: async () => {},
-  status: () => ({ roots: hoisted.kbState.roots }),
-  getDoc: (relPath: string, rootIdx: number | null) => {
-    if (rootIdx === null || rootIdx < 0 || rootIdx >= hoisted.kbState.roots.length) return hoisted.kbState.docFallback;
-    return hoisted.kbState.docsByRoot[rootIdx] ?? hoisted.kbState.docFallback;
-  },
-  getTreeLevel: () => hoisted.kbState.tree,
-}));
-
 // S3-7 起 context.ts knowledge 分支换绑 TS backend/kb（KB_MODULE_PATH="../kb"），
-// 新侧 mock 与旧侧共享同一 kbState，双链各自命中（工厂形态同上，非 getter——
-// kbState 字段每用例整体重置，取值时解引用即可）。
+// mock 经 kbState 控制域数据（字段每用例整体重置，取值时解引用）。
 vi.mock("../src/main/backend/kb", () => ({
   scan: async () => {},
   status: () => ({ roots: hoisted.kbState.roots }),
@@ -103,118 +86,39 @@ vi.mock("../src/main/backend/kb", () => ({
   getTreeLevel: () => hoisted.kbState.tree,
 }));
 
-vi.mock("../../server/tpl.mjs", () => ({
-  resolveTemplatePath: () => hoisted.tplState.path,
-  getTemplateContent: () => hoisted.tplState.content,
-}));
-
-// S3-10 起 context.ts template 分支换绑 TS backend/tpl（TPL_MODULE_PATH="../tpl"），
-// 新侧 mock 与旧侧共享同一 tplState，双链各自命中（kb 先例同款工厂形态）。
+// S3-10 起 context.ts template 分支换绑 TS backend/tpl（TPL_MODULE_PATH="../tpl"）。
 vi.mock("../src/main/backend/tpl", () => ({
   resolveTemplatePath: () => hoisted.tplState.path,
   getTemplateContent: () => hoisted.tplState.content,
 }));
-
-// 路径归一：假根与其下 PROJECT_DIR 先长后短替换；tempRoot 经 realpath 注册
-const ROOTS: Array<[string, string]> = [];
-
-function pushRoot(real: string, tag: string): void {
-  ROOTS.push([real, tag]);
-  const lower = real.toLowerCase();
-  if (lower !== real) ROOTS.push([lower, tag]);
-}
-
-function oldProjectDir(): string {
-  // 旧 workspace.mjs PROJECT_DIR = resolve(server, "..") = 假根顶层
-  return hoisted.fakeOld.replace(/\//g, path.sep);
-}
 
 function newProjectDir(): string {
   // 新 workspace-paths.ts PROJECT_DIR = resolve(__dirname, "..","..","..","..") = 假根顶层
   return hoisted.fakeNew.replace(/\//g, path.sep);
 }
 
-function resetRoots(): void {
-  ROOTS.length = 0;
-  pushRoot(hoisted.fakeOld.replace(/\//g, path.sep), "<R>");
-  pushRoot(hoisted.fakeNew.replace(/\//g, path.sep), "<R>");
-}
-
-resetRoots();
-
-function normalizePaths(value: any): any {
-  if (typeof value === "string") {
-    let out = value;
-    for (const [from, to] of ROOTS) out = out.split(from).join(to);
-    return out;
-  }
-  if (Array.isArray(value)) return value.map((item) => normalizePaths(item));
-  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, normalizePaths(item)]));
-  return value;
-}
-
-/** 双侧时钟差异消除：删 mtime；version 首段（size:mtimeMs）归一；40 位 hex 的 id/rootId 归一 <ID>。 */
-function scrub(value: any): any {
-  if (Array.isArray(value)) return value.map(scrub);
-  if (value && typeof value === "object") {
-    const out: any = {};
-    for (const [key, item] of Object.entries(value)) {
-      if (key === "mtime") continue;
-      if (key === "version") { out[key] = String(item).replace(/^\d+:\d+(?:\.\d+)?:/, "<V>:"); continue; }
-      // addFileRoot 的 root.id / 引用 rootId = sha1(路径) 截 12 位（双侧必异）→ <ID>；
-      // Reference.id = "ref_" + sha1(JSON(ref)) 截 12 位，ref 含 rootId 时双侧必异 → 一并归一；
-      // parseReferences 用例单独断言无 rootId 引用的 id 双侧一致，metadata.hash 键名不匹配不受影响
-      if ((key === "id" || key === "rootId") && typeof item === "string" && /^(?:ref_)?[0-9a-f]{12}$/.test(item)) { out[key] = "<ID>"; continue; }
-      out[key] = scrub(item);
-    }
-    return out;
-  }
-  return value;
-}
-
-function tempRoot(label: string): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), `b65-${label}-`));
-  pushRoot(fs.realpathSync(dir), "<R>");
-  return dir;
-}
-
-function expectSame(actual: unknown, expected: unknown): void {
-  expect(scrub(normalizePaths(actual))).toEqual(scrub(normalizePaths(expected)));
-}
-
-async function loadMods(side: "old" | "nw", env: Record<string, string>): Promise<{ ws: AnyMod; ctx: AnyMod }> {
+async function loadMods(env: Record<string, string>): Promise<{ ws: AnyMod; ctx: AnyMod }> {
   vi.unstubAllEnvs();
   vi.resetModules();
   // 状态文件在 PROJECT_DIR（假根顶层）下：清掉避免 roots/hiddenWorkspaces 跨用例残留
-  for (const root of [hoisted.fakeOld, hoisted.fakeNew]) {
-    fs.rmSync(path.join(root, ".workspace-state.json"), { force: true });
-    fs.rmSync(path.join(root, ".file-roots.json"), { force: true });
-  }
+  fs.rmSync(path.join(hoisted.fakeNew, ".workspace-state.json"), { force: true });
+  fs.rmSync(path.join(hoisted.fakeNew, ".file-roots.json"), { force: true });
   for (const [key, value] of Object.entries(env)) vi.stubEnv(key, value);
-  if (side === "old") {
-    const ws = (await import("../../server/workspace.mjs")) as unknown as AnyMod;
-    const ctx = (await import("../../server/context.mjs")) as unknown as AnyMod;
-    return { ws, ctx };
-  }
   const ws = (await import("../src/main/backend/workspace")) as unknown as AnyMod;
   const ctx = (await import("../src/main/backend/agent/context")) as unknown as AnyMod;
   return { ws, ctx };
 }
 
-type CtxCtx = { ws: string; ext: string; side: "old" | "nw" };
+type CtxCtx = { ws: string; ext: string };
 
-/** 双侧同流：每侧独立工作区/外部根临时目录 + 假根下会话夹具。 */
-async function runBoth(env: Record<string, string>, script: (m: { ws: AnyMod; ctx: AnyMod }, c: CtxCtx) => Promise<any> | any): Promise<[any, any]> {
-  const results: any[] = [];
-  for (const side of ["old", "nw"] as const) {
-    const ws = tempRoot("ws");
-    const ext = tempRoot("ext");
-    const mods = await loadMods(side, { OAW_ENABLE_OCR: "", ...env });
-    fs.mkdirSync(path.join(side === "old" ? oldProjectDir() : newProjectDir(), ".规聚会话"), { recursive: true });
-    hoisted.execCalls.length = 0;
-    results.push(await script(mods, { ws, ext, side }));
-  }
-  return [results[0], results[1]];
+/** 单侧执行：每用例独立工作区/外部根临时目录 + 假根下会话夹具目录。 */
+async function runOne(env: Record<string, string>, script: (m: { ws: AnyMod; ctx: AnyMod }, c: CtxCtx) => Promise<any> | any): Promise<any> {
+  const ws = fs.mkdtempSync(path.join(os.tmpdir(), "b65-ws-"));
+  const ext = fs.mkdtempSync(path.join(os.tmpdir(), "b65-ext-"));
+  const mods = await loadMods({ OAW_ENABLE_OCR: "", ...env });
+  fs.mkdirSync(path.join(newProjectDir(), ".规聚会话"), { recursive: true });
+  hoisted.execCalls.length = 0;
+  return script(mods, { ws, ext });
 }
 
 beforeEach(() => {
@@ -232,11 +136,9 @@ afterEach(() => {
   hoisted.kbState.docsByRoot = {};
   hoisted.kbState.docFallback = null;
   hoisted.kbState.tree = null;
-  resetRoots();
 });
 
 afterAll(() => {
-  fs.rmSync(hoisted.fakeOld, { recursive: true, force: true });
   fs.rmSync(hoisted.fakeNew, { recursive: true, force: true });
 });
 
@@ -293,16 +195,11 @@ async function buildFixtures(ws: string): Promise<Record<string, string>> {
   return f;
 }
 
-function buildSessionFixture(): void {
-  // 会话夹具由各用例写入双侧 PROJECT_DIR/.规聚会话（runBoth 已建目录）
-}
-void buildSessionFixture;
-
 // ── 用例 ──
 
-describe("B6-5 context 对拍：parseReferences", () => {
-  it("六类显式标记 + 裸路径矩阵 + 排除 + 尾标点剥离 + 去重（双侧输出逐项相等）", async () => {
-    await runBoth({}, ({ ctx }) => {
+describe("B6-5 context：parseReferences", () => {
+  it("六类显式标记 + 裸路径矩阵 + 排除 + 尾标点剥离 + 去重", async () => {
+    await runOne({}, ({ ctx }) => {
       const text = [
         "@知识库目录[规划库] 引言",
         "@知识库[规划/总纲.md@根乙]",
@@ -328,16 +225,16 @@ describe("B6-5 context 对拍：parseReferences", () => {
         ["session", "会话A", "&会话[会话A]"],
         ["file", "子目录/嵌套.md", "@子目录/嵌套.md"],
       ]);
+      // id 稳定（sha1(JSON(ref))）：同文本重复解析 id 不变
+      const again = ctx.parseReferences(text);
+      expect(again.map((r: any) => r.id)).toEqual(out.map((r: any) => r.id));
+      expect(out.map((r: any) => r.range ?? null)).toEqual(out.map((r: any) => r.range ?? null));
       return out;
-    }).then(([a, b]) => {
-      // id 稳定且双侧一致（sha1(JSON(ref))）
-      expect(a.map((r: any) => r.id)).toEqual(b.map((r: any) => r.id));
-      expect(a.map((r: any) => r.range ?? null)).toEqual(b.map((r: any) => r.range ?? null));
     });
   });
 
   it("cell/locator range 形状（经 @文件[] 显式入口）+ 裸路径排除显式标记 + 空输入", async () => {
-    await runBoth({}, ({ ctx }) => {
+    await runOne({}, ({ ctx }) => {
       const cell = ctx.parseReferences("@文件[数据.xlsx#第二页!A1:B2]")[0];
       expect(cell.target).toBe("数据.xlsx");
       expect(cell.range).toEqual({ sheet: "第二页", cell: "A1:B2" });
@@ -357,9 +254,9 @@ describe("B6-5 context 对拍：parseReferences", () => {
   });
 });
 
-describe("B6-5 context 对拍：resolveReference", () => {
-  it("文件命中：metadata 完整对拍 + hash 锚点 + mime/版本形态", async () => {
-    await runBoth({}, async ({ ws, ctx }, c) => {
+describe("B6-5 context：resolveReference", () => {
+  it("文件命中：metadata 完整 + hash 锚点 + mime/版本形态", async () => {
+    await runOne({}, async ({ ws, ctx }, c) => {
       ws.setWorkspace(c.ws);
       await buildFixtures(c.ws);
       const resolved = ctx.resolveReference({ kind: "file", target: "报告.md" });
@@ -372,11 +269,11 @@ describe("B6-5 context 对拍：resolveReference", () => {
       expect(resolved.metadata.hash).toBe(crypto.createHash("sha1").update(MD_TEXT).digest("hex"));
       expect(resolved.metadata.version).toMatch(/^\d+:\d+(?:\.\d+)?:[0-9a-f]{8}$/);
       return resolved;
-    }).then(([a, b]) => expectSame(a, b));
+    });
   });
 
   it("目录引用：isDirectory + files 递归列表；readReference 对目录返回提示文案", async () => {
-    await runBoth({}, async ({ ws, ctx }, c) => {
+    await runOne({}, async ({ ws, ctx }, c) => {
       ws.setWorkspace(c.ws);
       await buildFixtures(c.ws);
       const resolved = ctx.resolveReference({ kind: "file", target: "sub" });
@@ -386,11 +283,11 @@ describe("B6-5 context 对拍：resolveReference", () => {
       const read = await ctx.readReference({ kind: "file", target: "sub" });
       expect(read.text).toBe("目录引用需要逐个读取文件");
       return resolved;
-    }).then(([a, b]) => expectSame(a, b));
+    });
   });
 
   it("外部根：addFileRoot + rootId 引用，relativePath 相对根", async () => {
-    await runBoth({}, async ({ ws, ctx }, c) => {
+    await runOne({}, async ({ ws, ctx }, c) => {
       ws.setWorkspace(c.ws);
       fs.writeFileSync(path.join(c.ext, "ext-文件.md"), "外部内容", "utf8");
       const added = ws.addFileRoot(c.ext, "外部根");
@@ -402,11 +299,11 @@ describe("B6-5 context 对拍：resolveReference", () => {
       const roots = ws.listFileRoots();
       expect(roots.map((r: any) => [r.label, r.path])).toEqual([["外部根", c.ext]]);
       return { resolved, roots };
-    }).then(([a, b]) => expectSame(a, b));
+    });
   });
 
-  it("missing/越界/无效 rootId/unsupported：消息与状态对拍", async () => {
-    await runBoth({}, async ({ ws, ctx }, c) => {
+  it("missing/越界/无效 rootId/unsupported：消息与状态", async () => {
+    await runOne({}, async ({ ws, ctx }, c) => {
       ws.setWorkspace(c.ws);
       await buildFixtures(c.ws);
       const missing = ctx.resolveReference({ kind: "file", target: "没有.md" });
@@ -421,13 +318,13 @@ describe("B6-5 context 对拍：resolveReference", () => {
       const readUnsupported = await ctx.readReference({ kind: "file", target: "大.bin" });
       expect(readUnsupported.text).toBe("目录引用需要逐个读取文件");
       return { missing, escape, badRoot, unsupported };
-    }).then(([a, b]) => expectSame(a, b));
+    });
   });
 
-  it("session 命中/未命中：metadata 与文案对拍", async () => {
-    await runBoth({}, async ({ ws, ctx }, c) => {
+  it("session 命中/未命中：metadata 与文案", async () => {
+    await runOne({}, async ({ ws, ctx }, c) => {
       ws.setWorkspace(c.ws);
-      const sessDir = path.join(c.side === "old" ? oldProjectDir() : newProjectDir(), ".规聚会话");
+      const sessDir = path.join(newProjectDir(), ".规聚会话");
       fs.writeFileSync(path.join(sessDir, "会话A.jsonl"), [
         JSON.stringify({ type: "other", message: { role: "system", content: "sys" } }),
         JSON.stringify({ type: "message", message: { role: "user", content: "帮我规划交通方案" } }),
@@ -444,11 +341,11 @@ describe("B6-5 context 对拍：resolveReference", () => {
       expect(miss.status).toBe("missing");
       expect(miss.message).toBe("未找到该历史会话");
       return { hit, miss };
-    }).then(([a, b]) => expectSame(a, b));
+    });
   });
 
   it("knowledge 族 resolveReference 全部 deferred；readReference 对 template_dir 返回提示", async () => {
-    await runBoth({}, async ({ ws, ctx }, c) => {
+    await runOne({}, async ({ ws, ctx }, c) => {
       ws.setWorkspace(c.ws);
       for (const [kind, target] of [["knowledge", "a"], ["knowledge_dir", "b"], ["template", "c"], ["template_dir", "d"]] as const) {
         const resolved = ctx.resolveReference({ kind, target });
@@ -463,7 +360,7 @@ describe("B6-5 context 对拍：resolveReference", () => {
   });
 
   it("resolveReferences：references + text 混合去重，逐项 resolve", async () => {
-    await runBoth({}, async ({ ws, ctx }, c) => {
+    await runOne({}, async ({ ws, ctx }, c) => {
       ws.setWorkspace(c.ws);
       await buildFixtures(c.ws);
       fs.writeFileSync(path.join(c.ext, "ext-文件.md"), "外部内容", "utf8");
@@ -478,13 +375,13 @@ describe("B6-5 context 对拍：resolveReference", () => {
         ["file", "sub/子目录/嵌套.md", "resolved"],
       ]);
       return out;
-    }).then(([a, b]) => expectSame(a, b));
+    });
   });
 });
 
-describe("B6-5 context 对拍：readReference 抽取与编排", () => {
+describe("B6-5 context：readReference 抽取与编排", () => {
   it("md 直读 + query 过滤（大小写不敏感）", async () => {
-    await runBoth({}, async ({ ws, ctx }, c) => {
+    await runOne({}, async ({ ws, ctx }, c) => {
       ws.setWorkspace(c.ws);
       await buildFixtures(c.ws);
       const full = await ctx.readReference({ kind: "file", target: "报告.md" });
@@ -495,25 +392,22 @@ describe("B6-5 context 对拍：readReference 抽取与编排", () => {
       const filtered = await ctx.readReference({ kind: "file", target: "报告.md" }, "ALPHA");
       expect(filtered.text).toBe(["L1 alpha", "L4 Alpha"].join("\n"));
       return { full, filtered };
-    }).then(([a, b]) => expectSame(a, b));
+    });
   });
 
   it("截断：>MAX_READ_CHARS 输出 50000 + truncated", async () => {
-    await runBoth({}, async ({ ws, ctx }, c) => {
+    await runOne({}, async ({ ws, ctx }, c) => {
       ws.setWorkspace(c.ws);
       await buildFixtures(c.ws);
       const out = await ctx.readReference({ kind: "file", target: "大文件.txt" });
       expect(out.text.length).toBe(50000);
       expect(out.truncated).toBe(true);
       return { len: out.text.length, truncated: out.truncated };
-    }).then(([a, b]) => {
-      expect(a).toEqual(b);
-      expect(a.len).toBe(50000);
     });
   });
 
   it("applyRange：page/page+end/paragraph/slide/startLine+endLine（md + pptx）", async () => {
-    await runBoth({}, async ({ ws, ctx }, c) => {
+    await runOne({}, async ({ ws, ctx }, c) => {
       ws.setWorkspace(c.ws);
       await buildFixtures(c.ws);
       const pageRange = await ctx.readReference({ kind: "file", target: "报告.md" }, "", { page: 2, end: 3 });
@@ -533,7 +427,7 @@ describe("B6-5 context 对拍：readReference 抽取与编排", () => {
   });
 
   it("docx 抽取：仅 document.xml 段落文本", async () => {
-    await runBoth({}, async ({ ws, ctx }, c) => {
+    await runOne({}, async ({ ws, ctx }, c) => {
       ws.setWorkspace(c.ws);
       await buildFixtures(c.ws);
       const out = await ctx.readReference({ kind: "file", target: "文档.docx" });
@@ -541,21 +435,21 @@ describe("B6-5 context 对拍：readReference 抽取与编排", () => {
       expect(out.metadata.parser).toBe("docx");
       expect(out.metadata.mime).toBe("application/vnd.openxmlformats-officedocument.wordprocessingml.document");
       return { text: out.text, parser: out.metadata.parser };
-    }).then(([a, b]) => expect(a).toEqual(b));
+    });
   });
 
   it("pptx 抽取：slide 序号 + 文本；备注不混入", async () => {
-    await runBoth({}, async ({ ws, ctx }, c) => {
+    await runOne({}, async ({ ws, ctx }, c) => {
       ws.setWorkspace(c.ws);
       await buildFixtures(c.ws);
       const out = await ctx.readReference({ kind: "file", target: "演示.pptx" });
       expect(out.text).toBe("1. 首页内容\n2. 次页内容");
       return out.text;
-    }).then(([a, b]) => expect(a).toBe(b));
+    });
   });
 
   it("xlsx：全 sheet / sheet 选择（对象 range）/ cell 范围", async () => {
-    await runBoth({}, async ({ ws, ctx }, c) => {
+    await runOne({}, async ({ ws, ctx }, c) => {
       ws.setWorkspace(c.ws);
       await buildFixtures(c.ws);
       const all = await ctx.readReference({ kind: "file", target: "数据.xlsx" });
@@ -567,11 +461,11 @@ describe("B6-5 context 对拍：readReference 抽取与编排", () => {
       const cell = await ctx.readReference(cellRef);
       expect(cell.text).toBe("## 第二页!A1:A2\n其他\n数据B");
       return { all: all.text, onlySheet: onlySheet.text, cell: cell.text };
-    }).then(([a, b]) => expect(a).toEqual(b));
+    });
   });
 
   it("pdf：pdftotext 成功；失败兜底文案（OCR 关）", async () => {
-    await runBoth({}, async ({ ws, ctx }, c) => {
+    await runOne({}, async ({ ws, ctx }, c) => {
       ws.setWorkspace(c.ws);
       await buildFixtures(c.ws);
       hoisted.execHandler = (file) => {
@@ -587,11 +481,11 @@ describe("B6-5 context 对拍：readReference 抽取与编排", () => {
       const fail = await ctx.readReference({ kind: "file", target: "样例fail.pdf" });
       expect(fail.text).toBe("[PDF 文本抽取工具不可用；可安装 poppler，或设置 OAW_ENABLE_OCR=1 启用可选 OCR。]");
       return { ok: ok.text, fail: fail.text };
-    }).then(([a, b]) => expect(a).toEqual(b));
+    });
   });
 
   it("pdf OCR 链：pdftoppm 建图 + tesseract 成功/空输出；pdftoppm 失败兜底", async () => {
-    await runBoth({ OAW_ENABLE_OCR: "1" }, async ({ ws, ctx }, c) => {
+    await runOne({ OAW_ENABLE_OCR: "1" }, async ({ ws, ctx }, c) => {
       ws.setWorkspace(c.ws);
       await buildFixtures(c.ws);
       hoisted.execHandler = (file, args) => {
@@ -633,7 +527,7 @@ describe("B6-5 context 对拍：readReference 抽取与编排", () => {
   });
 
   it("OCR 语言包环境变量 OAW_OCR_LANG 透传", async () => {
-    await runBoth({ OAW_ENABLE_OCR: "1", OAW_OCR_LANG: "chi_sim" }, async ({ ws, ctx }, c) => {
+    await runOne({ OAW_ENABLE_OCR: "1", OAW_OCR_LANG: "chi_sim" }, async ({ ws, ctx }, c) => {
       ws.setWorkspace(c.ws);
       await buildFixtures(c.ws);
       hoisted.execHandler = (file, args) => {
@@ -654,7 +548,7 @@ describe("B6-5 context 对拍：readReference 抽取与编排", () => {
   });
 
   it("文档缓存：二次命中 cacheHit + exec 不再调用；clearReadCache 后失效", async () => {
-    await runBoth({}, async ({ ws, ctx }, c) => {
+    await runOne({}, async ({ ws, ctx }, c) => {
       ws.setWorkspace(c.ws);
       await buildFixtures(c.ws);
       hoisted.execHandler = () => "PDF缓存正文";
@@ -671,11 +565,11 @@ describe("B6-5 context 对拍：readReference 抽取与编排", () => {
       expect(third.metadata.cacheHit).toBe(false);
       expect(hoisted.execCalls.length).toBe(callsAfterFirst + 1);
       return { first: first.metadata.readAt, second: second.metadata.readAt, third: third.metadata.readAt };
-    }).then(([a, b]) => expect(a).toEqual(b));
+    });
   });
 
   it("template：text 分支 / word 分支（走 docx 抽取 + range）/ missing", async () => {
-    await runBoth({}, async ({ ws, ctx }, c) => {
+    await runOne({}, async ({ ws, ctx }, c) => {
       ws.setWorkspace(c.ws);
       const f = await buildFixtures(c.ws);
       hoisted.tplState = { path: f["md"]!, content: { type: "text", content: "模板正文内容" } };
@@ -694,13 +588,13 @@ describe("B6-5 context 对拍：readReference 抽取与编排", () => {
       expect(miss.status).toBe("missing");
       expect(miss.message).toBe("未找到模板 没有的模板");
       return { textMode: textMode.text, wordMode: wordMode.text, miss: miss.message };
-    }).then(([a, b]) => expect(a).toEqual(b));
+    });
   });
 
   it("session readReference：全文 + query 过滤", async () => {
-    await runBoth({}, async ({ ws, ctx }, c) => {
+    await runOne({}, async ({ ws, ctx }, c) => {
       ws.setWorkspace(c.ws);
-      const sessDir = path.join(c.side === "old" ? oldProjectDir() : newProjectDir(), ".规聚会话");
+      const sessDir = path.join(newProjectDir(), ".规聚会话");
       fs.writeFileSync(path.join(sessDir, "会话A.jsonl"), [
         JSON.stringify({ type: "message", message: { role: "user", content: "帮我规划交通方案" } }),
         JSON.stringify({ type: "message", message: { role: "assistant", content: [{ type: "text", text: "好的，方案如下" }, { type: "text", text: "第二步完善路网" }] } }),
@@ -710,11 +604,11 @@ describe("B6-5 context 对拍：readReference 抽取与编排", () => {
       const filtered = await ctx.readReference({ kind: "session", target: "会话A" }, "规划");
       expect(filtered.text).toBe("用户：帮我规划交通方案");
       return { full: full.text, filtered: filtered.text };
-    }).then(([a, b]) => expect(a).toEqual(b));
+    });
   });
 
   it("knowledge：命中（rootIdx 按 @根名 定位）/ 未命中根 / 无根默认 / knowledge_dir 树与空目录", async () => {
-    await runBoth({}, async ({ ws, ctx }, c) => {
+    await runOne({}, async ({ ws, ctx }, c) => {
       ws.setWorkspace(c.ws);
       hoisted.kbState.docsByRoot = { 1: { title: "总纲", content: "正文内容\n多行" } };
       const hit = await ctx.readReference({ kind: "knowledge", target: "规划/总纲.md@根乙" });
@@ -740,13 +634,13 @@ describe("B6-5 context 对拍：readReference 抽取与编排", () => {
   });
 
   it("contextSummary：混合列表格式化", async () => {
-    await runBoth({}, async ({ ws, ctx }, c) => {
+    await runOne({}, async ({ ws, ctx }, c) => {
       ws.setWorkspace(c.ws);
       await buildFixtures(c.ws);
       const resolved = ctx.resolveReferences([], "@报告.md &会话[会话A] @知识库[总纲]");
       const summary = ctx.contextSummary(resolved);
       expect(summary).toContain("resolved");
       return summary;
-    }).then(([a, b]) => expect(a).toBe(b));
+    });
   });
 });

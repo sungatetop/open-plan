@@ -4,30 +4,33 @@ import os from "node:os";
 import path from "node:path";
 import { PROJECT_DIR } from "../src/main/backend/workspace-paths";
 
-// B6-3 对拍：旧 server JS ↔ 新 electron TS（pi-config-management）。
-//
-// 基建设计（双侧同流）：
-// - 不 mock fs：模块全部表面都是目录驱动的同步操作，直接走真实临时目录
-//   （mkdtemp 每侧独立根目录 + 相同初始夹具），比内存 mock 更贴近生产行为。
-// - 模块级常量（AGENT_DIR/APP_DATA_DIR/LOCAL_PI_AGENT_DIR 等）在 import 时读环境变量，
-//   通过 vi.stubEnv + vi.resetModules + 动态 import 控制双侧在同一环境下求值：
-//   OAW_DATA_DIR 显式指定数据目录；APPDATA/USERPROFILE 重定向避免触碰真实用户目录；
-//   项目回退目录（d:\open-plan\.oaw\规聚）只读探测、不写入。
-// - vi.useFakeTimers({ toFake: ["Date"] }) 冻结时钟：migration.at / canWriteDirectory 探测名等
-//   时间派生值双侧一致；随机量（uuid 临时文件名/探测随机段）不进比较载荷。
-// - 含路径的返回值经 normalizePaths 归一（每侧根目录替换为 <R>）后再 deep-equal。
+/**
+ * B6-3 行为覆盖：pi-config-management（常量路径族 / 读写导入 / 会话迁移 / 掩码）。
+ *
+ * R6-6b 对拍退役改写：旧侧 server/pi-config-management.mjs 动态 import 与双侧同流互等
+ * 随 server 退役删除，仅保留 TS 侧断言（期望值此前已经双侧对拍固化，路径族期望值自
+ * TS 源推导）。
+ *
+ * 基建设计：
+ * - 不 mock fs：模块全部表面都是目录驱动的同步操作，直接走真实临时目录
+ *   （mkdtemp 独立根目录 + 初始夹具），比内存 mock 更贴近生产行为。
+ * - 模块级常量（AGENT_DIR/APP_DATA_DIR/LOCAL_PI_AGENT_DIR 等）在 import 时读环境变量，
+ *   通过 vi.stubEnv + vi.resetModules + 动态 import 控制在同一环境下求值：
+ *   OAW_DATA_DIR 显式指定数据目录；APPDATA/USERPROFILE 重定向避免触碰真实用户目录；
+ *   项目回退目录（d:\open-plan\.oaw\规聚）只读探测、不写入。
+ * - vi.useFakeTimers({ toFake: ["Date"] }) 冻结时钟：migration.at / canWriteDirectory 探测名等
+ *   时间派生值确定化；随机量（uuid 临时文件名/探测随机段）不进断言载荷。
+ */
 
 type AnyMod = Record<string, any>;
 
 const PROJECT_FALLBACK_DIR = path.join(PROJECT_DIR, ".oaw", "规聚");
 const FALLBACK_CONFIG_NAMES = ["模型配置.json", "模型目录缓存.json", "凭据.json", "运行设置.json", "网络代理.json"];
 
-async function loadBoth(env: Record<string, string>): Promise<{ old: AnyMod; nw: AnyMod }> {
+async function loadMods(env: Record<string, string>): Promise<AnyMod> {
   vi.resetModules();
   for (const [key, value] of Object.entries(env)) vi.stubEnv(key, value);
-  const old = (await import("../../server/pi-config-management.mjs")) as unknown as AnyMod;
-  const nw = (await import("../src/main/backend/agent/pi-config-management")) as unknown as AnyMod;
-  return { old, nw };
+  return (await import("../src/main/backend/agent/pi-config-management")) as unknown as AnyMod;
 }
 
 function writeJson(file: string, value: unknown): void {
@@ -40,7 +43,7 @@ function writeJsonl(file: string, entries: unknown[]): void {
   fs.writeFileSync(file, entries.map((entry) => JSON.stringify(entry)).join("\n") + "\n", "utf8");
 }
 
-/** 每侧根目录下搭建相同的旧 Pi 源夹具（标准英文文件名）。 */
+/** 根目录下搭建旧 Pi 源夹具（标准英文文件名）。 */
 function buildPiFixture(sourceDir: string): void {
   writeJson(path.join(sourceDir, "models.json"), { providers: { "测试供应商": { api: "https://example.test/v1", apiKey: "sk-model-secret-456" } } });
   writeJson(path.join(sourceDir, "models-store.json"), { "测试供应商": { models: [{ id: "测试模型", name: "测试模型" }, { id: "第二模型", name: "第二模型" }] } });
@@ -61,33 +64,6 @@ function buildPiFixture(sourceDir: string): void {
   writeJsonl(path.join(deep, "深层会话.jsonl"), [{ type: "session", id: "deep" }]);
 }
 
-/** 递归归一对象里的字符串路径：每侧根目录替换为 <R>。 */
-function normalizePaths(value: any, roots: Array<[string, string]>): any {
-  if (typeof value === "string") {
-    let out = value;
-    for (const [from, to] of roots) out = out.split(from).join(to);
-    return out;
-  }
-  if (Array.isArray(value)) return value.map((item) => normalizePaths(item, roots));
-  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, normalizePaths(item, roots)]));
-  return value;
-}
-
-function snapshotTree(rootDir: string): string[] {
-  const out: string[] = [];
-  const walk = (dir: string, rel: string): void => {
-    const entries = fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name));
-    for (const entry of entries) {
-      const childRel = rel ? `${rel}/${entry.name}` : entry.name;
-      const full = path.join(dir, entry.name);
-      if (entry.isDirectory()) { out.push(`D ${childRel}`); walk(full, childRel); }
-      else out.push(`F ${childRel} ${fs.readFileSync(full, "utf8")}`);
-    }
-  };
-  if (fs.existsSync(rootDir)) walk(rootDir, "");
-  return out;
-}
-
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(1_700_000_000_000);
@@ -100,41 +76,34 @@ afterEach(() => {
 });
 
 describe("pi-config-management 模块级常量与路径族", () => {
-  it("显式 OAW_DATA_DIR：常量与路径族双侧一致（中文默认名）", async () => {
+  it("显式 OAW_DATA_DIR：常量与路径族（中文默认名）", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "b6-pi-cfg-a-"));
     try {
       const dataDir = path.join(root, "应用数据");
       const home = path.join(root, "主目录");
-      const { old, nw } = await loadBoth({ OAW_DATA_DIR: dataDir, OAW_LOCAL_PI_AGENT_DIR: "", PI_AGENT_DIR: "", APPDATA: path.join(root, "AppData", "Roaming"), USERPROFILE: home });
-      const pairs: Array<[string, any]> = [
-        ["AGENT_DIR", old.AGENT_DIR],
-        ["APP_DATA_DIR", old.APP_DATA_DIR],
-        ["AGENT_DIR_USES_PROJECT_FALLBACK", old.AGENT_DIR_USES_PROJECT_FALLBACK],
-        ["USING_PI_AGENT_OVERRIDE", old.USING_PI_AGENT_OVERRIDE],
-        ["LOCAL_PI_AGENT_DIR", old.LOCAL_PI_AGENT_DIR],
-        ["PI_CONFIG_PATHS", old.PI_CONFIG_PATHS],
-      ];
-      for (const [key] of pairs) expect(nw[key]).toEqual(old[key]);
-      expect(old.AGENT_DIR).toBe(path.resolve(dataDir));
-      expect(old.AGENT_DIR_USES_PROJECT_FALLBACK).toBe(false);
-      expect(old.LOCAL_PI_AGENT_DIR).toBe(path.resolve(home, ".pi", "agent"));
-      expect(path.basename(old.PI_CONFIG_PATHS.modelsPath)).toBe("模型配置.json");
-      expect(path.basename(old.PI_CONFIG_PATHS.authPath)).toBe("凭据.json");
+      const nw = await loadMods({ OAW_DATA_DIR: dataDir, OAW_LOCAL_PI_AGENT_DIR: "", PI_AGENT_DIR: "", APPDATA: path.join(root, "AppData", "Roaming"), USERPROFILE: home });
+      expect(nw.AGENT_DIR).toBe(path.resolve(dataDir));
+      expect(nw.AGENT_DIR_USES_PROJECT_FALLBACK).toBe(false);
+      expect(nw.LOCAL_PI_AGENT_DIR).toBe(path.resolve(home, ".pi", "agent"));
+      expect(path.basename(nw.PI_CONFIG_PATHS.modelsPath)).toBe("模型配置.json");
+      expect(path.basename(nw.PI_CONFIG_PATHS.authPath)).toBe("凭据.json");
 
-      // getPiConfigPaths 三种 standardNames 取值
-      for (const opts of [{ standardNames: false }, { standardNames: true }, {}]) {
-        expect(nw.getPiConfigPaths(dataDir, opts)).toEqual(old.getPiConfigPaths(dataDir, opts));
-      }
-      expect(path.basename(old.getPiConfigPaths(dataDir, { standardNames: true }).modelsPath)).toBe("models.json");
+      // getPiConfigPaths 三种 standardNames 取值（false/空 → APP 中文名；true → PI 英文名；
+      // 非默认覆盖目录时 undefined 亦走 APP 名）
+      expect(nw.getPiConfigPaths(dataDir, { standardNames: false }).modelsPath).toBe(path.join(path.resolve(dataDir), "模型配置.json"));
+      expect(nw.getPiConfigPaths(dataDir, { standardNames: true }).modelsPath).toBe(path.join(path.resolve(dataDir), "models.json"));
+      expect(nw.getPiConfigPaths(dataDir, {}).modelsPath).toBe(path.join(path.resolve(dataDir), "模型配置.json"));
+      expect(path.basename(nw.getPiConfigPaths(dataDir, { standardNames: true }).authPath)).toBe("auth.json");
+      expect(path.basename(nw.getPiConfigPaths(dataDir, { standardNames: true }).migrationPath)).toBe("session-migration.json");
+      expect(path.basename(nw.getPiConfigPaths(dataDir, {}).migrationPath)).toBe("会话迁移记录.json");
 
       // 空目录的配置状态
-      const statusOld = old.getConfigStatus({ dir: dataDir });
-      expect(nw.getConfigStatus({ dir: dataDir })).toEqual(statusOld);
-      expect(statusOld).toMatchObject({ source: "not-configured", configured: false, modelsConfigured: false, credentialCount: 0 });
-      expect(statusOld.storage).toMatchObject({ fallback: false, requestedDir: path.resolve(dataDir), message: null });
+      const status = nw.getConfigStatus({ dir: dataDir });
+      expect(status).toMatchObject({ source: "not-configured", configured: false, modelsConfigured: false, credentialCount: 0 });
+      expect(status.storage).toMatchObject({ fallback: false, requestedDir: path.resolve(dataDir), message: null });
 
       // ensureConfigDirectory 落目录
-      old.ensureConfigDirectory(dataDir);
+      nw.ensureConfigDirectory(dataDir);
       expect(fs.existsSync(dataDir)).toBe(true);
       nw.ensureConfigDirectory(path.join(root, "新目录"));
       expect(fs.existsSync(path.join(root, "新目录"))).toBe(true);
@@ -147,16 +116,11 @@ describe("pi-config-management 模块级常量与路径族", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "b6-pi-cfg-b-"));
     try {
       const piDir = path.join(root, "兼容Pi");
-      const { old, nw } = await loadBoth({ OAW_DATA_DIR: "", OAW_LOCAL_PI_AGENT_DIR: "", PI_AGENT_DIR: piDir, APPDATA: path.join(root, "AppData", "Roaming"), USERPROFILE: path.join(root, "主目录") });
-      expect(old.AGENT_DIR).toBe(path.resolve(piDir));
-      expect(nw.AGENT_DIR).toBe(old.AGENT_DIR);
-      expect(old.USING_PI_AGENT_OVERRIDE).toBe(true);
+      const nw = await loadMods({ OAW_DATA_DIR: "", OAW_LOCAL_PI_AGENT_DIR: "", PI_AGENT_DIR: piDir, APPDATA: path.join(root, "AppData", "Roaming"), USERPROFILE: path.join(root, "主目录") });
+      expect(nw.AGENT_DIR).toBe(path.resolve(piDir));
       expect(nw.USING_PI_AGENT_OVERRIDE).toBe(true);
-      expect(old.LOCAL_PI_AGENT_DIR).toBe(path.resolve(piDir));
-      expect(nw.LOCAL_PI_AGENT_DIR).toBe(old.LOCAL_PI_AGENT_DIR);
-      expect(nw.PI_CONFIG_PATHS).toEqual(old.PI_CONFIG_PATHS);
-      expect(path.basename(old.PI_CONFIG_PATHS.modelsPath)).toBe("models.json");
-      expect(old.getConfigStatus().source).toBe("environment-override");
+      expect(nw.LOCAL_PI_AGENT_DIR).toBe(path.resolve(piDir));
+      expect(path.basename(nw.PI_CONFIG_PATHS.modelsPath)).toBe("models.json");
       expect(nw.getConfigStatus().source).toBe("environment-override");
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
@@ -169,10 +133,8 @@ describe("pi-config-management 模块级常量与路径族", () => {
       const appData = path.join(root, "AppData", "Roaming");
       const fallbackHasConfig = fs.existsSync(PROJECT_FALLBACK_DIR) && fs.readdirSync(PROJECT_FALLBACK_DIR).some((name) => FALLBACK_CONFIG_NAMES.includes(name));
       const expected = fallbackHasConfig ? PROJECT_FALLBACK_DIR : path.resolve(appData, "规聚");
-      const { old, nw } = await loadBoth({ OAW_DATA_DIR: "", PI_AGENT_DIR: "", OAW_LOCAL_PI_AGENT_DIR: path.join(root, "本地Pi"), APPDATA: appData, USERPROFILE: path.join(root, "主目录") });
-      expect(old.AGENT_DIR).toBe(expected);
+      const nw = await loadMods({ OAW_DATA_DIR: "", PI_AGENT_DIR: "", OAW_LOCAL_PI_AGENT_DIR: path.join(root, "本地Pi"), APPDATA: appData, USERPROFILE: path.join(root, "主目录") });
       expect(nw.AGENT_DIR).toBe(expected);
-      expect(nw.AGENT_DIR_USES_PROJECT_FALLBACK).toBe(old.AGENT_DIR_USES_PROJECT_FALLBACK);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
@@ -185,14 +147,11 @@ describe("pi-config-management 模块级常量与路径族", () => {
       // 预置同名“文件”占位，令 mkdirSync(recursive) 抛错 → canWriteDirectory false
       fs.mkdirSync(appData, { recursive: true });
       fs.writeFileSync(path.join(appData, "规聚"), "occupied", "utf8");
-      const { old, nw } = await loadBoth({ OAW_DATA_DIR: "", PI_AGENT_DIR: "", OAW_LOCAL_PI_AGENT_DIR: path.join(root, "本地Pi"), APPDATA: appData, USERPROFILE: path.join(root, "主目录") });
-      expect(old.AGENT_DIR).toBe(PROJECT_FALLBACK_DIR);
+      const nw = await loadMods({ OAW_DATA_DIR: "", PI_AGENT_DIR: "", OAW_LOCAL_PI_AGENT_DIR: path.join(root, "本地Pi"), APPDATA: appData, USERPROFILE: path.join(root, "主目录") });
       expect(nw.AGENT_DIR).toBe(PROJECT_FALLBACK_DIR);
-      expect(old.AGENT_DIR_USES_PROJECT_FALLBACK).toBe(true);
       expect(nw.AGENT_DIR_USES_PROJECT_FALLBACK).toBe(true);
-      const statusOld = old.getConfigStatus();
-      expect(nw.getConfigStatus()).toEqual(statusOld);
-      expect(statusOld.storage).toMatchObject({ fallback: true, requestedDir: path.resolve(appData, "规聚"), message: "默认 AppData 不可写，已使用项目内运行数据目录" });
+      const status = nw.getConfigStatus();
+      expect(status.storage).toMatchObject({ fallback: true, requestedDir: path.resolve(appData, "规聚"), message: "默认 AppData 不可写，已使用项目内运行数据目录" });
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
@@ -200,100 +159,86 @@ describe("pi-config-management 模块级常量与路径族", () => {
 });
 
 describe("pi-config-management 读写与导入功能序列", () => {
-  it("全功能序列双侧同流（导入/读写/网络设置/会话/掩码）", async () => {
-    const shared = fs.mkdtempSync(path.join(os.tmpdir(), "b6-pi-cfg-seq-"));
+  it("全功能序列（导入/读写/网络设置/会话/掩码）", async () => {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), "b6-pi-cfg-seq-"));
     try {
-      const roots: Record<"old" | "new", { base: string; source: string; target: string; sessionTarget: string; sessionTarget2: string; sessionTarget3: string }> = {
-        old: { base: path.join(shared, "旧侧"), source: "", target: "", sessionTarget: "", sessionTarget2: "", sessionTarget3: "" },
-        new: { base: path.join(shared, "新侧"), source: "", target: "", sessionTarget: "", sessionTarget2: "", sessionTarget3: "" },
-      };
-      for (const side of ["old", "new"] as const) {
-        const r = roots[side];
-        r.source = path.join(r.base, "本地Pi");
-        r.target = path.join(r.base, "应用数据");
-        r.sessionTarget = path.join(r.base, "项目", ".规聚会话");
-        r.sessionTarget2 = path.join(r.base, "项目2", ".规聚会话");
-        r.sessionTarget3 = path.join(r.base, "项目3", ".规聚会话");
-        buildPiFixture(r.source);
-        // 预置目标同名会话（exists_skipped 分支）与目录占位（目标非文件分支）
-        writeJsonl(path.join(r.sessionTarget, "有效会话.jsonl"), [{ type: "session", id: "existing" }]);
-        fs.mkdirSync(path.join(r.sessionTarget3, "有效会话.jsonl"), { recursive: true });
-      }
+      const source = path.join(base, "本地Pi");
+      const target = path.join(base, "应用数据");
+      const sessionTarget = path.join(base, "项目", ".规聚会话");
+      const sessionTarget2 = path.join(base, "项目2", ".规聚会话");
+      const sessionTarget3 = path.join(base, "项目3", ".规聚会话");
+      buildPiFixture(source);
+      // 预置目标同名会话（exists_skipped 分支）与目录占位（目标非文件分支）
+      writeJsonl(path.join(sessionTarget, "有效会话.jsonl"), [{ type: "session", id: "existing" }]);
+      fs.mkdirSync(path.join(sessionTarget3, "有效会话.jsonl"), { recursive: true });
 
-      const dataDir = path.join(shared, "模块数据");
-      const { old, nw } = await loadBoth({ OAW_DATA_DIR: dataDir, OAW_LOCAL_PI_AGENT_DIR: "", PI_AGENT_DIR: "", APPDATA: path.join(shared, "AppData", "Roaming"), USERPROFILE: path.join(shared, "主目录") });
+      const dataDir = path.join(base, "模块数据");
+      const mod = await loadMods({ OAW_DATA_DIR: dataDir, OAW_LOCAL_PI_AGENT_DIR: "", PI_AGENT_DIR: "", APPDATA: path.join(base, "AppData", "Roaming"), USERPROFILE: path.join(base, "主目录") });
 
-      const run = (mod: AnyMod, r: typeof roots["old"]) => {
-        const results: Record<string, unknown> = {};
-        // 1. 全量导入（快照复制 + 迁移记录）
-        results.import = mod.importLocalPiConfig({ sourceDir: r.source, targetDir: r.target });
-        // 2. 导入结果读取
-        results.credentials = mod.readCredentials({ dir: r.target });
-        results.models = mod.readModelsConfig({ dir: r.target });
-        results.modelsStore = mod.readModelsStore({ dir: r.target });
-        results.settings = mod.readRuntimeSettings({ dir: r.target });
-        // 3. 默认模型写入/清除（其余字段保留）
-        results.defaultModelSet = mod.writeDefaultModel({ provider: "新供应商", model: "新模型" }, { dir: r.target });
-        results.settingsAfterSet = mod.readRuntimeSettings({ dir: r.target });
-        results.defaultModelClear = mod.writeDefaultModel({ provider: "", model: "" }, { dir: r.target });
-        results.settingsAfterClear = mod.readRuntimeSettings({ dir: r.target });
-        // 4. 网络设置：脱敏读、原文读、白名单过滤 + preserveProxy
-        results.networkSaved = mod.saveNetworkSettings({ mode: "manual", proxyUrl: "http://user:secret@proxy.example.test:8080", noProxy: ["127.0.0.1"], unknownKey: "x" }, { dir: r.target });
-        results.networkRead = mod.readNetworkSettings({ dir: r.target });
-        results.networkRaw = mod.loadNetworkSettings({ dir: r.target });
-        results.networkFile = JSON.parse(fs.readFileSync(path.join(r.target, "网络代理.json"), "utf8"));
-        results.networkPreserved = mod.saveNetworkSettings({ mode: "direct", noProxy: "localhost" }, { dir: r.target, preserveProxy: true });
-        // 5. 凭据/模型直写
-        mod.writeCredentials({ "直写供应商": { type: "api_key", key: "sk-direct-999" } }, { dir: r.target });
-        results.credentialsAfterWrite = mod.readCredentials({ dir: r.target });
-        mod.writeModelsConfig({ providers: {} }, { dir: r.target });
-        results.modelsAfterWrite = mod.readModelsConfig({ dir: r.target });
-        // 6. 配置状态（有数据后）
-        results.status = mod.getConfigStatus({ dir: r.target });
-        // 7. 旧 Pi 预览/探测
-        results.preview = mod.previewLocalPiConfig({ sourceDir: r.source });
-        results.detect = mod.detectLocalPi({ sourceDir: r.source });
-        // 8. 二次导入：跳过模型与凭据
-        results.importPartial = mod.importLocalPiConfig({ sourceDir: r.source, targetDir: r.target, includeModels: false, includeCredentials: false });
-        // 9. 源=目标拒绝
-        results.importSame = mod.importLocalPiConfig({ sourceDir: r.source, targetDir: r.source });
-        // 10. 会话批量导入
-        results.sessions = mod.importLocalPiSessions({ sourceDir: path.join(r.source, "sessions"), targetDir: r.sessionTarget });
-        results.sessionsNoTarget = mod.importLocalPiSessions({});
-        // 11. 单文件导入：正常/各类抛错/已存在/目录占位
-        const valid = path.join(r.source, "sessions", "有效会话.jsonl");
-        results.sessionFile = mod.importLocalPiSessionFile(valid, r.sessionTarget2);
-        results.sessionFileExists = mod.importLocalPiSessionFile(valid, r.sessionTarget2);
-        const grab = (fn: () => unknown) => { try { return { ok: fn() }; } catch (error: any) { return { error: error.message }; } };
-        results.sessionFileNotJsonl = grab(() => mod.importLocalPiSessionFile(path.join(r.source, "sessions", "旧格式.json"), r.sessionTarget2));
-        results.sessionFileMissing = grab(() => mod.importLocalPiSessionFile(path.join(r.source, "sessions", "缺失.jsonl"), r.sessionTarget2));
-        results.sessionFileInvalid = grab(() => mod.importLocalPiSessionFile(path.join(r.source, "sessions", "无效会话.jsonl"), r.sessionTarget2));
-        results.sessionFileEmptyArgs = grab(() => mod.importLocalPiSessionFile("", r.sessionTarget2));
-        results.sessionFileTargetIsDir = grab(() => mod.importLocalPiSessionFile(valid, r.sessionTarget3));
-        // 12. 掩码
-        results.mask = ["", "ab", "abcde", "sk-auth-secret-123"].map((value) => mod.maskCredential(value));
-        return results;
-      };
+      const results: Record<string, unknown> = {};
+      // 1. 全量导入（快照复制 + 迁移记录）
+      results.import = mod.importLocalPiConfig({ sourceDir: source, targetDir: target });
+      // 2. 导入结果读取
+      results.credentials = mod.readCredentials({ dir: target });
+      results.models = mod.readModelsConfig({ dir: target });
+      results.modelsStore = mod.readModelsStore({ dir: target });
+      results.settings = mod.readRuntimeSettings({ dir: target });
+      // 3. 默认模型写入/清除（其余字段保留）
+      results.defaultModelSet = mod.writeDefaultModel({ provider: "新供应商", model: "新模型" }, { dir: target });
+      results.settingsAfterSet = mod.readRuntimeSettings({ dir: target });
+      results.defaultModelClear = mod.writeDefaultModel({ provider: "", model: "" }, { dir: target });
+      results.settingsAfterClear = mod.readRuntimeSettings({ dir: target });
+      // 4. 网络设置：脱敏读、原文读、白名单过滤 + preserveProxy
+      results.networkSaved = mod.saveNetworkSettings({ mode: "manual", proxyUrl: "http://user:secret@proxy.example.test:8080", noProxy: ["127.0.0.1"], unknownKey: "x" }, { dir: target });
+      results.networkRead = mod.readNetworkSettings({ dir: target });
+      results.networkRaw = mod.loadNetworkSettings({ dir: target });
+      results.networkFile = JSON.parse(fs.readFileSync(path.join(target, "网络代理.json"), "utf8"));
+      results.networkPreserved = mod.saveNetworkSettings({ mode: "direct", noProxy: "localhost" }, { dir: target, preserveProxy: true });
+      // 5. 凭据/模型直写
+      mod.writeCredentials({ "直写供应商": { type: "api_key", key: "sk-direct-999" } }, { dir: target });
+      results.credentialsAfterWrite = mod.readCredentials({ dir: target });
+      mod.writeModelsConfig({ providers: {} }, { dir: target });
+      results.modelsAfterWrite = mod.readModelsConfig({ dir: target });
+      // 6. 配置状态（有数据后）
+      results.status = mod.getConfigStatus({ dir: target });
+      // 7. 旧 Pi 预览/探测
+      results.preview = mod.previewLocalPiConfig({ sourceDir: source });
+      results.detect = mod.detectLocalPi({ sourceDir: source });
+      // 8. 二次导入：跳过模型与凭据
+      results.importPartial = mod.importLocalPiConfig({ sourceDir: source, targetDir: target, includeModels: false, includeCredentials: false });
+      // 9. 源=目标拒绝
+      results.importSame = mod.importLocalPiConfig({ sourceDir: source, targetDir: source });
+      // 10. 会话批量导入
+      results.sessions = mod.importLocalPiSessions({ sourceDir: path.join(source, "sessions"), targetDir: sessionTarget });
+      results.sessionsNoTarget = mod.importLocalPiSessions({});
+      // 11. 单文件导入：正常/各类抛错/已存在/目录占位
+      const valid = path.join(source, "sessions", "有效会话.jsonl");
+      results.sessionFile = mod.importLocalPiSessionFile(valid, sessionTarget2);
+      results.sessionFileExists = mod.importLocalPiSessionFile(valid, sessionTarget2);
+      const grab = (fn: () => unknown) => { try { return { ok: fn() }; } catch (error: any) { return { error: error.message }; } };
+      results.sessionFileNotJsonl = grab(() => mod.importLocalPiSessionFile(path.join(source, "sessions", "旧格式.json"), sessionTarget2));
+      results.sessionFileMissing = grab(() => mod.importLocalPiSessionFile(path.join(source, "sessions", "缺失.jsonl"), sessionTarget2));
+      results.sessionFileInvalid = grab(() => mod.importLocalPiSessionFile(path.join(source, "sessions", "无效会话.jsonl"), sessionTarget2));
+      results.sessionFileEmptyArgs = grab(() => mod.importLocalPiSessionFile("", sessionTarget2));
+      results.sessionFileTargetIsDir = grab(() => mod.importLocalPiSessionFile(valid, sessionTarget3));
+      // 12. 掩码
+      results.mask = ["", "ab", "abcde", "sk-auth-secret-123"].map((value) => mod.maskCredential(value));
 
-      const rawOld = run(old, roots.old);
-      const rawNew = run(nw, roots.new);
-      const pairs: Array<[string, string]> = [[roots.old.base, "<R>"], [roots.new.base, "<R>"]];
-      const a = normalizePaths(rawOld, pairs);
-      const b = normalizePaths(rawNew, pairs);
-      expect(b).toEqual(a);
-
-      // 目标目录树逐文件一致（含迁移记录/网络代理/会话副本）
-      expect(snapshotTree(roots.new.target)).toEqual(snapshotTree(roots.old.target));
-      expect(snapshotTree(roots.new.sessionTarget)).toEqual(snapshotTree(roots.old.sessionTarget));
-      expect(snapshotTree(roots.new.sessionTarget2)).toEqual(snapshotTree(roots.old.sessionTarget2));
-
-      // 关键内容断言（防 vacuous parity）
-      const r = rawNew as any;
+      // 关键内容断言
+      const r = results as any;
       expect(r.import.ok).toBe(true);
       expect(r.import.imported.sort()).toEqual(["auth", "models", "modelsStore", "settings"]);
       expect(r.import.migration).toEqual({ status: "recorded", at: new Date(1_700_000_000_000).toISOString() });
       expect(r.import.providers[0]).toMatchObject({ provider: "测试供应商", set: true, type: "api_key" });
       expect(r.import.providers[0].masked).not.toContain("sk-auth-secret-123");
+      // 目标目录树关键文件锚点（原对拍以双侧 snapshotTree 互等保证；单侧化后列清单断言）
+      const targetTree = fs.readdirSync(target).sort();
+      expect(targetTree).toEqual(["会话迁移记录.json", "凭据.json", "模型目录缓存.json", "模型配置.json", "网络代理.json", "运行设置.json"]);
+      // 预置同名会话保留原内容（exists_skipped 分支）
+      expect(JSON.parse(fs.readFileSync(path.join(sessionTarget, "有效会话.jsonl"), "utf8").split("\n")[0]!)).toMatchObject({ id: "existing" });
+      expect(r.credentials).toMatchObject({ "测试供应商": { type: "api_key" }, "另一家": { type: "oauth" } });
+      expect(r.models.providers["测试供应商"].api).toBe("https://example.test/v1");
+      expect(r.modelsStore["测试供应商"].models).toHaveLength(2);
       expect(r.settingsAfterSet).toMatchObject({ defaultProvider: "新供应商", defaultModel: "新模型", theme: "dark" });
       expect(r.settingsAfterClear).toMatchObject({ theme: "dark" });
       expect(r.settingsAfterClear.defaultProvider).toBeUndefined();
@@ -315,7 +260,7 @@ describe("pi-config-management 读写与导入功能序列", () => {
       expect(r.importPartial.files).toMatchObject({ models: { status: "skipped" }, modelsStore: { status: "skipped" }, auth: { status: "skipped" }, settings: { status: "imported" } });
       expect(r.importSame).toEqual({ ok: false, error: "源目录和目标目录不能相同" });
       expect(r.sessions.imported).toBe(1);
-      // 顺序依赖 NTFS 目录序，排序后断言；双侧顺序一致性已由上方 deep-equal 保证。
+      // 顺序依赖 NTFS 目录序，排序后断言
       expect(r.sessions.files.slice().sort((x: any, y: any) => x.name.localeCompare(y.name))).toEqual([
         { name: "第二个会话.jsonl", status: "imported" },
         { name: "无效会话.jsonl", status: "invalid" },
@@ -328,8 +273,10 @@ describe("pi-config-management 读写与导入功能序列", () => {
       expect(r.sessionFileEmptyArgs).toEqual({ error: "会话文件必须是 JSONL 文件" });
       expect(r.sessionFileTargetIsDir).toEqual({ error: "目标会话路径已存在但不是文件" });
       expect(r.mask).toEqual([null, "****", "ab****de", "sk************23"]);
+      // 单文件导入副本内容与源一致
+      expect(fs.readFileSync(path.join(sessionTarget2, "有效会话.jsonl"), "utf8")).toBe(fs.readFileSync(valid, "utf8"));
     } finally {
-      fs.rmSync(shared, { recursive: true, force: true });
+      fs.rmSync(base, { recursive: true, force: true });
     }
   });
 });
