@@ -2,7 +2,7 @@
 title: Electron一体化TypeScript重构方案
 summary: 将 server 功能收进 Electron Node 侧后端、前端以 TS+React 重建为 Electron 界面的完整重构设计：目录结构、IPC 协议、TS 迁移策略、功能等价守护与 R0-R6 里程碑
 keywords: [Electron, TypeScript, React, 重构方案, IPC, monorepo, 功能等价]
-status: in-progress
+status: done
 date: 2026-10-19
 ---
 

@@ -4,7 +4,7 @@
 
 > 规划 + 聚集 —— 面向交通规划工程师的 AI 一体化工作台
 
-基于 [Pi Agent SDK](https://github.com/nicepkg/pi-coding-agent) 的 Web 端规划工作台 + AI Agent 协作工具：Office 文档编辑、知识库、地图可视化、脑图、模板库一站式协同。前端设计参考 [Proma](https://github.com/proma-ai/Proma) 与 [siyuan](https://github.com/siyuan-note/siyuan) 项目。
+基于 [Pi Agent SDK](https://github.com/nicepkg/pi-coding-agent) 的桌面端一体化工作台（Electron）+ AI Agent 协作工具：Office 文档编辑、知识库、地图可视化、脑图、模板库一站式协同。前端设计参考 [Proma](https://github.com/proma-ai/Proma) 与 [siyuan](https://github.com/siyuan-note/siyuan) 项目。
 
 **规聚释义**：`规` = 规划（文档成果、规划报告、地图与图表），`聚` = 聚集（知识汇聚、文档反链、引用关系图谱）——为交通规划工程师提供"规划成果 + 知识汇聚 + 智能协作"的一体化工作台。
 
@@ -12,14 +12,19 @@
 
 ```
 open-plan/
-├─ client/              # 前端（Vite + React）：对话流、工作台、预览器、地图、知识库
-│  ├─ src/components/   # 界面组件（ChatPanel / 工作产物面板 / 预览器 / 地图面板…）
-│  ├─ src/*.js          # 展示投影、事件注册表、运行轨迹归约等纯函数模块
-│  └─ dist/             # 构建产物（npm run build 生成，不入库）
-├─ server/              # 服务端（Express + Pi Agent SDK）：会话、Run、事件流、工具
-├─ scripts/             # 回归测试与运维脚本（测试即脚本，node scripts/*.mjs）
-│  ├─ ops/              # 服务启停、批注覆盖等运维脚本
-│  └─ reporting/        # 汇报/视频/口播稿生产脚本（配套数据 data/）
+├─ electron/            # 桌面端一体化 monorepo（Electron：Node 侧后端 + React 渲染层）
+│  ├─ src/main/         # Node 侧后端（域服务全量 TS 化，不监听端口，IPC op:* 通道）
+│  ├─ src/preload/      # contextBridge 桥接
+│  ├─ src/renderer/     # TS + React 界面（对话流、工作台、预览器、地图、知识库）
+│  ├─ src/shared/       # 跨层共享（protocol/ 事件注册表单一事实源、runtime/ 纯函数域）
+│  ├─ tests/            # vitest 全量回归
+│  ├─ resources/        # glyphs 等静态资产
+│  └─ build/            # 打包图标等 electron-builder 资产
+├─ scripts/             # 运维与生产辅助脚本
+│  ├─ tools/            # 地图数据生产、officecli 安装等工具
+│  ├─ ops/              # 运维、文档维护、模型同步等脚本
+│  ├─ reporting/        # 汇报/视频/口播稿生产脚本（配套数据 data/）
+│  └─ lib/              # tiler.mjs 矢量瓦片库（桌面端打包白名单依赖）
 ├─ templates/           # 文档/汇报模板库
 ├─ docs/                # 项目文档（见 docs/README.md 分类索引）
 │  ├─ plans/            # 实施计划 / 迭代计划 / 执行记录
@@ -30,7 +35,8 @@ open-plan/
 │  ├─ reports/          # 交付 / 验证 / 诊断 / 评审结论
 │  ├─ data/             # 数据归档（provincial-gis 原始 shp/gdb、zhejiang-osm 分析产物）
 │  └─ audits/           # 审计文档与截图资产
-├─ office-workspace/    # 默认工作区（服务运行时数据；maps/ 图层入库）
+├─ office-workspace/    # 默认工作区（运行时数据；maps/ 图层入库）
+├─ kb.json              # 知识库索引配置（运行时配置）
 └─ 变更日志.md           # 逐版本变更记录（语义化版本）
 ```
 
@@ -49,7 +55,7 @@ open-plan/
 - **主动询问（ask_user）**：agent 遇到任务不明确时弹窗提问（快捷选项 + 输入框），回答后继续，不再猜测
 - **ask 卡片 / 任务进度卡**：agent 回复中的 `- [ ]` 任务自动解析为可勾选进度条
 - **90+ 模型**：图标化模型选择浮层（搜索 + [V] 视觉标记）、思考强度三档；模型失败会进入可重试的错误和 Run 失败状态
-- **模型诊断**：设置页和 `/api/agent/diagnostics` 分层显示 SDK、模型目录、凭据、真实调用、Runtime 和最近失败记录（均不返回密钥）
+- **模型诊断**：设置页分层显示 SDK、模型目录、凭据、真实调用、Runtime 和最近失败记录（均不返回密钥）
 - **配置写入兜底**：Windows AppData 不允许创建临时文件时，自动切换项目内 `.oaw\\规聚`，导入不会因 `EPERM` 中断
 - **办公/开发双模式**：办公模式用 officecli 精准改文档；开发模式调用全部 skills 生成新文件
 
@@ -77,7 +83,7 @@ open-plan/
 
 ### 🧠 记忆与智能
 - **工作区记忆**：AGENTS.md + memory/ 每次对话前注入 agent 上下文；每轮完成后 Agent 会自动判断是否有长期信息，并通过 memory_update 生成待审核建议（项目信息/工作规则/用户偏好/经验教训）
-- **界面状态固化**：刷新/重开浏览器恢复到上次界面（文档 tabs/模式/工作区/最后会话）
+- **界面状态固化**：刷新/重启应用恢复到上次界面（文档 tabs/模式/工作区/最后会话）
 - **会话历史**：对话栏可折叠抽屉、标题智能清洗（跳过系统提示）、置顶/搜索/重命名/删除、LLM 摘要命名（规划中）
 - **任务与产物追踪**：每轮任务生成 TaskEnvelope/run manifest，记录引用、工具事件和新增/修改/删除产物；小文件支持显式回滚，会话支持 fork 分支
 - **结构化工作流**：技能工作流由服务端注册表声明并校验依赖，聊天状态栏显示 run、引用和产物进度
@@ -91,25 +97,26 @@ open-plan/
 
 | 层 | 技术 |
 |---|---|
-| 前端 | React 18 + Vite 5、docx-preview/pptxjs、x-spreadsheet、MapLibre GL、antv G6 v5、react-markdown + KaTeX |
-| 后端 | Node.js + Express 5 + Pi Agent SDK、geojson-vt 矢量瓦片、officecli（Windows 文档引擎） |
+| 前端 | React 18 + electron-vite、docx-preview/pptxjs、x-spreadsheet、MapLibre GL、antv G6 v5、react-markdown + KaTeX |
+| 后端 | Electron Main（Node 22 侧域服务，TypeScript strict，不监听端口）、Pi Agent SDK、geojson-vt 矢量瓦片、officecli（Windows 文档引擎） |
+| 通信 | IPC（op:* 通道 + 事件注册表单一事实源，typebox schema → TS 类型） |
 | 数据 | JSONL 会话存储、本地知识库索引（kb.mjs）、地图项目（style.json + 瓦片 + GeoJSON） |
 | AI | Pi SDK（90+ 模型）、自定义工具（officecli/kb/map/ask_user/memory_update） |
 
 ## 架构
 
 ```
-浏览器 (React)
+Electron Renderer (React + TS)
 ┌──────────────┬──────────────┬──────────────┐
 │ 左侧栏        │ 文档/知识库/  │ 对话栏        │
 │ 文件树        │ 地图/模板库   │ 历史抽屉      │
 │ 产物/设置     │ 三栏布局      │ ask 卡片      │
 └──────┬───────┴──────┬───────┴──────┬───────┘
-       │ REST         │ REST/SSE     │ SSE/POST
+       │ IPC（preload contextBridge：op:* 通道 + 事件注册表推送）
 ┌──────┴──────────────┴──────────────┴─────────┐
-│   Node.js Express (localhost:3002)           │
-│   /api/files|doc|agent|sessions|kb|map|tpl   │
-│   /api/memory|templates|workspace            │
+│   Electron Main（Node 22 侧域服务，零端口）    │
+│   files|doc|agent|sessions|kb|map|templates  │
+│   memory|workspace|系统域                     │
 ├──────────────────────────────────────────────┤
 │   officecli（文档）  Pi SDK（agent）          │
 │   MapLibre 瓦片      kb.mjs（知识库索引）     │
@@ -126,26 +133,22 @@ open-plan/
 ### 安装与启动
 ```bash
 npm install
-cd client && npm install && npm run build && cd ..
-npm start        # → http://localhost:3002
+npm --prefix electron install
+npm run desktop:dev    # 开发模式（electron-vite dev，主进程 + 渲染层热更新）
 ```
+
+生产安装包：`npm run desktop:dist`（NSIS 安装包输出至 `electron/dist/`）。
 
 首次使用进入“设置 → 模型与连接”：可以手动填写 Provider API Key，或明确点击“从本地 Pi 导入配置”。导入默认不包含历史会话；如需迁移旧会话，再勾选“同时导入历史会话”。
 
-### 开发模式
-```bash
-npm start                    # 终端 1：后端
-cd client && npm run dev     # 终端 2：前端热更新（5173 代理 /api）
-```
-
 ### 验证
 ```bash
-npm run verify   # 语法检查 + 前端构建 + API 冒烟测试
+npm run verify   # desktop:typecheck + desktop:test（vitest 全量）+ desktop:smoke
 ```
 
 ## 版本历史
 
-当前版本 **v0.10.1**，详见 [变更日志.md](变更日志.md)。0.10.1 在 0.10.0 三栏工作台基础上增加 Pi 网络适配和规聚独立模型配置；本地 Pi 只作为明确导入来源，不再是 Agent 的实时配置依赖。
+当前版本 **v0.11.55**，详见 [变更日志.md](变更日志.md)。0.11.x 完成桌面端一体化重构（R0-R6）：全界面 TypeScript 化、client/server 退役并入 electron/、IPC 一体化（op:* 通道取代 HTTP/SSE）、测试全量 vitest、NSIS 安装包交付。
 
 > v0.11.x 起（对话流折叠与结论、每轮用时与 token、产物归属分层、模型切换排队与分割线等）逐版本记录见 [变更日志.md](变更日志.md)。
 
@@ -165,6 +168,7 @@ npm run verify   # 语法检查 + 前端构建 + API 冒烟测试
 - **v0.9.34** Pi 结算错误传播、模型诊断接口和启动服务版本闸门
 - **v0.10.0** 三栏工作台迁移、历史会话恢复竞态修复、能力模块互斥切换和模型设置统一
 - **v0.10.1** Pi 网络适配、配置独立目录、脱敏导入和模型网络设置
+- **v0.11.x** 桌面端一体化重构（R0-R6 收口）：全界面 TS 化、client/server 退役并入 electron/、IPC 一体化、测试全量 vitest、NSIS 安装包交付
 
 ## 分支说明
 
