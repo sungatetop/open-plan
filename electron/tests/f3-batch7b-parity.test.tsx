@@ -1,21 +1,25 @@
 // @vitest-environment jsdom
 /**
- * F3 批7b 对拍：App.jsx chat 集成面（workbench.tsx）+ 全局事件流（global-events-feed.ts
+ * F3 批7b：App.jsx chat 集成面（workbench.tsx）+ 全局事件流（global-events-feed.ts
  * + main 侧 global-events-bridge）。
  *
- * 对拍口径（批7b 既定策略：不做全 DOM 对拍——旧 App 挂 TaskCenter/CommandPalette/
- * lazy fallback 新侧无；以行为/状态层对拍 + 旧源码运行时抽取求值锚点 deep-equal 背书）：
- *   A. 纯函数旧源码原文本执行（App.jsx historyReferences/cleanPersistedMessage/
- *      historyImageData/entryCreatedAt/sameWorkspacePath/fileBasename + handleSelectSession
- *      重建循环 994-1091 原文）多样本 deep-equal 对 history-load.ts；
+ * R6-6c 对拍退役改写：旧侧 readFileSync 抽取 App.jsx 源码原文本执行的双侧 deep-equal
+ * （原 A 组）与旧源码文本锚点（原 C 组）随 client 退役删除（等价性已在 F3 批对拍
+ * 验收冻结），锚点样本固化为 history-load.ts / feed 常量的直接期望值断言；
+ * 通道映射（B）、feed 行为 harness（D）与 workbench 会话域行为（E）为新侧唯一覆盖保留。
+ *
+ * 覆盖面：
+ *   A. history-load 行为锚点（historyReferences / cleanPersistedMessage /
+ *      historyImageData / entryCreatedAt / sameWorkspacePath / fileBasename /
+ *      buildSessionHistory 重建循环）；
  *   B. workbench 消费面通道映射对齐 server 路由（op:files/projects/workspaces/
  *      workspace:switch/agent:new/agent:resume/sessions:get/events-state/events-read）；
- *   C. feed 常量锚点：GLOBAL_EVENT_NOTICES / artifact 事件表 / 游标键 vs 旧源码文本；
+ *   C. feed 常量锚点：GLOBAL_EVENT_NOTICES / artifact 事件表 / 游标键；
  *   D. feed 行为 harness（createGlobalEventFeed + Fake transport + fake timers）：
  *      游标引导（latest/3000ms 超时/已持久化跳过）、seq 推进去重、100ms 批处理、
  *      未读 noticeKey 去重、180ms 防抖 refreshSessions（visibility）、
- *      run_finished 重置 browserAutoOpenBlocked、SSE 重连节奏 800→×2→5000+onopen 复位、
- *      IPC transport watch 失败重连 + cleanup stop、cleanup 清定时器；
+ *      run_finished 重置 browserAutoOpenBlocked、IPC transport watch 失败重连 +
+ *      cleanup stop、cleanup 清定时器（SSE 重连节奏随 client 退役删除，IPC 形态保留）；
  *   E. workbench 会话域行为 harness（window.opDesktop 假桥挂载）：启动加载面 /
  *      新建会话调用序列 / 选择历史会话（get+runs+resume 并行 + 历史重建进 UI）/
  *      切换工作区（switch → new 新 cwd）。
@@ -23,9 +27,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import React, { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
-import { dirname, resolve } from "node:path";
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -110,12 +111,8 @@ vi.mock("maplibre-gl", () => {
   };
 });
 
-const APP_PATH = resolve(dirname(fileURLToPath(import.meta.url)), "../../client/src/App.jsx");
-const APP_SOURCE = readFileSync(APP_PATH, "utf8");
-
 const M = await import("../src/renderer/features/chat/history-load");
 const FEED = await import("../src/renderer/features/chat/global-events-feed");
-const { normalizeHistoryMessages } = await import("../src/renderer/lib/chat-shared");
 const { DESKTOP_CHANNELS, SSE_REPLACED_ROUTES } = await import("../src/shared/protocol/channels");
 
 // 动态 import 命名空间不能作类型命名空间（批6b 经验）：类型一律走 import(...) 别名
@@ -123,149 +120,79 @@ type GlobalEventFeedDepsT = import("../src/renderer/features/chat/global-events-
 type GlobalEventFeedRefsT = import("../src/renderer/features/chat/global-events-feed").GlobalEventFeedRefs;
 type GlobalEventTransportT = import("../src/renderer/features/chat/global-events-feed").GlobalEventTransport;
 
-/* ==================== A. 纯函数旧源码原文本执行（锚点生成） ==================== */
-
-function extractFn(source: string, startMarker: string, endMarker: string): string {
-  const start = source.indexOf(startMarker);
-  const bodyEnd = source.indexOf(endMarker, start);
-  if (start < 0 || bodyEnd < 0) throw new Error(`旧源码锚点定位失败: ${startMarker}`);
-  const close = source.indexOf("}", bodyEnd + endMarker.length);
-  return source.slice(start, close + 1);
-}
-
-const sandbox = new Function(
-  [
-    extractFn(APP_SOURCE, "function historyReferences(text = \"\")", "return refs;"),
-    extractFn(APP_SOURCE, "function cleanPersistedMessage(text = \"\")", "return source.replace("),
-    extractFn(APP_SOURCE, "function historyImageData(block)", ";base64,${data}`;"),
-    extractFn(APP_SOURCE, "function entryCreatedAt(entry, message)", "|| null;"),
-    extractFn(APP_SOURCE, "function sameWorkspacePath(a, b)", "=== normalize(b);"),
-    extractFn(APP_SOURCE, "function fileBasename(value)", 'parts[parts.length - 1] : "";')
-  ].join("\n") +
-    "\nreturn { historyReferences, cleanPersistedMessage, historyImageData, entryCreatedAt, sameWorkspacePath, fileBasename };"
-)() as {
-  historyReferences(text?: string): unknown;
-  cleanPersistedMessage(text?: string): string;
-  historyImageData(block: unknown): string | null;
-  entryCreatedAt(entry: unknown, message: unknown): unknown;
-  sameWorkspacePath(a: unknown, b: unknown): boolean;
-  fileBasename(value: unknown): string;
-};
-
-/** 旧侧重建循环（App.jsx 994-1091 原文）：定位 handleSelectSession 内 msgs 初始化 → normalizeHistoryMessages 排序收尾 */
-function extractRebuildLoop(source: string): string {
-  const anchor = source.indexOf("for (const e of (d.entries || []))");
-  const start = source.lastIndexOf("const msgs = [];", anchor);
-  const endMarker = "return left - right;";
-  const bodyEnd = source.indexOf(endMarker, start);
-  if (start < 0 || anchor < 0 || bodyEnd < 0) throw new Error("旧源码重建循环锚点定位失败（App.jsx handleSelectSession 结构变更？）");
-  const close = source.indexOf("}));", bodyEnd);
-  return source.slice(start, close + "}));".length);
-}
-
-type OldRebuild = (
-  d: unknown,
-  runData: unknown,
-  histId: () => string,
-  historyImageData: (block: unknown) => string | null,
-  cleanPersistedMessage: (text?: string) => string,
-  historyReferences: (text?: string) => unknown,
-  entryCreatedAt: (entry: unknown, message: unknown) => unknown,
-  normalizeHistoryMessages: (msgs: unknown[]) => unknown[]
-) => unknown[];
-
-const oldRebuild = new Function(
-  "d",
-  "runData",
-  "histId",
-  "historyImageData",
-  "cleanPersistedMessage",
-  "historyReferences",
-  "entryCreatedAt",
-  "normalizeHistoryMessages",
-  `${extractRebuildLoop(APP_SOURCE)}\nreturn loadedHistory;`
-) as unknown as OldRebuild;
-
-let oldHistSeq = 0;
-const oldHistId = (): string => `h${++oldHistSeq}`;
-
 // workbench 全链（含 map/task/integrations 等重面板）首载 transform+import 实测 ~26s：
 // 若计入首个用例（默认 30s 上限）并发满载下必 flake。提升到模块顶层装载，
 // 用例内仅计挂载耗时（~3-5s）。
 const Workbench = (await import("../src/renderer/app/workbench")).default;
 
-describe("A. 纯函数旧源码原文本执行（App.jsx 原文 vs history-load.ts）", () => {
-  const REF_SAMPLES = [
-    "",
-    "@知识库[交通规范] @模板[汇报模板] &会话[s1] @文件[报告.docx]",
-    "@报告.docx 与 @子目录/说明.md @ Knowledge",
-    "@报告.docx，再看看 @草图.png。",
-    "(@括号内.md) @重复.docx @重复.docx",
-    "@user @知识库目录[kb-dir] @模板目录[tpl-dir]"
-  ];
+/* ==================== A. history-load 行为锚点 ==================== */
 
-  it("historyReferences 多样本 deep-equal", () => {
-    for (const sample of REF_SAMPLES) {
-      expect(M.historyReferences(sample)).toEqual(sandbox.historyReferences(sample));
-    }
+describe("A. history-load 行为锚点", () => {
+  it("historyReferences：括号形态/裸词扩展名/会话引用/去重", () => {
+    expect(M.historyReferences("")).toEqual([]);
+    expect(M.historyReferences("@知识库[交通规范] @模板[汇报模板] &会话[s1] @文件[报告.docx]")).toEqual([
+      { id: "history_ref_knowledge_交通规范", kind: "knowledge", target: "交通规范", source: "@知识库[交通规范]" },
+      { id: "history_ref_template_汇报模板", kind: "template", target: "汇报模板", source: "@模板[汇报模板]" },
+      { id: "history_ref_file_报告.docx", kind: "file", target: "报告.docx", source: "@文件[报告.docx]" },
+      { id: "history_ref_file_文件[报告.docx", kind: "file", target: "文件[报告.docx", source: "@文件[报告.docx" },
+      { id: "history_ref_session_s1", kind: "session", target: "s1", source: "&会话[s1]" },
+    ]);
+    expect(M.historyReferences("@报告.docx 与 @子目录/说明.md @ Knowledge")).toEqual([
+      { id: "history_ref_file_报告.docx", kind: "file", target: "报告.docx", source: "@报告.docx" },
+      { id: "history_ref_file_子目录/说明.md", kind: "file", target: "子目录/说明.md", source: "@子目录/说明.md" },
+    ]);
+    expect(M.historyReferences("@报告.docx，再看看 @草图.png。")).toEqual([
+      { id: "history_ref_file_报告.docx", kind: "file", target: "报告.docx", source: "@报告.docx" },
+    ]);
+    expect(M.historyReferences("(@括号内.md) @重复.docx @重复.docx")).toEqual([
+      { id: "history_ref_file_括号内.md", kind: "file", target: "括号内.md", source: "@括号内.md" },
+      { id: "history_ref_file_重复.docx", kind: "file", target: "重复.docx", source: "@重复.docx" },
+    ]);
+    expect(M.historyReferences("@user @知识库目录[kb-dir] @模板目录[tpl-dir]")).toEqual([
+      { id: "history_ref_knowledge_dir_kb-dir", kind: "knowledge_dir", target: "kb-dir", source: "@知识库目录[kb-dir]" },
+      { id: "history_ref_template_dir_tpl-dir", kind: "template_dir", target: "tpl-dir", source: "@模板目录[tpl-dir]" },
+    ]);
   });
 
-  const CLEAN_SAMPLES = [
-    "普通文本",
-    "## 当前任务目标: 检查交通模型",
-    "### 当前任务\n目标：整理数据\n模式：agent\n引用：x",
-    "- 目标: 生成报告\n- 模式: agent",
-    "## 当前任务\n目标：x\n边界：只读\n\n正文保留",
-    "当前打开文件: a.docx\n帮忙检查"
-  ];
-
-  it("cleanPersistedMessage 多样本 deep-equal", () => {
-    for (const sample of CLEAN_SAMPLES) {
-      expect(M.cleanPersistedMessage(sample)).toBe(sandbox.cleanPersistedMessage(sample));
-    }
+  it("cleanPersistedMessage：内联目标/信封目标/列表目标/边界剥除", () => {
+    expect(M.cleanPersistedMessage("普通文本")).toBe("普通文本");
+    expect(M.cleanPersistedMessage("## 当前任务目标: 检查交通模型")).toBe("检查交通模型");
+    expect(M.cleanPersistedMessage("### 当前任务\n目标：整理数据\n模式：agent\n引用：x")).toBe("整理数据");
+    expect(M.cleanPersistedMessage("- 目标: 生成报告\n- 模式: agent")).toBe("生成报告");
+    expect(M.cleanPersistedMessage("## 当前任务\n目标：x\n边界：只读\n\n正文保留")).toBe("x\n边界：只读\n\n正文保留");
+    expect(M.cleanPersistedMessage("当前打开文件: a.docx\n帮忙检查")).toBe("当前打开文件: a.docx\n帮忙检查");
   });
 
-  it("historyImageData / entryCreatedAt / sameWorkspacePath / fileBasename 多样本 deep-equal", () => {
-    const imageSamples: unknown[] = [
-      null,
-      undefined,
-      {},
-      { source: { data: "QUJD" } },
-      { image: { url: "data:image/webp;base64,xx" } },
-      { data: "REVG", mimeType: "image/jpeg" },
-      { url: "R01L" },
-      { source: { data: "QQ", mediaType: "image/gif" }, mediaType: "image/other" }
-    ];
-    for (const sample of imageSamples) {
-      expect(M.historyImageData(sample as never)).toEqual(sandbox.historyImageData(sample));
-    }
-    const entrySamples: Array<[unknown, unknown]> = [
-      [null, null],
-      [{ timestamp: 1 }, { createdAt: 2 }],
-      [{}, { createdAt: "x" }],
-      [{ time: "t" }, null],
-      [{}, {}]
-    ];
-    for (const [entry, message] of entrySamples) {
-      expect(M.entryCreatedAt(entry as never, message as never)).toEqual(sandbox.entryCreatedAt(entry, message));
-    }
-    const wsSamples: Array<[unknown, unknown]> = [
-      ["D:\\a\\b\\", "d:/a/b"],
-      ["", "x"],
-      [null, null],
-      ["D:/a/b", "D:/a/b/"],
-      ["D:/a/b", "D:/a/c"]
-    ];
-    for (const [a, b] of wsSamples) {
-      expect(M.sameWorkspacePath(a, b)).toEqual(sandbox.sameWorkspacePath(a, b));
-    }
-    const baseSamples = ["", "a/b/c.txt", "D:\\x\\y.png", "/", "a/"];
-    for (const sample of baseSamples) {
-      expect(M.fileBasename(sample)).toEqual(sandbox.fileBasename(sample));
-    }
+  it("historyImageData：data URL 直通 / base64 包装 / mediaType 解析", () => {
+    expect(M.historyImageData(null)).toBeNull();
+    expect(M.historyImageData(undefined)).toBeNull();
+    expect(M.historyImageData({})).toBeNull();
+    expect(M.historyImageData({ source: { data: "QUJD" } })).toBe("data:image/png;base64,QUJD");
+    expect(M.historyImageData({ image: { url: "data:image/webp;base64,xx" } })).toBe("data:image/webp;base64,xx");
+    expect(M.historyImageData({ data: "REVG", mimeType: "image/jpeg" })).toBe("data:image/jpeg;base64,REVG");
+    expect(M.historyImageData({ url: "R01L" })).toBe("data:image/png;base64,R01L");
+    expect(M.historyImageData({ source: { data: "QQ", mediaType: "image/gif" }, mediaType: "image/other" })).toBe("data:image/gif;base64,QQ");
   });
 
-  it("重建循环（buildSessionHistory）与旧 handleSelectSession 原文 deep-equal", () => {
+  it("entryCreatedAt / sameWorkspacePath / fileBasename", () => {
+    expect(M.entryCreatedAt(null, null)).toBeNull();
+    expect(M.entryCreatedAt({ timestamp: 1 }, { createdAt: 2 })).toBe(1);
+    expect(M.entryCreatedAt({}, { createdAt: "x" })).toBe("x");
+    expect(M.entryCreatedAt({ time: "t" }, null)).toBe("t");
+    expect(M.entryCreatedAt({}, {})).toBeNull();
+    expect(M.sameWorkspacePath("D:\\a\\b\\", "d:/a/b")).toBe(true);
+    expect(M.sameWorkspacePath("", "x")).toBe(false);
+    expect(M.sameWorkspacePath(null, null)).toBe(false);
+    expect(M.sameWorkspacePath("D:/a/b", "D:/a/b/")).toBe(true);
+    expect(M.sameWorkspacePath("D:/a/b", "D:/a/c")).toBe(false);
+    expect(M.fileBasename("")).toBe("");
+    expect(M.fileBasename("a/b/c.txt")).toBe("c.txt");
+    expect(M.fileBasename("D:\\x\\y.png")).toBe("y.png");
+    expect(M.fileBasename("/")).toBe("");
+    expect(M.fileBasename("a/")).toBe("a");
+  });
+
+  it("buildSessionHistory：重建循环 + Run 总结按时间插回（结构锚点）", () => {
     const entries = [
       { id: "e1", type: "message", message: { role: "user", content: "当前打开文件: 总体规划.docx\n@报告.docx 帮忙检查", timestamp: "2026-10-20T01:00:00.000Z" } },
       {
@@ -293,13 +220,30 @@ describe("A. 纯函数旧源码原文本执行（App.jsx 原文 vs history-load.
         { id: "r3", status: null }
       ]
     };
-    const oldResult = oldRebuild(
-      { entries }, runData,
-      oldHistId, sandbox.historyImageData, sandbox.cleanPersistedMessage, sandbox.historyReferences, sandbox.entryCreatedAt,
-      normalizeHistoryMessages
-    );
-    const newResult = M.buildSessionHistory(entries as never, runData.runs as never);
-    expect(newResult).toEqual(oldResult);
+    const result = M.buildSessionHistory(entries as never, runData.runs as never);
+    // 排序：无时间戳的 e6（0）最前 → r1（00:10）→ r2（00:40）→ e1（01:00）→ e2（01:00:05）→ e4（01:01）
+    expect(result.map((m) => `${m.role}:${m.id}`)).toEqual([
+      "assistant:e6", "system:run-summary-r1", "system:run-summary-r2", "user:e1", "assistant:e2", "user:e4",
+    ]);
+    // Run 总结消息：状态过滤 + 去重 + running/completed 文案与事件 key
+    const r1 = result[1]!;
+    expect([r1.text, r1.status, r1.runIndex, r1.runCount, r1.runMode]).toEqual(["本轮任务仍在执行中", "streaming", 1, 2, "agent"]);
+    const r2 = result[2]!;
+    expect([r2.text, r2.status, r2.products, r2.eventCount]).toEqual(["完成二", "done", ["out/b.docx"], 2]);
+    expect((r2.events as Array<{ key: string }> | undefined)?.map((e) => e.key)).toEqual(["history:r2:2", "history:r2:1"]);
+    // 用户消息：文本清洗 / 当前文件 / 引用解析
+    const e1 = result[3]!;
+    expect([e1.text, e1.currentDoc]).toEqual(["当前打开文件: 总体规划.docx\n@报告.docx 帮忙检查", "总体规划.docx"]);
+    expect((e1.references as Array<{ target: string }> | undefined)?.map((r) => r.target)).toContain("报告.docx");
+    const e4 = result[5]!;
+    expect(e4.text).toBe("继续分析");
+    // assistant 重建：toolCall 回填 + ghost toolResult 挂最近 assistant + 图像 base64
+    const e2 = result[4]!;
+    expect(e2.blocks?.map((b) => b.type)).toEqual(["tool", "thinking", "text", "tool"]);
+    expect(e2.blocks?.[0]).toMatchObject({ type: "tool", id: "c1", output: "文件内容", done: true, isError: false });
+    expect(e2.blocks?.[3]).toMatchObject({ type: "tool", name: "bash", output: "无配对输出", done: true, isError: true });
+    const e6 = result[0]!;
+    expect(e6.images).toEqual(["data:image/png;base64,QUJD"]);
   });
 });
 
@@ -322,19 +266,13 @@ describe("B. workbench 消费面通道映射对齐 server 路由", () => {
   });
 });
 
-/* ==================== C. feed 常量锚点（vs 旧源码文本） ==================== */
+/* ==================== C. feed 常量锚点 ==================== */
 
 describe("C. feed 常量锚点", () => {
-  it("GLOBAL_EVENT_NOTICES / artifact 事件表 / 游标键与旧源码逐字一致", () => {
-    const match = APP_SOURCE.match(/GLOBAL_EVENT_NOTICES = new Set\(\[([^\]]*)\]\)/);
-    expect(match, "旧源码 GLOBAL_EVENT_NOTICES 定位").toBeTruthy();
-    const parsed = (match?.[1] ?? "").split(",").map((s) => s.trim().replace(/^["']|["']$/g, "")).filter(Boolean);
-    expect([...FEED.GLOBAL_EVENT_NOTICES]).toEqual(parsed);
+  it("GLOBAL_EVENT_NOTICES / artifact 事件表 / 游标键", () => {
+    expect([...FEED.GLOBAL_EVENT_NOTICES]).toEqual(["run_finished", "run_recovered", "run_cancel_requested", "agent_error", "ask_user"]);
     expect(FEED.ARTIFACT_EVENT_TYPES).toEqual(["run_finished", "file_changed", "artifact_published"]);
-    // 旧 onmessage 内 artifact 事件字面量原文（App.jsx 617）
-    expect(APP_SOURCE.includes('"run_finished", "file_changed", "artifact_published"')).toBe(true);
     expect(FEED.EVENT_CURSOR_STORAGE_KEY).toBe("oaw_event_cursor");
-    expect(APP_SOURCE.includes('"oaw_event_cursor"')).toBe(true);
   });
 });
 

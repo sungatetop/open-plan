@@ -1,20 +1,20 @@
 import { describe, it, expect } from "vitest";
 import graphics from "../src/renderer/lib/SupplierBrandGraphics";
 
-const clientModule = await import("../../client/src/components/SupplierBrandGraphics.js");
-const clientGraphics = clientModule.default as Record<string, string>;
+// R6-6c 对拍退役改写：旧侧 client/src/components/SupplierBrandGraphics.js import 与
+// 键集/逐键互等断言随 client 退役删除（等价性已在 F1 批对拍验收冻结），
+// 改为 TS 侧直接锚点断言 + 结构约束断言。
 
-describe("SupplierBrandGraphics TS 版与 client 版等价（对拍）", () => {
-  it("默认导出为纯数据表：键集与规模完全一致", () => {
-    expect(Object.keys(graphics).sort()).toEqual(Object.keys(clientGraphics).sort());
+describe("SupplierBrandGraphics 常量表", () => {
+  it("键集锚点：23 个供应商 slug，按字典序逐项", () => {
+    expect(Object.keys(graphics).sort()).toEqual([
+      "alibabacloud", "amazonwebservices", "anthropic", "cloudflare", "deepseek",
+      "googlecloud", "googlegemini", "huggingface", "kimi", "meta",
+      "microsoftazure", "minimax", "mistralai", "moonshotai", "nvidia",
+      "ollama", "openai", "opencode", "openrouter", "qwen",
+      "vercel", "x", "xiaomi",
+    ]);
     expect(Object.keys(graphics)).toHaveLength(23);
-    expect(graphics).toEqual(clientGraphics);
-  });
-
-  it("逐键逐字节一致：所有 slug 的 path 字符串与 client 版相同", () => {
-    for (const key of Object.keys(clientGraphics)) {
-      expect(graphics[key], `slug ${key} 的 path 不一致`).toBe(clientGraphics[key]);
-    }
   });
 
   it("结构约束：所有值均为以 M/m 开头的非空 SVG path 字符串", () => {

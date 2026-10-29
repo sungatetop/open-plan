@@ -1,46 +1,19 @@
 // @vitest-environment jsdom
 /**
- * F3 批6d-2 对拍：消息与结果卡族（message.tsx，自 ChatPanel.jsx 4101-4905 拆出）。
+ * F3 批6d-2：消息与结果卡族（message.tsx，自 ChatPanel.jsx 4101-4905 拆出）。
  *
- * 对拍口径（锚点 + 交互语义，批5b-1/6d-1「TS 绝对锚点」先例）：
- *   - artifactsFromView / RunSummary / Message / MemoMessage 均为旧模块私有符号
- *     （未导出），旧侧无直接挂载入口；artifactsFromView 锚点由本测试运行时抽取
- *     旧源码原文本（ChatPanel.jsx 的函数原文）求值生成，新旧双侧对同一样本
- *     deep-equal；组件锚点按旧 JSX 结构逐字段转录；真双侧同流全 DOM 对拍在
- *     批6d-3（挂载旧 ChatPanel vs 新主组件）补齐。
- *   - 关键交互语义：结果卡页签切换 / 回滚回调参数（runId + 可回滚路径）/ 记忆
- *     建议确认拒绝 / 权威终稿通道与最后文本块收窄（B02 answerDetail=brief）/
- *     copy 拼接规则 / MemoMessage 八字段比较器。
+ * R6-6c 对拍退役改写：旧侧 readFileSync 抽取 ChatPanel.jsx 源码原文本执行
+ * artifactsFromView 的双侧 deep-equal 随 client 退役删除（等价性已在 F3 批对拍
+ * 验收冻结），锚点样本固化为 TS 侧直接期望值断言；RunSummary / Message /
+ * MemoMessage 的渲染与交互锚点保留（新侧唯一覆盖）。
  */
 import { describe, it, expect, afterEach, vi } from "vitest";
 import React, { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
-import { dirname, resolve } from "node:path";
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 
 const M = await import("../src/renderer/features/chat/message");
-
-/* ------------- artifactsFromView 旧源码原文本执行（锚点生成） ------------- */
-
-const LEGACY_PANEL_PATH = resolve(dirname(fileURLToPath(import.meta.url)), "../../client/src/components/ChatPanel.jsx");
-
-function loadLegacyArtifactsFromView(): (view: unknown) => unknown {
-  const source = readFileSync(LEGACY_PANEL_PATH, "utf8");
-  const startMarker = "function artifactsFromView(view)";
-  const endMarker = "return byPath.size ? [...byPath.values()] : null;";
-  const start = source.indexOf(startMarker);
-  const bodyEnd = source.indexOf(endMarker, start);
-  if (start < 0 || bodyEnd < 0) throw new Error("旧源码 artifactsFromView 锚点定位失败（ChatPanel.jsx 结构变更？）");
-  // 函数闭合 }：bodyEnd 之后（仅隔换行）的第一个 }
-  const close = source.indexOf("}", bodyEnd + endMarker.length);
-  const fnText = `${source.slice(start, close + 1)}\nreturn artifactsFromView;`;
-  return new Function(fnText)() as (view: unknown) => unknown;
-}
-
-const legacyArtifactsFromView = loadLegacyArtifactsFromView();
 
 /* ------------------------- 挂载与查询工具（同批6d-1） ------------------------- */
 
@@ -91,7 +64,7 @@ afterEach(() => {
 
 /* ============================ artifactsFromView ============================ */
 
-describe("artifactsFromView（锚点=旧源码原文本执行）", () => {
+describe("artifactsFromView", () => {
   // 综合样本：交付优先、路径去重（\\ 归一）、internal 跳过、无路径跳过、
   // confirmed（write-ledger/deliverable）、attributed（unattributed 降级线索）、size 提取
   const SAMPLES: Array<unknown> = [
@@ -116,10 +89,10 @@ describe("artifactsFromView（锚点=旧源码原文本执行）", () => {
     { deliverables: [{ relativePath: "台账写.md", source: "write-ledger" }], changes: [{ relativePath: "台账写.md", role: "deliverable" }] }
   ];
 
-  it("新旧双侧对同一样本序列 deep-equal（含插入顺序）", () => {
-    for (const sample of SAMPLES) {
-      expect(M.artifactsFromView(sample)).toEqual(legacyArtifactsFromView(sample));
-    }
+  it("空视图（null / 空对象 / 空数组）返回 null", () => {
+    expect(M.artifactsFromView(SAMPLES[0])).toBeNull();
+    expect(M.artifactsFromView(SAMPLES[1])).toBeNull();
+    expect(M.artifactsFromView(SAMPLES[2])).toBeNull();
   });
 
   it("语义抽查：交付优先去重 / confirmed / attributed / size / 反斜杠归一", () => {
@@ -130,6 +103,15 @@ describe("artifactsFromView（锚点=旧源码原文本执行）", () => {
       { path: "D:/ws/子/说明.md", deliverable: false, size: null, confirmed: false, attributed: true },
       { path: "外部改动.txt", deliverable: false, size: null, confirmed: false, attributed: false },
       { path: "手工放弃.md", deliverable: false, size: null, confirmed: false, attributed: false }
+    ]);
+  });
+
+  it("deliverable role 驱动 confirmed；changes 同路径条目被交付条目压制", () => {
+    expect(M.artifactsFromView(SAMPLES[4])).toEqual([
+      { path: "唯一.md", deliverable: true, size: null, confirmed: true, attributed: true },
+    ]);
+    expect(M.artifactsFromView(SAMPLES[5])).toEqual([
+      { path: "台账写.md", deliverable: true, size: null, confirmed: true, attributed: true },
     ]);
   });
 });

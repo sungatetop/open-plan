@@ -1,13 +1,10 @@
 // @vitest-environment jsdom
 /**
- * F3 批6a 对拍：ChatPanel 模块级共享层（lib/chat-shared）+ 模型行小组件 + 错误边界。
+ * F3 批6a：ChatPanel 模块级共享层（lib/chat-shared）+ 模型行小组件 + 错误边界。
  *
- * 对拍口径：
- *   - normalizeHistoryMessages：旧侧唯一导出符号，双侧喂同一输入（深拷贝同流），
- *     输出深比较；
- *   - 其余纯函数旧侧模块私有：TS 侧绝对锚点断言；
- *   - ModelProviderMark / ModelOptionRow / ChatErrorBoundary：旧侧私有，渲染
- *     （renderToStaticMarkup）与交互（createRoot + act）锚点。
+ * R6-6c 对拍退役改写：旧侧 client/src/components/ChatPanel.jsx import 与
+ * normalizeHistoryMessages 双侧互等断言随 client 退役删除（等价性已在 F3 批对拍
+ * 验收冻结），改为 TS 侧直接期望值断言；其余纯函数绝对锚点与组件渲染/交互锚点保留。
  */
 import { describe, it, expect, afterEach, vi } from "vitest";
 import React, { act } from "react";
@@ -16,7 +13,6 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 
-const Js = await import("../../client/src/components/ChatPanel.jsx");
 const Ts = await import("../src/renderer/lib/chat-shared");
 const markModule = await import("../src/renderer/components/ModelProviderMark");
 const ModelProviderMark = markModule.default;
@@ -32,16 +28,6 @@ type Msg = {
   [key: string]: unknown;
 };
 const asMsgs = (v: unknown): Msg[] => v as Msg[];
-
-/** 深拷贝：双侧必须拿到完全同流的独立输入 */
-const clone = <T,>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
-
-function dual(items: unknown[]): { js: unknown; ts: unknown } {
-  return {
-    js: Js.normalizeHistoryMessages(clone(items)),
-    ts: Ts.normalizeHistoryMessages(clone(items)),
-  };
-}
 
 function mount(node: React.ReactNode): { host: HTMLElement; unmount: () => void } {
   localStorage.clear();
@@ -73,18 +59,17 @@ afterEach(() => {
 });
 
 // ---------------------------------------------------------------------------
-// 第一部分：normalizeHistoryMessages 双侧对拍
+// 第一部分：normalizeHistoryMessages 行为锚点
 // ---------------------------------------------------------------------------
 
-describe("normalizeHistoryMessages：TS 版与 client ChatPanel 导出版双侧对拍", () => {
-  it("非数组与空数组一律返回空数组（双侧一致）", () => {
+describe("normalizeHistoryMessages 行为锚点", () => {
+  it("非数组与空数组一律返回空数组", () => {
     expect([
-      Js.normalizeHistoryMessages(null),
-      Js.normalizeHistoryMessages([]),
       Ts.normalizeHistoryMessages(null),
       Ts.normalizeHistoryMessages(undefined),
+      Ts.normalizeHistoryMessages([]),
       Ts.normalizeHistoryMessages(42),
-    ]).toEqual([[], [], [], [], []]);
+    ]).toEqual([[], [], [], []]);
   });
 
   it("「[系统提醒]」与中英文冒号形态剔除，普通消息保留", () => {
@@ -95,9 +80,7 @@ describe("normalizeHistoryMessages：TS 版与 client ChatPanel 导出版双侧�
       { role: "user", text: "真正的问题" },
       { role: "user", text: "聊聊系统提醒的历史" },
     ];
-    const { js, ts } = dual(items);
-    expect(ts).toEqual(js);
-    expect(asMsgs(ts).map((m) => m.text)).toEqual(["真正的问题", "聊聊系统提醒的历史"]);
+    expect(asMsgs(Ts.normalizeHistoryMessages(items)).map((m) => m.text)).toEqual(["真正的问题", "聊聊系统提醒的历史"]);
   });
 
   it("空 assistant 占位剔除，errorText 分支保留", () => {
@@ -107,105 +90,86 @@ describe("normalizeHistoryMessages：TS 版与 client ChatPanel 导出版双侧�
       { role: "assistant", text: "", errorText: "上游超时" },
       { role: "assistant", text: "最终结论" },
     ];
-    const { js, ts } = dual(items);
-    expect(ts).toEqual(js);
-    expect(asMsgs(ts).map((m) => m.text)).toEqual(["", "最终结论"]);
+    expect(asMsgs(Ts.normalizeHistoryMessages(items)).map((m) => m.text)).toEqual(["", "最终结论"]);
   });
 
   it("相邻同指纹去重：assistant 同指纹首个胜出（指纹集先行），user 相邻同指纹高分者胜", () => {
-    const forward = dual([
+    expect(asMsgs(Ts.normalizeHistoryMessages([
       { role: "user", text: "问" },
       { role: "assistant", text: "结论 A" },
       { role: "assistant", text: "结论  A" },
-    ]);
-    expect(forward.ts).toEqual(forward.js);
-    expect(asMsgs(forward.ts).map((m) => m.text)).toEqual(["问", "结论 A"]);
-    const backward = dual([
+    ])).map((m) => m.text)).toEqual(["问", "结论 A"]);
+    expect(asMsgs(Ts.normalizeHistoryMessages([
       { role: "user", text: "问" },
       { role: "assistant", text: "结论  A" },
       { role: "assistant", text: "结论 A" },
-    ]);
-    expect(backward.ts).toEqual(backward.js);
-    expect(asMsgs(backward.ts).map((m) => m.text)).toEqual(["问", "结论  A"]);
+    ])).map((m) => m.text)).toEqual(["问", "结论  A"]);
     // 分数比较只发生在相邻非 assistant 同指纹合并：user 原始文本更长者分高胜出
-    const users = dual([
+    expect(asMsgs(Ts.normalizeHistoryMessages([
       { role: "user", text: "重复" },
       { role: "user", text: "重复 " },
-    ]);
-    expect(users.ts).toEqual(users.js);
-    expect(asMsgs(users.ts).map((m) => m.text)).toEqual(["重复 "]);
+    ])).map((m) => m.text)).toEqual(["重复 "]);
   });
 
   it("相邻同指纹去重：块文本空白差异同指纹，后者被指纹集剔除保首个", () => {
-    const { js, ts } = dual([
+    const ts = asMsgs(Ts.normalizeHistoryMessages([
       { role: "assistant", blocks: [{ type: "text", text: "块 内容" }] },
       { role: "assistant", blocks: [{ type: "text", text: "块  内容" }] },
-    ]);
-    expect(ts).toEqual(js);
-    expect([asMsgs(ts).length, asMsgs(ts)[0]?.blocks?.[0]?.text]).toEqual([1, "块 内容"]);
+    ]));
+    expect([ts.length, ts[0]?.blocks?.[0]?.text]).toEqual([1, "块 内容"]);
   });
 
   it("assistant 同指纹跨 system 仍合并；遇 user 清空指纹集", () => {
-    const merged = dual([
+    expect(asMsgs(Ts.normalizeHistoryMessages([
       { role: "user", text: "问1" },
       { role: "assistant", text: "答" },
       { role: "system", text: "进度同步" },
       { role: "assistant", text: "答" },
-    ]);
-    expect(merged.ts).toEqual(merged.js);
-    expect(asMsgs(merged.ts).map((m) => m.text)).toEqual(["问1", "答", "进度同步"]);
-    const cleared = dual([
+    ])).map((m) => m.text)).toEqual(["问1", "答", "进度同步"]);
+    expect(asMsgs(Ts.normalizeHistoryMessages([
       { role: "user", text: "问1" },
       { role: "assistant", text: "答" },
       { role: "user", text: "问2" },
       { role: "assistant", text: "答" },
-    ]);
-    expect(cleared.ts).toEqual(cleared.js);
-    expect(asMsgs(cleared.ts).map((m) => m.text)).toEqual(["问1", "答", "问2", "答"]);
+    ])).map((m) => m.text)).toEqual(["问1", "答", "问2", "答"]);
   });
 
   it("同 runId 的 system summary 只留一条且分数高者胜", () => {
-    const { js, ts } = dual([
+    const ts = asMsgs(Ts.normalizeHistoryMessages([
       { role: "user", text: "问" },
       { role: "assistant", text: "过程" },
       { role: "system", summary: true, runId: "r1", text: "短总结" },
       { role: "system", summary: true, runId: "r1", text: "更完整的总结，带产物清单" },
-    ]);
-    expect(ts).toEqual(js);
-    const summaries = asMsgs(ts).filter((m) => m.summary);
+    ]));
+    const summaries = ts.filter((m) => m.summary);
     expect([summaries.length, summaries[0]?.text, summaries[0]?.runId]).toEqual([1, "更完整的总结，带产物清单", "r1"]);
-    const lowSecond = dual([
+    const lowSecond = asMsgs(Ts.normalizeHistoryMessages([
       { role: "system", summary: true, runId: "r2", text: "很长很长很长的第一版总结" },
       { role: "system", summary: true, runId: "r2", text: "短" },
-    ]);
-    expect(lowSecond.ts).toEqual(lowSecond.js);
-    expect(asMsgs(lowSecond.ts).filter((m) => m.summary)[0]?.text).toBe("很长很长很长的第一版总结");
+    ]));
+    expect(lowSecond.filter((m) => m.summary)[0]?.text).toBe("很长很长很长的第一版总结");
   });
 
   it("普通相邻重复合并（user 同文本）", () => {
-    const { js, ts } = dual([
+    expect(asMsgs(Ts.normalizeHistoryMessages([
       { role: "user", text: "同一句提问" },
       { role: "user", text: "同一句提问" },
       { role: "assistant", text: "答" },
-    ]);
-    expect(ts).toEqual(js);
-    expect(asMsgs(ts).map((m) => m.text)).toEqual(["同一句提问", "答"]);
+    ])).map((m) => m.text)).toEqual(["同一句提问", "答"]);
   });
 
   it("顺序保留：不同内容全部按原顺序输出", () => {
-    const { js, ts } = dual([
+    expect(asMsgs(Ts.normalizeHistoryMessages([
       { role: "user", text: "一" },
       { role: "assistant", text: "二" },
       { role: "system", text: "三" },
       { role: "user", text: "四", images: ["i.png"] },
-    ]);
-    expect(ts).toEqual(js);
-    expect(asMsgs(ts).map((m) => m.text)).toEqual(["一", "二", "三", "四"]);
+    ])).map((m) => m.text)).toEqual(["一", "二", "三", "四"]);
   });
 });
 
 // ---------------------------------------------------------------------------
-// 第二部分：纯函数行为锚点（旧侧私有，绝对断言）
+// 第二部分：纯函数行为锚点（绝对断言）
 // ---------------------------------------------------------------------------
 
 describe("chat-shared 纯函数行为锚点", () => {

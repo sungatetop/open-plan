@@ -4,7 +4,8 @@ import React, { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { ThemeProvider, useTheme, SKINS, type ThemeContextValue } from "../src/renderer/app/theme";
 
-const clientTheme = await import("../../client/src/theme.jsx");
+// R6-6c 对拍退役改写：旧侧 client/src/theme.jsx import 与 SKINS 互等随 client 退役删除
+// （等价性已在 F2 批对拍验收冻结），改为 TS 侧直接锚点断言 + 行为断言。
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -30,7 +31,7 @@ function mount(): void {
   });
 }
 
-describe("theme TS 版（F2 范本）与 client theme.jsx 等价", () => {
+describe("theme TS 版（F2 范本）", () => {
   beforeEach(() => {
     localStorage.clear();
     document.documentElement.removeAttribute("data-theme");
@@ -45,8 +46,11 @@ describe("theme TS 版（F2 范本）与 client theme.jsx 等价", () => {
     root = null;
   });
 
-  it("SKINS 常量与 client 版逐项一致", () => {
-    expect(SKINS).toEqual(clientTheme.SKINS);
+  it("SKINS 常量锚点（7 皮肤，id 顺序与 label 逐项）", () => {
+    expect(SKINS.map((s) => s.id)).toEqual(["proma", "glass", "default", "ocean", "forest", "sunset", "violet"]);
+    expect(SKINS.map((s) => s.label)).toEqual([
+      "Proma 清晰", "磨玻璃 · Open Plan", "默认（青绿）", "海洋蓝", "森林绿", "暖橙", "紫罗兰",
+    ]);
   });
 
   it("空存储初始值：dark / default，并立即挂载 data 属性与持久化", () => {
@@ -69,7 +73,7 @@ describe("theme TS 版（F2 范本）与 client theme.jsx 等价", () => {
     expect(document.documentElement.getAttribute("data-skin")).toBe("ocean");
   });
 
-  it("已保存非法值：回退 dark / default（与 client 版口径一致）", () => {
+  it("已保存非法值：回退 dark / default", () => {
     localStorage.setItem("oaw_theme", "blue");
     localStorage.setItem("oaw_skin", "not-a-skin");
     mount();
