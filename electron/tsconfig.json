@@ -18,10 +18,7 @@
     "allowJs": true,
     "checkJs": false,
     "noEmit": true,
-    "baseUrl": ".",
-    "paths": {
-      "@legacy-server/*": ["../server/*"]
-    }
+    "baseUrl": "."
   },
   "include": ["src", "tests", "electron.vite.config.ts"]
 }

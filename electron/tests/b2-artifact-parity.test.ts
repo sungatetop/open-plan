@@ -1,29 +1,32 @@
 /**
- * B2 artifact 域对拍（artifact-acceptance.ts / artifact-management.ts ↔ server/*.mjs，S3-2 底层件）。
+ * B2 artifact 域（artifact-acceptance.ts / artifact-management.ts，S3-2 底层件）。
  *
- * 覆盖面（行号锚点均指 server/*.mjs）：
- *   - evaluateArtifactFile 新旧直接对拍：非 Office（txt/png 好/坏字节/pdf/越界基础失败）
- *     + Office 分支 unavailable 状态机（两侧同注入 {available:false} 桩，L164-280）；
- *     checkedAt 为调用时刻时间戳，对拍前经 norm() 归一为常量；
- *   - evaluateRunArtifacts 新旧对拍（png 产物 Run，L344-365；两侧同走真实 checkOfficecli——
- *     legacy 无注入面，TS 省略 officeModule 时动态 import 同一 office.mjs，探测结果逐字一致；
- *     available 时 skip——本机无 officecli 二进制时走文件不存在路径，无 spawn）；
- *   - Office 分支 available 全编排（新侧 office 桩单侧：validate/stats/issues/text/render
- *     + required* 规则，L172-280 锚点断言；validate 为 args[0] 首词，view 族子命令在 args[2]）；
- *   - artifact-management 链路（OAW_RUNS_DIR/OAW_EVENT_DIR stub 隔离，L60-238 语义锚点）：
+ * R6-6b 对拍退役改写：旧侧 server/{artifact-acceptance,artifact-management}.mjs 动态
+ * import 与 evaluate* 直接对拍（norm 归一 + 双侧互等）随 server 退役删除——等价性已在
+ * S3-2/S3-3 批对拍验收冻结，改 TS 侧直接断言（返回形状自 TS 源推导硬编码）。
+ *
+ * 覆盖面：
+ *   - evaluateArtifactFile 非 Office（txt/png 好/坏字节/pdf/越界基础失败）：
+ *     checkedAt 为调用时刻时间戳，关键字段直接断言（status/readyToPublish/checks 四组/
+ *     verifier），不逐字比对时间戳；
+ *   - evaluateRunArtifacts（png 产物 Run，真实 checkOfficecli——本机无 officecli 二进制时
+ *     走文件不存在路径无 spawn，available 时跳过避免测试真调 officecli）；
+ *   - Office 分支 available 全编排（office 桩单侧：validate/stats/issues/text/render
+ *     + required* 规则锚点断言；validate 为 args[0] 首词，view 族子命令在 args[2]）；
+ *   - artifact-management 链路（OAW_RUNS_DIR/OAW_EVENT_DIR stub 隔离）：
  *     产物经真实链路装配——beginRun(full 快照) → 写/删文件 → finishRun 前后快照差分
- *     finalizeFileChanges（beginRun 不接受 artifacts 入参，新旧两侧一致）；每用例独立子工作区；
- *     inspectRunAcceptance（沿用人工确认）/ confirmArtifactAcceptance（成功 + 失败 409）/
- *     publishArtifact 校验分支族 / rollbackPublishedArtifact（域函数不校验 confirm——该 400
- *     校验在 op:artifacts:rollback 路由层，S3-2 编排测试覆盖；空 workspace 时 withWriteLock
- *     先拒 409，新旧一致）。
+ *     finalizeFileChanges（beginRun 不接受 artifacts 入参，产物只在收尾物化）；每用例
+ *     独立子工作区；inspectRunAcceptance（沿用人工确认）/ confirmArtifactAcceptance
+ *     （成功 + 失败 409）/ publishArtifact 校验分支族 / rollbackPublishedArtifact
+ *     （域函数不校验 confirm——该 400 校验在 op:artifacts:rollback 路由层；空 workspace
+ *     时 withWriteLock 先拒 409）。
  *
  * 未做：publishArtifact 成功写台账（PUBLISHED_FILE 顶层冻结真实 .oaw/artifacts.json，
  * 无 env 覆盖，不污染真实工作区——savePublished 为 persistence-utils atomicWriteJson
  * 既有对拍件，published 记录构造以源码锚点为准）；listPublishedArtifacts 内容行为
  * （readPublished 读真实台账，无注入面；filter/sort/slice 与旧逐行同构）；
  * rollbackPublishedArtifact 404 分支（publication not found 需先有台账记录，同样受
- * PUBLISHED_FILE 注入面限制；unlock 前置校验分支以源码锚点 + 新旧 parity 覆盖）。
+ * PUBLISHED_FILE 注入面限制；unlock 前置校验分支以源码锚点覆盖）。
  */
 import { describe, expect, test, beforeAll, afterAll, vi } from "vitest";
 import fs from "node:fs";
@@ -33,17 +36,11 @@ import type * as AcceptanceModule from "../src/main/backend/artifact-acceptance"
 import type * as ManagementModule from "../src/main/backend/artifact-management";
 import type * as RunsModule from "../src/main/backend/runs";
 
-type LegacyAcceptance = typeof import("@legacy-server/artifact-acceptance.mjs");
-type LegacyManagement = typeof import("@legacy-server/artifact-management.mjs");
-let legacy: LegacyAcceptance;
-let legacyMgmt: LegacyManagement;
 let acc: typeof AcceptanceModule;
 let mgmt: typeof ManagementModule;
 let runs: typeof RunsModule;
 let base = "";
 let ws = "";
-let runsDir = "";
-let eventDir = "";
 
 const UNAVAILABLE = { available: false as const, path: "stub", code: null, message: "Office CLI 不可用（测试桩）" };
 const officeStubModule = {
@@ -63,28 +60,17 @@ function pngBuffer(width = 3, height = 2): Buffer {
   ]);
 }
 
-/** 对拍归一：checkedAt 为调用时刻时间戳，新旧两次调用必有毫秒差，比对前置为常量。 */
-function norm<T>(value: T): T {
-  const clone = structuredClone(value) as any;
-  if (clone?.checkedAt) clone.checkedAt = "<ts>";
-  for (const item of clone?.artifacts || []) if (item?.checkedAt) item.checkedAt = "<ts>";
-  return clone;
-}
-
 beforeAll(async () => {
   base = fs.mkdtempSync(path.join(os.tmpdir(), "b2artifact-"));
   ws = path.join(base, "ws");
-  runsDir = path.join(base, "runs");
-  eventDir = path.join(base, "events");
   fs.mkdirSync(ws, { recursive: true });
-  fs.mkdirSync(runsDir, { recursive: true });
-  vi.stubEnv("OAW_RUNS_DIR", runsDir);
-  vi.stubEnv("OAW_EVENT_DIR", eventDir);
+  fs.mkdirSync(path.join(base, "runs"), { recursive: true });
+  fs.mkdirSync(path.join(base, "events"), { recursive: true });
+  vi.stubEnv("OAW_RUNS_DIR", path.join(base, "runs"));
+  vi.stubEnv("OAW_EVENT_DIR", path.join(base, "events"));
   acc = await import("../src/main/backend/artifact-acceptance");
   mgmt = await import("../src/main/backend/artifact-management");
   runs = await import("../src/main/backend/runs");
-  legacy = await import("@legacy-server/artifact-acceptance.mjs");
-  legacyMgmt = await import("@legacy-server/artifact-management.mjs");
 });
 
 afterAll(() => {
@@ -93,108 +79,119 @@ afterAll(() => {
   try { fs.rmSync(base, { recursive: true, force: true }); } catch {}
 });
 
-describe("b2-artifact-acceptance-parity evaluateArtifactFile 非 Office", () => {
+describe("b2-artifact-acceptance evaluateArtifactFile 非 Office", () => {
   test.each([
     ["a.txt", "普通文本内容"],
     ["a.md", "# 标题\n正文"],
     ["a.json", "{\"k\":1}"]
-  ])("文本文件 passed（%s）新旧一致", (name, content) => {
+  ])("文本文件 passed（%s）", async (name, content) => {
     const file = path.join(ws, name);
     fs.writeFileSync(file, content, "utf8");
-    const mine = acc.evaluateArtifactFile(file, { root: ws, relativePath: name, officeModule: officeStubModule });
-    const theirs = legacy.evaluateArtifactFile(file, { root: ws, relativePath: name });
-    return Promise.all([mine, theirs]).then(([m, t]) => {
-      expect((m as any).status).toBe("passed");
-      expect(norm(m)).toEqual(norm(t));
+    const r = await acc.evaluateArtifactFile(file, { root: ws, relativePath: name, officeModule: officeStubModule });
+    expect(r.status).toBe("passed");
+    expect(r.readyToPublish).toBe(true);
+    expect(r).toMatchObject({
+      format: path.extname(name).slice(1),
+      verifier: "server",
+      checks: {
+        structure: { status: "passed" },
+        content: { status: "passed" },
+        visual: { status: "not_applicable", checks: [], required: false },
+        manual: { status: "not_required", checks: [], required: false },
+      },
     });
+    expect((r as any).checks.structure.checks[0].id).toBe("file");
+    expect(r.checkedAt).toEqual(expect.any(String));
   });
 
-  test("有效 PNG（3×2）dimensions 读取新旧一致", async () => {
+  test("有效 PNG（3×2）dimensions 读取", async () => {
     const file = path.join(ws, "a.png");
     fs.writeFileSync(file, pngBuffer());
-    const mine = await acc.evaluateArtifactFile(file, { root: ws, relativePath: "a.png", officeModule: officeStubModule });
-    const theirs = await legacy.evaluateArtifactFile(file, { root: ws, relativePath: "a.png" });
-    expect(norm(mine)).toEqual(norm(theirs));
-    expect(mine.status).toBe("passed");
-    expect((mine as any).checks.structure.checks[0].dimensions).toEqual({ width: 3, height: 2 });
+    const r = await acc.evaluateArtifactFile(file, { root: ws, relativePath: "a.png", officeModule: officeStubModule });
+    expect(r.status).toBe("passed");
+    expect(r.readyToPublish).toBe(true);
+    expect((r as any).verifier).toBe("server");
+    expect((r as any).checks.structure.checks[0]).toMatchObject({ id: "image-header", status: "passed" });
+    expect((r as any).checks.structure.checks[0].dimensions).toEqual({ width: 3, height: 2 });
+    expect((r as any).checks.content.checks[0].id).toBe("image-content");
+    expect((r as any).checks.visual.checks[0]).toMatchObject({ id: "image-preview", status: "passed" });
   });
 
-  test("坏 PNG 字节 failed 新旧一致", async () => {
+  test("坏 PNG 字节 failed", async () => {
     const file = path.join(ws, "bad.png");
     fs.writeFileSync(file, Buffer.from("not a png at all.........."));
-    const mine = await acc.evaluateArtifactFile(file, { root: ws, relativePath: "bad.png", officeModule: officeStubModule });
-    const theirs = await legacy.evaluateArtifactFile(file, { root: ws, relativePath: "bad.png" });
-    expect(norm(mine)).toEqual(norm(theirs));
-    expect(mine.status).toBe("failed");
-    // 旧实现 readyToPublish: valid（dimensions && …）——坏字节时短路为 null 而非 false
-    expect(mine.readyToPublish).toBeFalsy();
+    const r = await acc.evaluateArtifactFile(file, { root: ws, relativePath: "bad.png", officeModule: officeStubModule });
+    expect(r.status).toBe("failed");
+    // dimensions 解析失败时短路为 null 而非 false
+    expect(r.readyToPublish).toBeFalsy();
+    expect((r as any).checks.structure.checks[0]).toMatchObject({ id: "image-header", status: "failed" });
   });
 
-  test("PDF manual_review（页数正则 + 视觉待人工）新旧一致", async () => {
+  test("PDF manual_review（页数正则 + 视觉待人工）", async () => {
     const file = path.join(ws, "a.pdf");
     fs.writeFileSync(file, Buffer.from("%PDF-1.4\n1 0 obj\n/Type /Page\nendobj\n2 0 obj\n/Type /Page \nendobj\n%%EOF"));
-    const mine = await acc.evaluateArtifactFile(file, { root: ws, relativePath: "a.pdf", officeModule: officeStubModule });
-    const theirs = await legacy.evaluateArtifactFile(file, { root: ws, relativePath: "a.pdf" });
-    expect(norm(mine)).toEqual(norm(theirs));
-    expect(mine.status).toBe("manual_review");
-    expect((mine as any).checks.content.checks[0].message).toContain("至少 2 页");
+    const r = await acc.evaluateArtifactFile(file, { root: ws, relativePath: "a.pdf", officeModule: officeStubModule });
+    expect(r.status).toBe("manual_review");
+    expect(r.readyToPublish).toBe(false);
+    expect((r as any).verifier).toBe("server");
+    expect((r as any).checks.content.checks[0].message).toContain("至少 2 页");
+    expect((r as any).checks.structure.checks[0]).toMatchObject({ id: "pdf-header", status: "passed" });
+    expect((r as any).checks.visual).toMatchObject({ status: "manual_review" });
+    expect((r as any).checks.visual.checks[0].id).toBe("render");
+    expect((r as any).checks.manual).toMatchObject({ status: "pending" });
   });
 
-  test("越界文件基础失败（baseFailure 形状）新旧一致", async () => {
+  test("越界文件基础失败（baseFailure 形状）", async () => {
     const outside = path.join(base, "outside.txt");
     fs.writeFileSync(outside, "x");
-    const mine = await acc.evaluateArtifactFile(outside, { root: ws, relativePath: "outside.txt", officeModule: officeStubModule });
-    const theirs = await legacy.evaluateArtifactFile(outside, { root: ws, relativePath: "outside.txt" });
-    expect(norm(mine)).toEqual(norm(theirs));
-    expect(mine.status).toBe("failed");
-    expect((mine as any).checks.structure.checks[0].id).toBe("file");
+    const r = await acc.evaluateArtifactFile(outside, { root: ws, relativePath: "outside.txt", officeModule: officeStubModule });
+    expect(r.status).toBe("failed");
+    expect(r.readyToPublish).toBe(false);
+    expect((r as any).checks.structure.checks[0]).toMatchObject({ id: "file", status: "failed" });
+    expect((r as any).checks.content).toMatchObject({ status: "not_checked", checks: [] });
   });
 
-  test("Office 分支 unavailable：structure manual_review + manual pending 新旧一致", async () => {
+  test("Office 分支 unavailable：structure manual_review + manual pending", async () => {
     const file = path.join(ws, "a.docx");
     fs.writeFileSync(file, Buffer.from("PK\x03\x04 fake docx"));
-    const mine = await acc.evaluateArtifactFile(file, { root: ws, relativePath: "a.docx", officecli: UNAVAILABLE, officeModule: officeStubModule });
-    // legacy（allowJs）把 officecli 形参收窄为 null|undefined，测试侧显式放宽
-    const theirs = await legacy.evaluateArtifactFile(file, { root: ws, relativePath: "a.docx", officecli: UNAVAILABLE as any });
-    expect(norm(mine)).toEqual(norm(theirs));
-    expect(mine.status).toBe("manual_review");
-    expect((mine as any).checks.manual.status).toBe("pending");
-    expect((mine as any).checks.structure.status).toBe("manual_review");
+    const r = await acc.evaluateArtifactFile(file, { root: ws, relativePath: "a.docx", officecli: UNAVAILABLE, officeModule: officeStubModule });
+    expect(r.status).toBe("manual_review");
+    expect(r.readyToPublish).toBe(false);
+    expect((r as any).checks.manual.status).toBe("pending");
+    expect((r as any).checks.structure.status).toBe("manual_review");
+    expect((r as any).checks.structure.checks[0]).toMatchObject({ id: "container", status: "passed" });
+    expect((r as any).checks.structure.checks[1]).toMatchObject({ id: "officecli", status: "manual_review" });
   });
 });
 
-describe("b2-artifact-acceptance-parity evaluateRunArtifacts", () => {
-  // legacy evaluateRunArtifacts 无 officecli 注入面（内部 checkOfficecli()），TS 省略
-  // officeModule 时动态 import 同一 office.mjs → 两侧探测结果逐字一致（本机无二进制，
-  // available:false 无 spawn；若有二进制则跳过对拍，避免测试真调 officecli）。
-  test("png 产物 Run 全链路汇总（fileHash/status/officecli 字段）新旧一致", async () => {
+describe("b2-artifact-acceptance evaluateRunArtifacts", () => {
+  // 真实 checkOfficecli 探测（TS 侧省略 officeModule 时动态 import office.ts）：
+  // 本机无二进制 available:false 无 spawn；若有二进制则跳过断言，避免测试真调 officecli。
+  // timeout 20s：动态 import office 依赖链在全量并发满载下可拖过默认 5s（基线 flake 家族）。
+  test("png 产物 Run 全链路汇总（fileHash/status/officecli 字段）", async () => {
     const runWs = path.join(base, "runws");
     fs.mkdirSync(runWs, { recursive: true });
     fs.writeFileSync(path.join(runWs, "out.png"), pngBuffer(4, 5));
     const run = { id: "run_p1", cwd: runWs, artifacts: [{ artifactId: "art1", path: "out.png", status: "modified" }] };
-    const mine = await acc.evaluateRunArtifacts(run, {});
-    const theirs = await legacy.evaluateRunArtifacts(run, {});
-    if ((theirs as any).officecli?.available) { expect(true).toBe(true); return; }
-    expect(norm(mine)).toEqual(norm(theirs));
-    expect(mine.status).toBe("passed");
-    expect(mine.readyToPublish).toBe(true);
-    expect((mine.artifacts[0] as any).fileHash).toMatch(/^[0-9a-f]{40}$/);
-  });
+    const r = await acc.evaluateRunArtifacts(run, {});
+    if ((r as any).officecli?.available) { expect(true).toBe(true); return; }
+    expect(r.status).toBe("passed");
+    expect(r.readyToPublish).toBe(true);
+    expect((r.artifacts[0] as any).fileHash).toMatch(/^[0-9a-f]{40}$/);
+  }, 20000);
 
-  test("deleted 产物被过滤 + 空产物 not_checked（新旧一致）", async () => {
+  test("deleted 产物被过滤 + 空产物 not_checked", async () => {
     const empty = { id: "run_p2", cwd: ws, artifacts: [] };
-    expect(norm(await acc.evaluateRunArtifacts(empty, {})))
-      .toEqual(norm(await legacy.evaluateRunArtifacts(empty, {})));
     expect((await acc.evaluateRunArtifacts(empty, {})).status).toBe("not_checked");
   });
 });
 
-describe("b2-artifact-acceptance Office 分支 available 编排（office 桩单侧，锚点 L172-280）", () => {
+describe("b2-artifact-acceptance Office 分支 available 编排（office 桩单侧）", () => {
   function makeOfficeStub(options: { validate?: any; stats?: any; issues?: number; textData?: any } = {}) {
     return {
       checkOfficecli: async () => ({ available: true, path: "stub", code: 0, message: "" }),
       runOfficecli: async (args: string[], _opts?: any) => {
-        // 与旧实现参数序一致：validate 是首词（["validate", file, "--json"]），
+        // 参数序与实现一致：validate 是首词（["validate", file, "--json"]），
         // view 族子命令在 args[2]（["view", file, "stats|issues|text|screenshot", ...]）。
         const sub = args[0] === "validate" ? "validate" : args[2];
         if (sub === "validate") {
@@ -222,7 +219,7 @@ describe("b2-artifact-acceptance Office 分支 available 编排（office 桩单�
     expect(result.readyToPublish).toBe(true);
     expect((result as any).checks.manual.status).toBe("not_required");
     expect((result as any).checks.content.checks.map((c: any) => c.id)).toEqual(expect.arrayContaining(["content", "pages", "styles"]));
-    // 旧实现 visual 组 = [...formatIssue.checks, ...render.checks]——format 扫描在前
+    // visual 组 = [...formatIssue.checks, ...render.checks]——format 扫描在前
     const renderCheck = (result as any).checks.visual.checks.find((c: any) => c.id === "render");
     expect(renderCheck.message).toBe("已生成视觉预览");
     expect((result as any).verifier).toBe("server+officecli");
@@ -260,9 +257,8 @@ describe("b2-artifact-acceptance Office 分支 available 编排（office 桩单�
   test("xlsx：minFormulas 达标 + requiredSheets 文本命中 → passed", async () => {
     const file = path.join(ws, "t.xlsx");
     fs.writeFileSync(file, Buffer.from("PK\x03\x04"));
-    // 旧实现 L215 sheetCount = Number(stats.data.sheets || 0)：sheets 为对象数组时
-    // Number() 得 NaN 必 failed，故 stats 回报计数，requiredSheets 走文本检索分支
-    // （L236-247 flattenText 后 includes 匹配，与旧侧同一行为）。
+    // sheetCount = Number(stats.data.sheets || 0)：sheets 为对象数组时 Number() 得 NaN
+    // 必 failed，故 stats 回报计数，requiredSheets 走文本检索分支（flattenText 后 includes）。
     const stub = makeOfficeStub({
       stats: { code: 0, json: { data: { sheets: 2, totalCells: 42, formulaCells: 5 } } },
       textData: { a1: "数据" }
@@ -315,10 +311,10 @@ describe("b2-artifact-acceptance Office 分支 available 编排（office 桩单�
 
 /**
  * 真实链路产物装配：beginRun(full 快照) → 写/删文件 → finishRun —— 产物由前后快照
- * 差分 finalizeFileChanges 在收尾时装配（beginRun 不接受 artifacts 入参，新旧两侧
- * 一致，产物只在收尾物化）。每用例独立子工作区：快照差分与 mtime 扫描只落在本轮
- * 窗口内，避免共享目录串扰（snapshotChanges 优先于 recent-mtime，同 hash 触碰文件
- * 会被 finalizeFileChanges 的疑似变更核对剔除）。
+ * 差分 finalizeFileChanges 在收尾时装配（beginRun 不接受 artifacts 入参，产物只在
+ * 收尾物化）。每用例独立子工作区：快照差分与 mtime 扫描只落在本轮窗口内，避免共享
+ * 目录串扰（snapshotChanges 优先于 recent-mtime，同 hash 触碰文件会被
+ * finalizeFileChanges 的疑似变更核对剔除）。
  */
 let wsSeq = 0;
 function makeRunWithArtifact(name: string, content: Buffer | string, mode: "added" | "deleted" = "added") {
@@ -437,20 +433,17 @@ describe("b2-artifact-management publishArtifact 校验分支族（成功写台�
 
 describe("b2-artifact-management rollbackPublishedArtifact 校验分支", () => {
   // 域函数不校验 confirm（400 "rollback requires confirm=true" 在 op:artifacts:rollback
-  // 路由层，server L3198-3203，S3-2 编排测试覆盖）；publication 不存在时 workspace 为空串，
-  // withWriteLock→validateTarget 先抛 WORKSPACE_INVALID → catch 409，unlock 的 404 分支
-  // 需先有台账记录（PUBLISHED_FILE 无注入面，见文件头未做段）——以新旧 parity 收口。
-  test("publication 不存在 + 空 workspace → withWriteLock 先拒 409，新旧一致", () => {
+  // 路由层）；publication 不存在时 workspace 为空串，withWriteLock→validateTarget
+  // 先抛 WORKSPACE_INVALID → catch 409，unlock 的 404 分支需先有台账记录
+  // （PUBLISHED_FILE 无注入面，见文件头未做段）。
+  test("publication 不存在 + 空 workspace → withWriteLock 先拒 409", () => {
     const mine = mgmt.rollbackPublishedArtifact(`publication_${"0".repeat(8)}_${Date.now()}`, { operator: "测试员" });
-    const theirs = legacyMgmt.rollbackPublishedArtifact(`publication_${"0".repeat(8)}_${Date.now()}`, { operator: "测试员" });
     expect(mine).toEqual({ ok: false, status: 409, error: "工作区不存在或不是文件夹" });
-    expect(mine).toEqual(theirs);
   });
 
   test("confirm 参数被域函数忽略（路由层职责），行为与 operator-only 一致", () => {
     const mine = mgmt.rollbackPublishedArtifact("pub_x", { operator: "测试员" });
-    const theirs = legacyMgmt.rollbackPublishedArtifact("pub_x", { operator: "测试员" });
     expect((mine as any).status).toBe(409);
-    expect(mine).toEqual(theirs);
+    expect((mine as any).error).toBe("工作区不存在或不是文件夹");
   });
 });
