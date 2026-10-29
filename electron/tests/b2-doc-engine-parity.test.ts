@@ -5,9 +5,10 @@
  * xlsx 交 CLI）/ xlsx·pptx view 三模式（pptx 含表格文本抽出）/ 结构化生成器
  * buildPptxFromSlides·buildDocxFromBlocks 生成+原生读回 / 损坏 docx 交回 CLI。
  *
- * 真实 IO 双跑（蓝本 scripts/doc-engine-test.mjs）：legacy 物理路径动态 import
- * server/doc-engine.mjs、modern 静态 import src/main/backend/doc-engine.ts，双侧各自
- * tmp 工作区同套断言。doc-engine 无模块加载期 env 锚点依赖（OAW_OFFICE_NATIVE/
+ * 真实 IO（蓝本 scripts/doc-engine-test.mjs）：R6-7a 对拍退役改写——legacy 物理路径
+ * 动态 import server/doc-engine.mjs 随 server/ 退役删除（等价性已在 B2-13 批对拍
+ * 验收冻结），仅保留 modern 静态 import src/main/backend/doc-engine.ts 的同一套
+ * 绝对断言。doc-engine 无模块加载期 env 锚点依赖（OAW_OFFICE_NATIVE/
  * OAW_DOC_ENGINE_DEBUG 均运行时读），免 stubEnv。fixture 用 docx/xlsx/pptxgenjs 纯 JS
  * 生成（electron 侧 docx/xlsx 为自身依赖，pptxgenjs 变量间接动态 import 从根
  * node_modules 解析）。蓝本的 runOfficecli 路由用例属 office 域接线，不在本域。
@@ -17,23 +18,20 @@ import { describe, expect, it, beforeAll, afterAll } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import * as modern from "../src/main/backend/doc-engine";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const PROJECT_ROOT = path.resolve(HERE, "../..");
 
-const IMPLS = ["legacy", "modern"] as const;
+const IMPLS = ["modern"] as const;
 type ImplKind = (typeof IMPLS)[number];
 
-describe.each(IMPLS)("doc-engine parity: %s", (kind: ImplKind) => {
+describe.each(IMPLS)("doc-engine: %s", (kind: ImplKind) => {
   const ws = fs.mkdtempSync(path.join(os.tmpdir(), `b2de-${kind}-`));
   let impl: any;
 
   beforeAll(async () => {
-    impl = kind === "legacy"
-      ? await import(pathToFileURL(path.join(PROJECT_ROOT, "server", "doc-engine.mjs")).href)
-      : modern;
+    impl = modern;
     // ---- fixtures（与蓝本同构）----
     const { Document, Packer, Paragraph, HeadingLevel, Table, TableRow, TableCell, WidthType, TextRun } = await import("docx");
     fs.writeFileSync(path.join(ws, "规划.docx"), await Packer.toBuffer(new Document({ sections: [{ children: [

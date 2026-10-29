@@ -1,46 +1,22 @@
 /**
- * B2-6 file-permission-error 域对拍：normalizeWorkspaceWriteError / normalizeOfficeFailure /
+ * B2-6 file-permission-error 域：normalizeWorkspaceWriteError / normalizeOfficeFailure /
  * workspaceWriteHttpStatus。
  *
+ * R6-7a 对拍退役改写：旧侧 server/file-permission-error.mjs 物理路径动态 import
+ * （pathToFileURL）随 server/ 退役删除（等价性已在 B2-6 批对拍验收冻结），仅保留
+ * modern 静态 import src/main/backend/file-permission-error.ts 的同一套绝对断言。
  * 零依赖纯函数（无模块级状态、无 env 锚点、无文件 IO）→ 免 stubEnv/tmp 隔离（B2-5
- * 简化形态）：旧侧物理路径动态 import（pathToFileURL，与生产过渡桥同一加载形态）、
- * 新侧静态 import TS 模块；逐用例同入参双侧执行（输入对象只读、双侧共享安全），Error
- * 输出逐字段比对（message/code/cause/args——toEqual 对 Error 自定义属性语义有歧义，
- * 不做整对象比对），值输出直接 toEqual；并附绝对断言锚定语义（防双侧同漂）。
+ * 简化形态）。
  */
 import { describe, expect, it } from "vitest";
-import path from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
 import * as modern from "../src/main/backend/file-permission-error";
 
-const HERE = path.dirname(fileURLToPath(import.meta.url));
-const PROJECT_ROOT = path.resolve(HERE, "../..");
-
-const legacy = (await import(
-  pathToFileURL(path.join(PROJECT_ROOT, "server", "file-permission-error.mjs")).href
-)) as unknown as typeof modern;
-
-/** Error 输出逐字段比对（旧新两侧）。 */
-function compareErrors(oldOut: Error, newOut: Error): void {
-  expect(newOut instanceof Error).toBe(true);
-  expect(oldOut instanceof Error).toBe(true);
-  expect(newOut.message).toBe(oldOut.message);
-  expect((newOut as any).code).toBe((oldOut as any).code);
-  expect((newOut as any).cause).toBe((oldOut as any).cause);
-  expect((newOut as any).args).toEqual((oldOut as any).args);
-}
-
-describe("B2-6 对拍：normalizeWorkspaceWriteError", () => {
-  /** 双侧同入参执行 + 逐字段比对，返回新侧结果。 */
+describe("B2-6 file-permission-error：normalizeWorkspaceWriteError", () => {
+  /** 同入参单侧执行，返回结果。 */
   function both(error: any, fallbackMessage?: string) {
-    const oldOut = fallbackMessage === undefined
-      ? legacy.normalizeWorkspaceWriteError(error)
-      : legacy.normalizeWorkspaceWriteError(error, fallbackMessage);
-    const newOut = fallbackMessage === undefined
+    return (fallbackMessage === undefined
       ? modern.normalizeWorkspaceWriteError(error)
-      : modern.normalizeWorkspaceWriteError(error, fallbackMessage);
-    compareErrors(oldOut, newOut);
-    return newOut as Error & { code?: string; cause?: string };
+      : modern.normalizeWorkspaceWriteError(error, fallbackMessage)) as Error & { code?: string; cause?: string };
   }
 
   it("EBUSY code（含小写归一）→ OFFICE_DOCUMENT_LOCKED + cause + 400 截断", () => {
@@ -89,10 +65,7 @@ describe("B2-6 对拍：normalizeWorkspaceWriteError", () => {
 
   it("无码无匹配的 Error 原样返回（同一引用）", () => {
     const input = new Error("普通业务失败");
-    const oldOut = legacy.normalizeWorkspaceWriteError(input);
-    const newOut = modern.normalizeWorkspaceWriteError(input);
-    expect(oldOut).toBe(input);
-    expect(newOut).toBe(input);
+    expect(modern.normalizeWorkspaceWriteError(input)).toBe(input);
   });
 
   it("字符串/对象 error → WORKSPACE_FILE_OPERATION_FAILED 包装；fallbackMessage 默认与自定义", () => {
@@ -105,13 +78,10 @@ describe("B2-6 对拍：normalizeWorkspaceWriteError", () => {
   });
 });
 
-describe("B2-6 对拍：normalizeOfficeFailure", () => {
-  /** 双侧同入参执行 + 逐字段比对，返回新侧结果。 */
+describe("B2-6 file-permission-error：normalizeOfficeFailure", () => {
+  /** 同入参单侧执行，返回结果。 */
   function both(error?: any, args?: any[], result?: any) {
-    const oldOut = legacy.normalizeOfficeFailure(error, args, result);
-    const newOut = modern.normalizeOfficeFailure(error, args, result);
-    compareErrors(oldOut, newOut);
-    return newOut as Error & { code?: string; args?: string[] };
+    return modern.normalizeOfficeFailure(error, args, result) as Error & { code?: string; args?: string[] };
   }
 
   it("多源消息聚合去重 + OFFICECLI_FAILED 兜底 + args 透传", () => {
@@ -141,10 +111,7 @@ describe("B2-6 对拍：normalizeOfficeFailure", () => {
   it("error.code 优先透传：非匹配码时返回原 error（同一引用）", () => {
     const input = new Error("自定义域失败") as Error & { code?: string };
     input.code = "CUSTOM_CODE";
-    const oldOut = legacy.normalizeOfficeFailure(input, []);
-    const newOut = modern.normalizeOfficeFailure(input, []);
-    expect(oldOut).toBe(input);
-    expect(newOut).toBe(input);
+    expect(modern.normalizeOfficeFailure(input, [])).toBe(input);
   });
 
   it("args 截断 8；空输入兜底 OFFICECLI_FAILED；result.json.results 数组 32 条上限", () => {
@@ -169,8 +136,8 @@ describe("B2-6 对拍：normalizeOfficeFailure", () => {
   });
 });
 
-describe("B2-6 对拍：workspaceWriteHttpStatus", () => {
-  it("全码映射族 + 兜底 500（双侧一致 + 绝对断言）", () => {
+describe("B2-6 file-permission-error：workspaceWriteHttpStatus", () => {
+  it("全码映射族 + 兜底 500（绝对断言）", () => {
     const cases: Array<[string | null | undefined, number]> = [
       ["WRITE_CONFLICT", 409],
       ["OFFICE_DOCUMENT_LOCKED", 409],
@@ -187,7 +154,6 @@ describe("B2-6 对拍：workspaceWriteHttpStatus", () => {
     ];
     for (const [code, expected] of cases) {
       const input = code === null || code === undefined ? code : { code };
-      expect(modern.workspaceWriteHttpStatus(input)).toBe(legacy.workspaceWriteHttpStatus(input));
       expect(modern.workspaceWriteHttpStatus(input)).toBe(expected);
     }
   });

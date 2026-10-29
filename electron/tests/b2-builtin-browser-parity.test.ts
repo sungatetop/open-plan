@@ -1,15 +1,19 @@
 /**
- * B2-16 builtin-browser 域对拍（legacy server/builtin-browser.mjs vs modern src/main/backend/builtin-browser.ts）。
+ * B2-16 builtin-browser 域（modern src/main/backend/builtin-browser.ts）。
  *
- * 对拍形态②（B2-3/B2-9/B2-14/B2-15 stubEnv 模式）：OAW_BROWSER_PROFILE 为模块加载期锚点
- * （PROFILE_DIR 常量），双侧各自 mkdtmp 锚定 + beforeAll 设 env 后动态 import；
- * modern 侧 vi.resetModules() 重载 TS 依赖树，legacy 侧物理路径 import 一次缓存。
+ * R6-7a 对拍退役改写：旧侧 server/builtin-browser.mjs 物理路径动态 import
+ * （pathToFileURL）随 server/ 退役删除（等价性已在 B2-16 批对拍验收冻结），仅保留
+ * modern 侧同一套绝对断言。
+ *
+ * stubEnv 模式（B2-3/B2-9/B2-14/B2-15 先例）：OAW_BROWSER_PROFILE 为模块加载期锚点
+ * （PROFILE_DIR 常量），mkdtmp 锚定 + beforeAll 设 env 后 vi.resetModules() 重载
+ * TS 依赖树动态 import。
  *
  * 覆盖面（全部经导出面驱动）：
- *   - browserStoreInfo：5 键集 + PROFILE_DIR 双侧各自锚定 tmpdir + shotDir 同锚真实仓库 + headless 默认 true；
+ *   - browserStoreInfo：5 键集 + PROFILE_DIR 锚定 tmpdir + shotDir 同锚真实仓库 + headless 默认 true；
  *   - 纯函数族：normalizeBrowserOwnership（lease 过期自动交还/owner 归一）、
  *     browserAgentWriteBlocked（放行 null/阻塞 retryAfterMs）、browserSessionKey（复合键剥离）、
- *     BROWSER_USER_ACTION_SET 集合一致；
+ *     BROWSER_USER_ACTION_SET 集合；
  *   - verifyCdpOwnership fs 分支：无效端口/无 marker 无 pid 拒绝/marker 一致放行/marker 端口不一致拒绝
  *     （tmpdir 写 DevToolsActivePort，全程不触真实浏览器进程）；
  *   - browserShotFile：非法名 INVALID_SHOT_NAME（穿越/扩展名）/ SHOT_NOT_FOUND / 合法文件返回绝对路径
@@ -21,31 +25,28 @@
  *
  * 口径（安全/进程边界决定，同 B2-15）：CdpConnection WebSocket 全链、BrowserSession 实例方法
  * （start/launch/screencast/导航/点击/截图）、killBrowserProcessesForProfile 正常路径、
- * allocatePort/findBrowserExecutable 内部实现均不在单元对拍面——需要真实 Edge/Chrome 进程与
+ * allocatePort/findBrowserExecutable 内部实现均不在单元测试面——需要真实 Edge/Chrome 进程与
  * CDP 端点；browserOpen 合法 URL 分支会真实拉起浏览器，测试全程禁止触发。
  * assertUrlAllowed/normalizeNavUrl/sandboxArgs/readPortFile 等未导出内部函数经导出面间接覆盖。
  */
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type * as BrowserModule from "../src/main/backend/builtin-browser";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-// tests → electron → 项目根（旧 server 锚定真实仓库，与生产 sidecar 同一加载形态）
+// tests → electron → 项目根（shotDir 真实仓库运行时目录锚定）
 const PROJECT_ROOT = path.resolve(HERE, "../..");
 
-const LEGACY_PROFILE = fs.mkdtempSync(path.join(os.tmpdir(), "b2-browser-legacy-"));
 const MODERN_PROFILE = fs.mkdtempSync(path.join(os.tmpdir(), "b2-browser-modern-"));
 
 type BrowserApi = typeof BrowserModule;
-const legacyHolder: { mod: BrowserApi | null } = { mod: null };
 const modernHolder: { mod: BrowserApi | null } = { mod: null };
 
 const IMPLS = [
-  { label: "legacy", dir: LEGACY_PROFILE, holder: legacyHolder, modern: false },
-  { label: "modern", dir: MODERN_PROFILE, holder: modernHolder, modern: true },
+  { label: "modern", dir: MODERN_PROFILE, holder: modernHolder },
 ] as const;
 
 const REAL_SHOT_DIR = path.join(PROJECT_ROOT, ".oaw", "browser-shots");
@@ -53,17 +54,13 @@ const USER_ACTIONS = [
   "click", "pointer", "wheel", "type", "key", "scroll", "navigate", "back", "reload", "tab_new", "tab_switch", "tab_close",
 ];
 
-describe.each(IMPLS)("builtin-browser 对拍（$label）", ({ dir, holder, modern }) => {
+describe.each(IMPLS)("builtin-browser（$label）", ({ dir, holder }) => {
   const m = () => holder.mod!;
 
   beforeAll(async () => {
     process.env.OAW_BROWSER_PROFILE = dir;
-    if (modern) {
-      vi.resetModules();
-      holder.mod = (await import("../src/main/backend/builtin-browser")) as BrowserApi;
-    } else {
-      holder.mod = (await import(pathToFileURL(path.join(PROJECT_ROOT, "server", "builtin-browser.mjs")).href)) as BrowserApi;
-    }
+    vi.resetModules();
+    holder.mod = (await import("../src/main/backend/builtin-browser")) as BrowserApi;
   });
 
   it("browserStoreInfo：5 键集 + PROFILE_DIR 锚定本侧 tmpdir + shotDir 同锚真实仓库 + headless 默认开", () => {
@@ -110,7 +107,7 @@ describe.each(IMPLS)("builtin-browser 对拍（$label）", ({ dir, holder, moder
   });
 
   it("verifyCdpOwnership：无效端口拒绝 / 无 marker 无 pid 拒绝 / marker 一致放行 / marker 端口不一致拒绝", async () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), `b2-browser-cdp-${modern ? "modern" : "legacy"}-`));
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "b2-browser-cdp-modern-"));
     try {
       expect(await m().verifyCdpOwnership({ port: 0, pid: 0, profileDir: tmp })).toMatchObject({ ok: false, reason: "端口记录无效" });
       expect(await m().verifyCdpOwnership({ port: Number.NaN, pid: 0, profileDir: tmp })).toMatchObject({ ok: false, reason: "端口记录无效" });
@@ -145,7 +142,7 @@ describe.each(IMPLS)("builtin-browser 对拍（$label）", ({ dir, holder, moder
     } catch (error) {
       expect((error as any).code).toBe("SHOT_NOT_FOUND");
     }
-    const name = `shot-parity-${modern ? "modern" : "legacy"}-${Date.now()}.jpg`;
+    const name = `shot-parity-modern-${Date.now()}.jpg`;
     const written = path.join(REAL_SHOT_DIR, name);
     try {
       fs.writeFileSync(written, "parity");
@@ -202,19 +199,17 @@ describe.each(IMPLS)("builtin-browser 对拍（$label）", ({ dir, holder, moder
   });
 });
 
-describe("builtin-browser 对拍：双侧常量与键集一致", () => {
-  it("BROWSER_USER_ACTION_SET 双侧集合一致", () => {
-    expect([...legacyHolder.mod!.BROWSER_USER_ACTION_SET].sort()).toEqual([...modernHolder.mod!.BROWSER_USER_ACTION_SET].sort());
+describe("builtin-browser：modern 侧常量与键集锚点", () => {
+  it("BROWSER_USER_ACTION_SET：12 项集合锚点", () => {
+    expect([...modernHolder.mod!.BROWSER_USER_ACTION_SET].sort()).toEqual([...USER_ACTIONS].sort());
   });
-  it("browserStoreInfo 双侧键集一致（executable 探测环境相关，只比键集与 headless）", () => {
-    const legacy = legacyHolder.mod!.browserStoreInfo();
-    const modern = modernHolder.mod!.browserStoreInfo();
-    expect(Object.keys(legacy).sort()).toEqual(Object.keys(modern).sort());
-    expect(legacy.headless).toBe(modern.headless);
+  it("browserStoreInfo 键集锚点（executable 探测环境相关，只比键集与 headless）", () => {
+    const info = modernHolder.mod!.browserStoreInfo();
+    expect(Object.keys(info).sort()).toEqual(["executable", "headless", "profileDir", "sessions", "shotDir"]);
+    expect(info.headless).toBe(true);
   });
 });
 
 afterAll(() => {
-  fs.rmSync(LEGACY_PROFILE, { recursive: true, force: true });
   fs.rmSync(MODERN_PROFILE, { recursive: true, force: true });
 });

@@ -1,15 +1,15 @@
 /**
- * B2-14 mcp-management 域对拍：CONFIG_FILE 模块加载期锚定 APP_DATA_DIR（OAW_DATA_DIR 链）
- * → B2-3 stubEnv 分次双侧动态 import（legacy 物理路径；modern vi.resetModules 重载 TS
- * 依赖树后动态 import——重载使 feature-flags 重读 env）。真实 IO：双侧各自 tmp DATA_DIR
- * （CONFIG_FILE=DATA_DIR/集成/mcp-servers.json），CRUD/validateServer 全分支/publicServer
- * 脱敏形状/cachedMcpTools 上限/直写配置 fixture 经 saveMcpServer 间接驱动。
+ * B2-14 mcp-management 域：CONFIG_FILE 模块加载期锚定 APP_DATA_DIR（OAW_DATA_DIR 链）
+ * → B2-3 stubEnv 分次动态 import（R6-7a 对拍退役改写：legacy 物理路径动态 import 与
+ * 源码文本锚点随 server/ 退役删除，等价性已在 B2-14 批对拍验收冻结；modern 侧
+ * vi.resetModules 重载 TS 依赖树后动态 import——重载使 feature-flags 重读 env）。
+ * 真实 IO：tmp DATA_DIR（CONFIG_FILE=DATA_DIR/集成/mcp-servers.json），CRUD/validateServer
+ * 全分支/publicServer 脱敏形状/cachedMcpTools 上限/直写配置 fixture 经 saveMcpServer 间接驱动。
  *
  * 限制与口径：
  *   - RUNTIME_FLAGS.amapMcpBridge 模块加载期固化 → flag 开启分支无法在同一 import 副本内
  *     翻转：flag-off describe.each 先跑（凭据 query 拒绝），flag-on describe 单列 modern 侧
- *     真实行为（resetModules 重载读 on + 独立 tmp DATA_DIR2）；legacy 侧沿
- *     scripts/amap-mcp-bridge-test.mjs 既有源码断言惯例（白名单/双条件/userinfo 拒绝）。
+ *     真实行为（resetModules 重载读 on + 独立 tmp DATA_DIR2）。
  *   - MCP SDK 连接成功路径需真实 MCP server，不在本域对拍面（SDK 行为非本域逻辑）；
  *     testMcpServer 失败路径用「进程立即退出」命令（cmd /c exit 1）驱动连接拒绝。
  *   - makeId 随机 hex/updatedAt/lastTest.at 非确定性 → 断言正则与存在性，不逐字段深比较。
@@ -18,23 +18,21 @@ import { describe, expect, it, beforeAll, afterAll, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const PROJECT_ROOT = path.resolve(HERE, "../..");
 
-const IMPLS = ["legacy", "modern"] as const;
+const IMPLS = ["modern"] as const;
 type ImplKind = (typeof IMPLS)[number];
 
-const LEGACY_DATA = fs.mkdtempSync(path.join(os.tmpdir(), "b2mcp-lg-"));
 const MODERN_DATA = fs.mkdtempSync(path.join(os.tmpdir(), "b2mcp-md-"));
 const MODERN_DATA2 = fs.mkdtempSync(path.join(os.tmpdir(), "b2mcp-md2-"));
-const DATA_BY_KIND: Record<ImplKind, string> = { legacy: LEGACY_DATA, modern: MODERN_DATA };
+const DATA_BY_KIND: Record<ImplKind, string> = { modern: MODERN_DATA };
 
 afterAll(() => {
   delete process.env.OAW_DATA_DIR;
   delete process.env.OAW_AMAP_MCP_BRIDGE;
-  for (const dir of [LEGACY_DATA, MODERN_DATA, MODERN_DATA2]) {
+  for (const dir of [MODERN_DATA, MODERN_DATA2]) {
     try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
   }
 });
@@ -47,17 +45,15 @@ function seedConfig(dataDir: string, servers: any[]): void {
   fs.writeFileSync(configFileOf(dataDir), JSON.stringify({ version: 1, servers }));
 }
 
-describe.each(IMPLS)("mcp-management parity (flag off): %s", (kind: ImplKind) => {
+describe.each(IMPLS)("mcp-management (flag off): %s", (kind: ImplKind) => {
   const dataDir = DATA_BY_KIND[kind];
   let impl: any;
 
   beforeAll(async () => {
     delete process.env.OAW_AMAP_MCP_BRIDGE;
     process.env.OAW_DATA_DIR = dataDir;
-    if (kind === "modern") vi.resetModules();
-    impl = kind === "legacy"
-      ? await import(pathToFileURL(path.join(PROJECT_ROOT, "server", "mcp-management.mjs")).href)
-      : await import("../src/main/backend/mcp-management");
+    vi.resetModules();
+    impl = await import("../src/main/backend/mcp-management");
   });
 
   it("空配置 listMcpServers 返回空数组", () => {
@@ -195,12 +191,5 @@ describe("mcp-management flag on（amap 桥，modern 侧真实行为）", () => 
   it("非白名单主机 flag 开启仍拒绝；userinfo 任何情况拒绝", () => {
     expect(() => impl.saveMcpServer({ name: "Evil", transport: "http", endpoint: "https://evil.example/mcp?key=X" })).toThrow(/凭据写在 URL/);
     expect(() => impl.saveMcpServer({ name: "U", transport: "http", endpoint: "https://u:p@mcp.amap.com/mcp" })).toThrow(/凭据写在 URL/);
-  });
-
-  it("legacy 侧 flag 管道源码断言（scripts/amap-mcp-bridge-test.mjs 既有惯例）", () => {
-    const src = fs.readFileSync(path.join(PROJECT_ROOT, "server", "mcp-management.mjs"), "utf8");
-    expect(src).toMatch(/KNOWN_QUERY_KEY_HOSTS = new Set\(\["mcp\.amap\.com"\]\)/);
-    expect(src).toMatch(/RUNTIME_FLAGS\.amapMcpBridge && knownVendorQueryKey/);
-    expect(src).toMatch(/if \(url\.username \|\| url\.password\) throw/);
   });
 });
