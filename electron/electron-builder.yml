@@ -5,4 +5,6 @@ directories:
 files:
   - out/**
   - package.json
-# R6 收口前不对外分发：完整打包需捆绑仓库 server/ 与 client/dist（见重构方案 §6）
+# R6-7b：client/ + server/ 本体已删除（根目录仅剩 electron/），运行时自有静态资产在
+# electron/resources/（glyphs/xinchang-data/pi-extensions/pi-builtin-providers.json）——
+# resources 入包与 asar/files 策略随 R6-8 收口。

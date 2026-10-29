@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 /**
- * F5-6 map 面板层对拍（client/src/components/LayerPanel.jsx + VisualPanel.jsx → TS 三面）。
+ * F5-6 map 面板层对拍（旧客户端 LayerPanel.jsx + VisualPanel.jsx → TS 三面）。
  *
  * 对拍口径（引擎/通道全桩：mapGetLayer / mapVisual 族 / mapReport / flag / notify 打桩捕获调用）：
  *   A. LayerPanel 分组与图层行面：cfg.groups + cfg.layers + style.layers 顺序分组

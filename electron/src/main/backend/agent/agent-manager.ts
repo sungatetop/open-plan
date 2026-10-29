@@ -60,6 +60,7 @@ import { buildCreateTools, type CreateToolsWorld } from "./create-tools";
 import { buildSubagentTools, type SubagentToolsWorld } from "./subagent-tools";
 import { PI_COMPACTION_POLICY } from "./pi-runtime";
 import { PROJECT_DIR, AGENT_DIR } from "../workspace";
+import { RESOURCES_DIR } from "../workspace-paths";
 import path from "node:path";
 import fs from "node:fs";
 import crypto from "node:crypto";
@@ -475,7 +476,8 @@ export class AgentManager extends EventEmitter {
     // U2+U6：把关扩展（工具级拦截 + 压缩失败可见化）。flag off（默认）时不加载，
     // 执行路径与历史基线一致；开启后扩展在 tool_call 阶段做单工具级硬拦截。
     const builtInExtensionPaths = FLAGS().piToolGateExtension
-      ? [path.join(PROJECT_DIR, "server", "pi-extensions")]
+      // R6-7b：把关扩展随 server/ 退役迁 electron/resources/pi-extensions（RESOURCES_DIR 统一锚点）
+      ? [path.join(RESOURCES_DIR, "pi-extensions")]
       : [];
     const loader = new tools.DefaultResourceLoader({
       cwd: workspace,

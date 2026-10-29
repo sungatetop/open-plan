@@ -14,18 +14,19 @@
  *   id / title / budget{maxTurns,maxToolCalls,maxWallMs} / tools[] / preflight[]
  *   / stages[{id,title,approval?}] / artifacts[{id,title,kind,required}]
  *
- * 路径锚定：旧侧 目录=__dirname(server/)/工作流——TS 侧 PROJECT_DIR 直绑
- * workspace-paths（仓库根锚点，S3-10 tpl 先例），<项目根>/server/工作流 数学等价；
- * 目录缺失时懒加载返回空表（基线仓库不含该目录，与旧侧行为一致）。
- * 声明文件为运行时数据（*.mjs 动态导入），不属转录面，新旧侧加载同一物理文件。
- * 当前消费面：旧 index.mjs L2541/L2566 动态 import，随流量切换批退役。
+ * 路径锚定：旧侧 目录=__dirname(server/)/工作流；server/ 随 R6-7b 退役，锚点切
+ * RESOURCES_DIR/工作流（懒加载语义不变：目录缺失时返回空表——基线仓库不含该目录，
+ * 与旧侧行为一致；server/workflows/*.mjs 6 份声明系历史改名后的孤儿文件，两侧锚点
+ * 均不指涉，随本体删除，git 历史留档）。
+ * 声明文件为运行时数据（*.mjs 动态导入），不属转录面。
+ * 当前消费面：桌面端 IPC op:workflow 族（f6-panels-direct 覆盖）。
  */
 import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { PROJECT_DIR } from "./workspace-paths";
+import { RESOURCES_DIR } from "./workspace-paths";
 
-const 目录 = path.join(PROJECT_DIR, "server", "工作流");
+const 目录 = path.join(RESOURCES_DIR, "工作流");
 const 编号形态 = /^[a-z][a-z0-9-]*$/;
 
 /** 已知的 preflight 检查器名称（与 workflow-validation.ts 一一对应）。 */

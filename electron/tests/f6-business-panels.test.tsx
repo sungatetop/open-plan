@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 /**
- * F6-1 外围·业务面板五组件前端组装层对拍（client/src/components 逐行等价 TS 化）。
+ * F6-1 外围·业务面板五组件前端组装层对拍（旧客户端组件逐行等价 TS 化）。
  *
  * 对拍口径（client-api 函数族全桩 + Feedback askConfirm 桩 + 子件 MarkdownBody/
  * DocxViewer 轻桩；jsdom 挂载，act 驱动）：

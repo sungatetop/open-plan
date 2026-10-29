@@ -6,7 +6,7 @@
  * 职责只有两件事，都不碰凭据：
  *   1. 拉取 https://models.dev/api.json 并归一化为「Pi 内置供应商快照」同形结构，
  *      供 provider-catalog.ts 的合并层与现有导入管线直接消费；
- *   2. 把最近一次成功拉取的结果落盘缓存（server/models-dev-目录.json），
+ *   2. 把最近一次成功拉取的结果落盘缓存（AGENT_DIR/models-dev-目录.json），
  *      离线 / 拉取失败时目录照常用缓存，不让设置界面 500。
  *
  * 归一化要点：
@@ -16,9 +16,9 @@
  *     缺失一律置 null，绝不让目录渲染或导入因单个字段缺失而失败；
  *   - OAuth 元数据 models.dev 不携带，由合并层从 Pi 快照继承，这里不伪造。
  *
- * 路径锚定：旧侧 __dirname（server/ 源码目录）上跳一级得项目根，缓存文件固定为
- * <项目根>/server/models-dev-目录.json——TS 侧 PROJECT_DIR 直绑 workspace-paths
- * （仓库根锚点，B2 收编时按打包产物统一校正层级），路径拼接与旧侧数学等价。
+ * 路径锚定：旧侧缓存固定为 <项目根>/server/models-dev-目录.json，随 R6-7b server/
+ * 本体删除迁移到 AGENT_DIR（运行时用户数据目录，与供应商配置同域，写入前确保目录
+ * 存在）；旧缓存不迁移，丢失后按离线处理、下次成功拉取重建。
  * 依赖绑定：createPiNetworkAdapter 静态直绑 TS pi-network-proxy（B6-1 先例），
  * AGENT_DIR/loadNetworkSettings 静态直绑 TS pi-config-management（B6-3）。
  * 当前消费面：provider-catalog.ts（同批，静态直绑）；旧侧 server/index.mjs L62
@@ -26,11 +26,11 @@
  * normalize/缓存读写/状态判定，fetch 行为由集成阶段覆盖）。
  */
 import fs from "node:fs";
+import path from "node:path";
 import { AGENT_DIR, loadNetworkSettings } from "./agent/pi-config-management";
 import { createPiNetworkAdapter } from "./agent/pi-network-proxy";
-import { PROJECT_DIR } from "./workspace-paths";
 
-const CACHE_FILE = `${PROJECT_DIR}/server/models-dev-目录.json`;
+const CACHE_FILE = path.join(AGENT_DIR, "models-dev-目录.json");
 const MODELS_DEV_URL = "https://models.dev/api.json";
 
 /** models.dev 缓存视为「过期」的阈值（超过只影响状态展示，不影响可用性）。 */
@@ -159,6 +159,7 @@ export function readModelsDevCache(): any {
 
 /** 落盘缓存：先写临时文件再 rename，避免半写导致下次启动解析失败。 */
 export function writeModelsDevCache(data: any): void {
+  fs.mkdirSync(path.dirname(CACHE_FILE), { recursive: true });
   const tmp = `${CACHE_FILE}.tmp`;
   fs.writeFileSync(tmp, JSON.stringify(data));
   fs.renameSync(tmp, CACHE_FILE);

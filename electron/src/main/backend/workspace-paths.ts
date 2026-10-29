@@ -7,3 +7,8 @@ import { fileURLToPath } from "node:url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export const PROJECT_DIR = path.resolve(__dirname, "..", "..", "..", "..");
+
+// 桌面端自有静态资产根（R6-7b：glyphs 字形 / xinchang-data 公交数据 / pi-extensions 扩展 /
+// pi-builtin-providers.json 供应商目录），替代退役 server/ 内的旧锚点；打包态随 R6-8
+// resources 入包与本文件 PROJECT_DIR 层级重校一并在唯一锚点收口。
+export const RESOURCES_DIR = path.join(PROJECT_DIR, "electron", "resources");

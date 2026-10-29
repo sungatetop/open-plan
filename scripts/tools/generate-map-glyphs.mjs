@@ -4,8 +4,8 @@
  *
  * 背景：底图 glyphs 原先指向 https://glyphs.openfreestyle.com/...，该域名已不可解析，
  * 15 个标注图层（道路注记、行政区名）因此没有字形可用。改为自托管：
- *   源字体 → MapLibre 兼容的 SDF PBF 分片 → client/public/glyphs/<fontstack>/<start>-<end>.pbf
- * 运行时由静态服务按 /glyphs/{fontstack}/{range}.pbf 提供，不依赖外网。
+ *   源字体 → MapLibre 兼容的 SDF PBF 分片 → electron/resources/glyphs/<fontstack>/<start>-<end>.pbf
+ * 运行时由 oaw-data://glyphs 协议按 {fontstack}/{range}.pbf 提供（R6-2 资产自持），不依赖外网。
  *
  * 用法：
  *   node scripts/tools/generate-map-glyphs.mjs                # 默认生成常用中文 + 拉丁区间
@@ -21,7 +21,7 @@ import { fileURLToPath } from "node:url";
 import { generateGlyphPbfFiles } from "maplibre-font-maker-node";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const OUT_ROOT = path.join(ROOT, "client", "public", "glyphs");
+const OUT_ROOT = path.join(ROOT, "electron", "resources", "glyphs");
 // 与 style.json 里的 text-font 一致；字体族名决定 URL 里的 {fontstack}
 const FONTSTACK = "Noto Sans Regular";
 

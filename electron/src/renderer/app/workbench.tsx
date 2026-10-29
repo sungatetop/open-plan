@@ -30,7 +30,7 @@ import { isMotionReduced, useAppearance } from "../lib/ui-appearance";
 import { loadUIState, saveUIState } from "../lib/persist-ui";
 import { initRuntimeFlags, flag, flagsReady } from "../lib/feature-flags";
 import { createGlobalEventFeed, createIpcGlobalEventTransport, type GlobalEventFeedRefs } from "../features/chat/global-events-feed";
-import "../../../../client/src/styles.css";
+import "./styles.css";
 import {
   listFiles,
   listModels,

@@ -17,10 +17,10 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(HERE, "../..");
 
 beforeAll(() => {
-  // 锚点 sanity：真实数据在场（三份源文件同一物理目录）
-  expect(fs.existsSync(path.join(PROJECT_ROOT, "server/xinchang-data/routes.geojson"))).toBe(true);
-  expect(fs.existsSync(path.join(PROJECT_ROOT, "server/xinchang-data/stations.json"))).toBe(true);
-  expect(fs.existsSync(path.join(PROJECT_ROOT, "server/xinchang-data/od-flow.json"))).toBe(true);
+  // 锚点 sanity：真实数据在场（三份源文件同一物理目录；R6-7b 起 electron/resources/xinchang-data）
+  expect(fs.existsSync(path.join(PROJECT_ROOT, "electron/resources/xinchang-data/routes.geojson"))).toBe(true);
+  expect(fs.existsSync(path.join(PROJECT_ROOT, "electron/resources/xinchang-data/stations.json"))).toBe(true);
+  expect(fs.existsSync(path.join(PROJECT_ROOT, "electron/resources/xinchang-data/od-flow.json"))).toBe(true);
 });
 
 describe("S3-9 m3-xinchang 域", () => {

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 从 Pi SDK 的内置目录里提取"全部供应商 + 全部模型能力"，固化成 server/pi-builtin-providers.json。
+ * 从 Pi SDK 的内置目录里提取"全部供应商 + 全部模型能力"，固化成 electron/resources/pi-builtin-providers.json。
  *
  * 为什么需要：Pi 内置 30+ 供应商（含 baseUrl / 协议 / 模型 / 上下文窗口 / 是否支持图片），
  * 而工作台此前只显示"已配置"的那几个，其余要用户手填 Base URL 并逐个配模型能力。
@@ -18,7 +18,7 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const BUNDLE_DIR = path.join(ROOT, "node_modules", "@earendil-works", "pi-coding-agent", "dist", "bundle", "chunks");
-const OUT_FILE = path.join(ROOT, "server", "pi-builtin-providers.json");
+const OUT_FILE = path.join(ROOT, "electron", "resources", "pi-builtin-providers.json");
 
 function findBundleFiles() {
   if (!fs.existsSync(BUNDLE_DIR)) return [];

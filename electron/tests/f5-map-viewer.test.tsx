@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 /**
- * F5-5 MapViewer 组件对拍（client/src/components/MapViewer.jsx → map-viewer.tsx 三面）。
+ * F5-5 MapViewer 组件对拍（旧客户端 MapViewer.jsx → map-viewer.tsx 三面）。
  *
  * 对拍口径（MapLibre 引擎全桩：vi.mock("maplibre-gl") 捕获构造参数与实例方法调用）：
  *   A. 渲染参数面：构造参数（container/style 来自 op:map:data:style 通道对象注入/

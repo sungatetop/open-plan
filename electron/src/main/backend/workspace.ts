@@ -16,7 +16,7 @@ export { PROJECT_DIR };
 export { AGENT_DIR, LOCAL_PI_AGENT_DIR };
 
 export const WORKSPACE_DIR = path.join(PROJECT_DIR, "office-workspace");
-export const CLIENT_DIST = path.join(PROJECT_DIR, "client", "dist");
+// CLIENT_DIST 已随 R6-7b client/ 本体删除退役（旧 sidecar 静态服务锚点，R6-4 后无生产消费）
 
 // OfficeCLI 二进制解析优先级：
 //   1. 环境变量 OFFICECLI_BIN（显式指定）

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 /**
- * F5-8 kb 前端组装层对拍（client/src/components/KnowledgeBase.jsx 851 行 → TS）。
+ * F5-8 kb 前端组装层对拍（旧客户端 KnowledgeBase.jsx 851 行 → TS，对拍已冻结）。
  *
  * 对拍口径（子件全桩：KnowledgeGraph/MindMap/RetrievalChat/MarkdownBody 以轻桩捕获
  * props；client-api kb 函数族 12 项 / Feedback notify*+askConfirm / window.prompt 打桩）：

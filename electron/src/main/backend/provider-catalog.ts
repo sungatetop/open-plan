@@ -9,10 +9,10 @@
  *      这样用户手填网关时不必逐个模型配能力；
  *   3. 生成"一键添加"要写入 models.json 的供应商配置（能力自动带出）。
  *
- * 路径锚定：旧侧 __dirname（server/ 源码目录）上跳一级得项目根，目录文件固定为
- * <项目根>/server/pi-builtin-providers.json（由固化脚本持续产出，物理文件不搬家，
- * 单一事实源保留）——TS 侧 PROJECT_DIR 直绑 workspace-paths（仓库根锚点，B2 收编
- * 时按打包产物统一校正层级），路径拼接与旧侧数学等价。
+ * 路径锚定：旧侧 <项目根>/server/pi-builtin-providers.json（由固化脚本持续产出）；server/
+ * 随 R6-7b 退役，物理文件迁 electron/resources/pi-builtin-providers.json（RESOURCES_DIR
+ * 统一锚点，固化脚本 extract-pi-provider-catalog.mjs 同步改 OUT_FILE），B2 收编时按打包
+ * 产物统一校正层级。
  * 依赖绑定：modelsDevCacheStatus/readModelsDevCache 静态直绑同批 models-dev-catalog.ts。
  * 当前消费面：旧侧 server/index.mjs L61 路由（provider-catalog 四通道）随流量切换
  * 批退役；桌面端 IPC 通道（shared/protocol/channels.ts op:agent:provider-catalog 族）
@@ -22,9 +22,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import { modelsDevCacheStatus, readModelsDevCache } from "./models-dev-catalog";
-import { PROJECT_DIR } from "./workspace-paths";
+import { RESOURCES_DIR } from "./workspace-paths";
 
-const CATALOG_FILE = path.join(PROJECT_DIR, "server", "pi-builtin-providers.json");
+const CATALOG_FILE = path.join(RESOURCES_DIR, "pi-builtin-providers.json");
 
 // 一键导入只支持"公开 HTTP 端点 + 单一 API Key"的协议；
 // Bedrock/Vertex 走云凭证、Azure 需要资源名、Radius 走网关登录，都不在这里导入。

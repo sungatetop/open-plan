@@ -178,12 +178,11 @@ function readJson(file: string): any {
 }
 
 describe("B6-4 workspace 行为覆盖", () => {
-  it("模块常量面：PROJECT_DIR/WORKSPACE_DIR/CLIENT_DIST/AGENT_DIR/SUPPORTED_EXTENSIONS", async () => {
+  it("模块常量面：PROJECT_DIR/WORKSPACE_DIR/AGENT_DIR/SUPPORTED_EXTENSIONS", async () => {
     useFakeDate();
     const r = await runWorkspace({ OFFICECLI_BIN: "X:/cli/officecli.exe" }, async (m) => ({
       projectDir: m.PROJECT_DIR,
       workspaceDir: m.WORKSPACE_DIR,
-      clientDist: m.CLIENT_DIST,
       agentDir: m.AGENT_DIR,
       localPiAgentDir: m.LOCAL_PI_AGENT_DIR,
       officecli: m.OFFICECLI,
@@ -195,7 +194,6 @@ describe("B6-4 workspace 行为覆盖", () => {
     expect(r.supportedFlags).toBe("i");
     expect(normalizePaths(r.projectDir)).toBe("<R>");
     expect(normalizePaths(r.workspaceDir)).toBe(path.join("<R>", "office-workspace"));
-    expect(normalizePaths(r.clientDist)).toBe(path.join("<R>", "client", "dist"));
     expect(normalizePaths(r.agentDir)).toBe("<R>");
     expect(typeof r.localPiAgentDir).toBe("string");
   });

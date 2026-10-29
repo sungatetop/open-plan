@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 /**
- * F5-7 map 组装层对拍（client/src/components/MapPanel.jsx 2543 行 → TS 组装面）。
+ * F5-7 map 组装层对拍（旧客户端 MapPanel.jsx 2543 行 → TS 组装面）。
  *
  * 对拍口径（子件全桩：MapViewer/ChatPanel/LayerPanel/VisualPanel/AttributeTable/TaskCenter
  * 以轻桩捕获 props；client-api map 函数族 / flag / askConfirm / shpjs 打桩捕获调用）：
