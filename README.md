@@ -1,6 +1,6 @@
 # Open Plan（规聚）
 
-[![CI](https://github.com/oscarkincanland/open-plan/actions/workflows/ci.yml/badge.svg)](https://github.com/oscarkincanland/open-plan/actions/workflows/ci.yml)
+[![CI](https://github.com/sungatetop/open-plan/actions/workflows/ci.yml/badge.svg)](https://github.com/sungatetop/open-plan/actions/workflows/ci.yml)
 
 > 规划 + 聚集 —— 面向交通规划工程师的 AI 一体化工作台
 
@@ -125,6 +125,11 @@ Electron Renderer (React + TS)
 
 ## 快速开始
 
+### 安装包（推荐）
+Windows x64 安装包从 [GitHub Releases](https://github.com/sungatetop/open-plan/releases/latest) 下载（如 `GuiJu-Setup-0.11.55.exe`，per-user 安装，无需管理员权限）。
+
+### 源码运行
+
 ### 前置条件
 - **Node.js** >= 22
 - **Pi agent** 可选：新电脑无需安装 Pi CLI，可在设置页直接配置模型凭据；已有 Pi 配置可通过“从本地 Pi 导入配置”一次性复制
@@ -174,7 +179,7 @@ npm run verify   # desktop:typecheck + desktop:test（vitest 全量）+ desktop:
 
 | 分支 | 说明 |
 |---|---|
-| `main` | 稳定分支，每次合并打 tag（v0.8.x） |
+| `main` | 稳定分支，每次合并打 tag（vX.Y.Z） |
 | `develop` | 主开发分支 |
 | `feature/*` | 功能分支（每轮独立） |
 
