@@ -38,6 +38,78 @@ vi.setConfig({ testTimeout: 30_000 });
 (Element.prototype as unknown as Record<string, unknown>).scrollTo = () => {};
 (Element.prototype as unknown as Record<string, unknown>).scrollIntoView = () => {};
 
+// workbench → map-panel → map-viewer 静态 import 链：maplibre-gl 模块顶层
+// setWorkerUrl 依赖 window.URL.createObjectURL（jsdom 无此 API，2026-10-26 起
+// map-panel 并入 workbench 装载链后 E 组四用例装载即崩）；shpjs 同链静态 import
+// 且本组无消费面。沿 f5-map-viewer 惯例全桩：E 组仅验证会话域行为，不触达地图引擎。
+vi.mock("shpjs", () => ({ default: vi.fn() }));
+vi.mock("maplibre-gl", () => {
+  class FakeBounds {
+    constructor(private w = 118, private s = 27, private e = 122.5, private n = 31.5) {}
+    getWest() { return this.w; }
+    getSouth() { return this.s; }
+    getEast() { return this.e; }
+    getNorth() { return this.n; }
+  }
+  class FakeMap {
+    handlers = new Map<string, Set<(e?: unknown) => void>>();
+    layers = new Set<string>();
+    sources = new Map<string, Record<string, unknown>>();
+    styleLayers: Array<Record<string, unknown>> = [];
+    constructor(options: Record<string, unknown>) {
+      this.styleLayers = ((options.style as { layers?: Array<Record<string, unknown>> })?.layers ?? []);
+      for (const l of this.styleLayers) this.layers.add(String(l.id));
+    }
+    on(ev: string, fn: (e?: unknown) => void) {
+      if (!this.handlers.has(ev)) this.handlers.set(ev, new Set());
+      this.handlers.get(ev)!.add(fn);
+    }
+    once(ev: string, fn: (e?: unknown) => void) { this.on(ev, fn); }
+    off(ev: string, fn: (e?: unknown) => void) { this.handlers.get(ev)?.delete(fn); }
+    addControl() {}
+    removeControl() {}
+    remove() {}
+    isStyleLoaded() { return true; }
+    loaded() { return true; }
+    getStyle() { return { layers: this.styleLayers }; }
+    getLayer(id: string) { return this.layers.has(id) ? { id } : undefined; }
+    getSource(id: string) {
+      const def = this.sources.get(id);
+      if (!def) return undefined;
+      return { ...def, setData: (d: unknown) => { this.sources.set(id, { ...def, data: d }); } };
+    }
+    addSource(id: string, def: Record<string, unknown>) { this.sources.set(id, { ...def }); }
+    addLayer(def: Record<string, unknown>) {
+      this.layers.add(String(def.id));
+      this.styleLayers = [...this.styleLayers, def];
+    }
+    removeLayer(id: string) {
+      this.layers.delete(id);
+      this.styleLayers = this.styleLayers.filter((l) => l.id !== id);
+    }
+    removeSource(id: string) { this.sources.delete(id); }
+    setLayoutProperty() {}
+    setPaintProperty() {}
+    setFilter() {}
+    setStyle(style: unknown) {
+      this.styleLayers = ((style as { layers?: Array<Record<string, unknown>> })?.layers ?? []);
+      for (const l of this.styleLayers) this.layers.add(String(l.id));
+    }
+    jumpTo() {}
+    fitBounds() {}
+    getCenter() { return { lng: 120.0, lat: 29.2 }; }
+    getZoom() { return 9; }
+    getCanvas() { return document.createElement("canvas"); }
+  }
+  return {
+    Map: FakeMap,
+    LngLatBounds: FakeBounds,
+    NavigationControl: class {},
+    ScaleControl: class {},
+    Popup: class {}
+  };
+});
+
 const APP_PATH = resolve(dirname(fileURLToPath(import.meta.url)), "../../client/src/App.jsx");
 const APP_SOURCE = readFileSync(APP_PATH, "utf8");
 
@@ -116,6 +188,11 @@ const oldRebuild = new Function(
 
 let oldHistSeq = 0;
 const oldHistId = (): string => `h${++oldHistSeq}`;
+
+// workbench 全链（含 map/task/integrations 等重面板）首载 transform+import 实测 ~26s：
+// 若计入首个用例（默认 30s 上限）并发满载下必 flake。提升到模块顶层装载，
+// 用例内仅计挂载耗时（~3-5s）。
+const Workbench = (await import("../src/renderer/app/workbench")).default;
 
 describe("A. 纯函数旧源码原文本执行（App.jsx 原文 vs history-load.ts）", () => {
   const REF_SAMPLES = [
@@ -556,7 +633,6 @@ describe("E. workbench 会话域行为（window.opDesktop 假桥挂载）", () =
   let mounted: { host: HTMLElement; unmount: () => void } | null = null;
 
   const mountWorkbench = async (): Promise<HTMLElement> => {
-    const Workbench = (await import("../src/renderer/app/workbench")).default;
     mounted = mountNode(<Workbench />);
     await flushAsync(50);
     return mounted.host;
