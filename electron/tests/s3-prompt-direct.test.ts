@@ -15,9 +15,8 @@
  *     SKILL_PREFLIGHT 409 / 成功（continuation 文案 + recoveryChain + 后台收尾）；
  *   - dispatcher（unknown channel 404 / 意外错误 500）。
  *
- * 纯编排测试：deps 全注入桩，域行为由各域自有对拍覆盖（workflows/skills-catalog/
- * workspace-write-probe 见 s3-prompt-domain-parity.test.ts；runs/write-coordination 等
- * 见各批次既有测试）。后台 executeAgentRun/executeContinuation 的 waitForFlush 首轮
+ * 纯编排测试：deps 全注入桩（域行为断言见 s3-prompt-domain 相关批次测试；
+ * runs/write-coordination 等见各批次既有测试）。后台 executeAgentRun/executeContinuation 的 waitForFlush 首轮
  * 固定 1.5s（L5818-5827 同构），相关断言用 vi.waitFor 轮询。
  */
 import { describe, expect, test, beforeAll, afterAll, vi } from "vitest";
