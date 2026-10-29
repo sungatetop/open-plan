@@ -1,48 +1,33 @@
 /**
- * S3-9 traffic-sources 域对拍：3 导出面一致 + PLANNED_SOURCES / detectColumns 全分支
- * （点/OD/中英别名/x-y 精确匹配防 max_value 误判/unknown）/ inChinaRange 边界与 NaN /
- * local-file 适配器经 loadSource 全分支（geojson 直读与 FeatureCollection 校验、.json
- * 扩展名、自动挑选最新 mtime（utimesSync 显式设置）、path.relative 目录越界含同前缀
- * 兄弟目录、文件不存在、CSV 无数据行、列识别失败表头逐字、OD/点两模式几何与 carry
- * 属性、measure 指定与 numeric[0] 兜底、越界 skipped 计数与文案、引号转义、制表符
- * 分隔、无任何数值列）/ bundled-xinchang 四 kind + 非法 kind 默认（与 map-visualization
- * 对拍互为印证）。
+ * S3-9 traffic-sources 域单侧测试：3 导出 + PLANNED_SOURCES / detectColumns 全分支
+ * 绝对期望（点/OD/中英别名/x-y 精确匹配防 max_value 误判/unknown，含 lng 子串别名对
+ * OD 列表的先命中语义）/ inChinaRange 边界与 NaN / local-file 适配器经 loadSource 全
+ * 分支（geojson 直读与 FeatureCollection 校验、.json 扩展名、自动挑选最新 mtime
+ * （utimesSync 显式设置）、path.relative 目录越界含同前缀兄弟目录、文件不存在、CSV 无
+ * 数据行、列识别失败表头逐字、OD/点两模式几何与 carry 属性、measure 指定与 numeric[0]
+ * 兜底、越界 skipped 计数与文案、引号转义、制表符分隔、无任何数值列）/ bundled-xinchang
+ * 四 kind + 非法 kind 默认（与 map-visualization 测试互为印证）。
  *
- * 真实 IO 双跑：legacy pathToFileURL 物理加载 server/traffic-sources.mjs + map-visualization.mjs，
- * modern 静态 import TS 两模块；适配器用例经各侧 loadSource("local-file") 驱动，临时
- * 工作区双侧共享（适配器纯读，输出无绝对路径）。fake timers 冻结 Date（provenance.at）。
+ * 真实 IO：modern 静态 import TS 两模块；适配器用例经 loadSource("local-file") 驱动，
+ * 临时工作区（适配器纯读，输出无绝对路径）。fake timers 冻结 Date（provenance.at）。
  * 有意不做：空 workspace → "没有当前工作区"（getWorkspace() 恒有真值，分支不可达）；
  * "检查经纬度列是否为数字" 文案（skipped=0 且 features=0 的组合在循环语义下不可达，
- * 旧侧死分支）；bundled-xinchang 演示回退（真实数据在场不可达）——均记台账。
+ * 死分支）；bundled-xinchang 演示回退（真实数据在场不可达）——均记台账。
  */
 import { describe, expect, it, beforeAll, afterAll, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
 import * as modernVis from "../src/main/backend/map-visualization";
 import * as modernTraffic from "../src/main/backend/traffic-sources";
 
-const HERE = path.dirname(fileURLToPath(import.meta.url));
-const PROJECT_ROOT = path.resolve(HERE, "../..");
-
-type VisModule = typeof modernVis;
-type TrafficModule = typeof modernTraffic;
-
-const mod = {} as Record<"legacy" | "modern", { vis: VisModule; traffic: TrafficModule }>;
+const mod = { vis: modernVis, traffic: modernTraffic };
 
 beforeAll(async () => {
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(new Date("2026-10-24T02:00:00Z"));
-  // legacy 链：物理 traffic-sources.mjs 导入即注册进物理 map-visualization.mjs 实例
-  await import(pathToFileURL(path.join(PROJECT_ROOT, "server/traffic-sources.mjs")).href);
-  mod.legacy = {
-    vis: await import(pathToFileURL(path.join(PROJECT_ROOT, "server/map-visualization.mjs")).href) as VisModule,
-    traffic: await import(pathToFileURL(path.join(PROJECT_ROOT, "server/traffic-sources.mjs")).href) as TrafficModule,
-  };
   // modern 链：TS traffic-sources 导入即注册进 TS map-visualization 实例
   await import("../src/main/backend/traffic-sources");
-  mod.modern = { vis: modernVis, traffic: modernTraffic };
 });
 
 afterAll(() => {
@@ -52,72 +37,75 @@ afterAll(() => {
 const mkWs = () => fs.mkdtempSync(path.join(os.tmpdir(), "s3-9-ts-"));
 const rmWs = (ws: string) => fs.rmSync(ws, { recursive: true, force: true });
 
-async function loadBoth(ws: string, params: Record<string, unknown>) {
-  const legacy = await mod.legacy.vis.loadSource("local-file", { workspace: ws, ...params });
-  const modern = await mod.modern.vis.loadSource("local-file", { workspace: ws, ...params });
-  return { legacy, modern };
+async function loadOne(ws: string, params: Record<string, unknown>) {
+  return mod.vis.loadSource("local-file", { workspace: ws, ...params });
 }
 
-function expectJsonEqual(a: unknown, b: unknown) {
-  expect(JSON.stringify(a)).toBe(JSON.stringify(b));
-}
-
-describe("S3-9 traffic-sources 对拍", () => {
-  it("导出面一致（3 导出）+ PLANNED_SOURCES 相等", () => {
-    expect(Object.keys(mod.legacy.traffic).sort()).toEqual(Object.keys(mod.modern.traffic).sort());
-    expect(Object.keys(mod.modern.traffic).sort()).toEqual(["PLANNED_SOURCES", "detectColumns", "inChinaRange"]);
-    expectJsonEqual(mod.legacy.traffic.PLANNED_SOURCES, mod.modern.traffic.PLANNED_SOURCES);
-    expect(mod.modern.traffic.PLANNED_SOURCES).toEqual([
+describe("S3-9 traffic-sources", () => {
+  it("导出面（3 导出）+ PLANNED_SOURCES", () => {
+    expect(Object.keys(mod.traffic).sort()).toEqual(["PLANNED_SOURCES", "detectColumns", "inChinaRange"]);
+    expect(mod.traffic.PLANNED_SOURCES).toEqual([
       { id: "gps-trajectory", label: "车载 GPS 轨迹", kind: "flow", note: expect.stringContaining("prepare-map-data") },
     ]);
-    expect(Object.isFrozen(mod.modern.traffic.PLANNED_SOURCES)).toBe(true);
+    expect(Object.isFrozen(mod.traffic.PLANNED_SOURCES)).toBe(true);
   });
 
-  it("detectColumns 全分支双侧逐字节（点/OD/中英别名/x-y 精确/unknown）", () => {
-    const cases: string[][] = [
-      [],
-      ["name", "经度", "纬度", "客流"],
-      ["olng", "olat", "dlng", "dlat"],
-      ["起点经度", "起点纬度", "终点经度", "终点纬度"],
-      ["出发经", "出发纬", "到达经", "到达纬"],
-      ["from_lon", "from_lat", "to_lon", "to_lat"],
-      ["origin_lng", "origin_lat", "dest_lng", "dest_lat"],
-      ["x", "y", "max_value"], // x/y 仅精确匹配
-      ["lon_x", "lat_y"], // x/y 精确匹配不适用，但 lon/lat 子串别名仍命中 → points
-      ["LNG", "LAT"], // includes 大小写不敏感
-      ["o_lon", "o_lat", "d_lon", "d_lat"],
-      ["start_lon", "start_lat", "dest_lon", "dest_lat"],
-      ["流量", "value_avg", "经度", "纬度"],
-      ["tel", "name"], // unknown
+  it("detectColumns 全分支绝对期望（点/OD/中英别名/x-y 精确/unknown）", () => {
+    const cases: Array<[string[], any]> = [
+      // 空表头 → unknown
+      [[], { lng: "", lat: "", olng: "", olat: "", dlng: "", dlat: "", flow: "", mode: "unknown" }],
+      // 点模式：中文表头 + 客流 flow
+      [["name", "经度", "纬度", "客流"], { lng: "经度", lat: "纬度", olng: "", olat: "", dlng: "", dlat: "", flow: "客流", mode: "points" }],
+      // OD 表头：lng 别名 "lng" 为 "olng"/"dlng" 子串，先命中 olng 列（includes 语义）
+      [["olng", "olat", "dlng", "dlat"], { lng: "olng", lat: "olat", olng: "olng", olat: "olat", dlng: "dlng", dlat: "dlat", flow: "", mode: "od" }],
+      // 中文 OD：经度/纬度 别名先命中起点列（起点经度 含 "经度"）
+      [["起点经度", "起点纬度", "终点经度", "终点纬度"], { lng: "起点经度", lat: "起点纬度", olng: "起点经度", olat: "起点纬度", dlng: "终点经度", dlat: "终点纬度", flow: "", mode: "od" }],
+      // 出发/到达 别名：不含 "经度" → lng/lat 空，mode 仍 od
+      [["出发经", "出发纬", "到达经", "到达纬"], { lng: "", lat: "", olng: "出发经", olat: "出发纬", dlng: "到达经", dlat: "到达纬", flow: "", mode: "od" }],
+      // "to_lon"/"to_lat" 含 "o_lon"/"o_lat" 子串，olng/olat 别名序先命中 to 列
+      [["from_lon", "from_lat", "to_lon", "to_lat"], { lng: "from_lon", lat: "from_lat", olng: "to_lon", olat: "to_lat", dlng: "to_lon", dlat: "to_lat", flow: "", mode: "od" }],
+      [["origin_lng", "origin_lat", "dest_lng", "dest_lat"], { lng: "origin_lng", lat: "origin_lat", olng: "origin_lng", olat: "origin_lat", dlng: "dest_lng", dlat: "dest_lat", flow: "", mode: "od" }],
+      // x/y 仅精确匹配；max_value 经 "value" 子串别名命中 flow
+      [["x", "y", "max_value"], { lng: "x", lat: "y", olng: "", olat: "", dlng: "", dlat: "", flow: "max_value", mode: "points" }],
+      // x/y 精确匹配不适用，但 lon/lat 子串别名仍命中 → points
+      [["lon_x", "lat_y"], { lng: "lon_x", lat: "lat_y", olng: "", olat: "", dlng: "", dlat: "", flow: "", mode: "points" }],
+      // includes 大小写不敏感（lower 化后匹配，返回原表头写法）
+      [["LNG", "LAT"], { lng: "LNG", lat: "LAT", olng: "", olat: "", dlng: "", dlat: "", flow: "", mode: "points" }],
+      [["o_lon", "o_lat", "d_lon", "d_lat"], { lng: "o_lon", lat: "o_lat", olng: "o_lon", olat: "o_lat", dlng: "d_lon", dlat: "d_lat", flow: "", mode: "od" }],
+      [["start_lon", "start_lat", "dest_lon", "dest_lat"], { lng: "start_lon", lat: "start_lat", olng: "start_lon", olat: "start_lat", dlng: "dest_lon", dlat: "dest_lat", flow: "", mode: "od" }],
+      // flow 优先序：流量 先于 value（value_avg 含 "value" 但流量列在前）
+      [["流量", "value_avg", "经度", "纬度"], { lng: "经度", lat: "纬度", olng: "", olat: "", dlng: "", dlat: "", flow: "流量", mode: "points" }],
+      // unknown
+      [["tel", "name"], { lng: "", lat: "", olng: "", olat: "", dlng: "", dlat: "", flow: "", mode: "unknown" }],
     ];
-    for (const c of cases) {
-      expectJsonEqual(mod.legacy.traffic.detectColumns(c), mod.modern.traffic.detectColumns(c));
+    for (const [header, expected] of cases) {
+      expect(mod.traffic.detectColumns(header)).toEqual(expected);
     }
-    // 关键语义锚点
-    expect(mod.modern.traffic.detectColumns(["x", "y", "max_value"])).toEqual({
-      lng: "x", lat: "y", olng: "", olat: "", dlng: "", dlat: "", flow: "max_value", mode: "points",
-    });
-    // lon_x/lat_y：x/y 别名精确匹配不误命中，但 lon/lat 子串别名命中 → points（lng=lon_x / lat=lat_y）
-    const lonLat = mod.modern.traffic.detectColumns(["lon_x", "lat_y"]);
-    expect(lonLat.mode).toBe("points");
-    expect(lonLat.lng).toBe("lon_x");
-    expect(lonLat.lat).toBe("lat_y");
-    expect(mod.modern.traffic.detectColumns(["起点经度", "起点纬度", "终点经度", "终点纬度"]).mode).toBe("od");
+    // 起点终点中文 OD 模式锚点
+    expect(mod.traffic.detectColumns(["起点经度", "起点纬度", "终点经度", "终点纬度"]).mode).toBe("od");
   });
 
-  it("inChinaRange 边界与 NaN 双侧一致", () => {
-    const cases: Array<[number, number]> = [
-      [120, 29], [70, 15], [140, 56], [69.9, 29], [140.1, 29],
-      [120, 14.9], [120, 56.1], [NaN, 29], [120, NaN], [70, 56], [140, 15],
+  it("inChinaRange 边界与 NaN（70–140E / 15–56N 闭区间）", () => {
+    const cases: Array<[number, number, boolean]> = [
+      [120, 29, true],
+      [70, 15, true], // 双下界含
+      [140, 56, true], // 双上界含
+      [69.9, 29, false],
+      [140.1, 29, false],
+      [120, 14.9, false],
+      [120, 56.1, false],
+      [NaN, 29, false],
+      [120, NaN, false],
+      [70, 56, true],
+      [140, 15, true],
+      [69.999, 29, false],
     ];
-    for (const [a, b] of cases) {
-      expect(mod.legacy.traffic.inChinaRange(a, b)).toBe(mod.modern.traffic.inChinaRange(a, b));
+    for (const [a, b, expected] of cases) {
+      expect(mod.traffic.inChinaRange(a, b)).toBe(expected);
     }
-    expect(mod.modern.traffic.inChinaRange(70, 15)).toBe(true);
-    expect(mod.modern.traffic.inChinaRange(69.999, 29)).toBe(false);
   });
 
-  describe("local-file 适配器（经 loadSource，临时工作区双侧共享）", () => {
+  describe("local-file 适配器（经 loadSource，临时工作区）", () => {
     it("geojson 直读：FC 描述符 + measure 自动识别；非 FC 拒绝；.json 同通道", async () => {
       const ws = mkWs();
       try {
@@ -132,26 +120,22 @@ describe("S3-9 traffic-sources 对拍", () => {
         fs.writeFileSync(path.join(ws, "bad.geojson"), JSON.stringify({ type: "Feature" }));
         fs.writeFileSync(path.join(ws, "asjson.json"), JSON.stringify(fc));
 
-        const ok = await loadBoth(ws, { path: "pts.geojson" });
-        expectJsonEqual(ok.legacy, ok.modern);
-        expect((ok.legacy as any).id).toBe("file-pts");
-        expect((ok.legacy as any).title).toBe("pts");
-        expect((ok.legacy as any).kind).toBe("points");
-        expect((ok.legacy as any).styleHint.field).toBe("value");
-        expect((ok.legacy as any).provenance.generatedBy).toBe("traffic-sources.mjs");
+        const ok: any = await loadOne(ws, { path: "pts.geojson" });
+        expect(ok.id).toBe("file-pts");
+        expect(ok.title).toBe("pts");
+        expect(ok.kind).toBe("points");
+        expect(ok.styleHint.field).toBe("value");
+        expect(ok.provenance.generatedBy).toBe("traffic-sources.mjs");
 
-        const bad = await loadBoth(ws, { path: "bad.geojson" });
-        expectJsonEqual(bad.legacy, bad.modern);
-        expect((bad.legacy as any).error).toBe("GeoJSON 需要是 FeatureCollection");
+        const bad: any = await loadOne(ws, { path: "bad.geojson" });
+        expect(bad.error).toBe("GeoJSON 需要是 FeatureCollection");
 
-        const asJson = await loadBoth(ws, { path: "asjson.json" });
-        expectJsonEqual(asJson.legacy, asJson.modern);
-        expect((asJson.legacy as any).id).toBe("file-asjson");
+        const asJson: any = await loadOne(ws, { path: "asjson.json" });
+        expect(asJson.id).toBe("file-asjson");
 
         // measure 指定覆盖自动识别
-        const forced = await loadBoth(ws, { path: "pts.geojson", measure: "name" });
-        expectJsonEqual(forced.legacy, forced.modern);
-        expect((forced.legacy as any).styleHint.field).toBe("name");
+        const forced: any = await loadOne(ws, { path: "pts.geojson", measure: "name" });
+        expect(forced.styleHint.field).toBe("name");
       } finally { rmWs(ws); }
     });
 
@@ -164,9 +148,7 @@ describe("S3-9 traffic-sources 对拍", () => {
           "义乌,120.07,29.31,杭州,120.16,30.29,520",
           "越界,200,29,宁波,121.5,29.8,50",
         ].join("\n"));
-        const r = await loadBoth(ws, { path: "od.csv" });
-        expectJsonEqual(r.legacy, r.modern);
-        const d: any = r.legacy;
+        const d: any = await loadOne(ws, { path: "od.csv" });
         expect(d.kind).toBe("flow");
         expect(d.id).toBe("file-od");
         expect(d.stats.rowCount).toBe(3);
@@ -192,9 +174,7 @@ describe("S3-9 traffic-sources 对拍", () => {
           "B,120.2,29.4,",
           "C,20,29,5", // 经度 20 越界（<70）
         ].join("\n"));
-        const r = await loadBoth(ws, { path: "pts.csv" });
-        expectJsonEqual(r.legacy, r.modern);
-        const d: any = r.legacy;
+        const d: any = await loadOne(ws, { path: "pts.csv" });
         expect(d.kind).toBe("points");
         expect(d.geojson.features.length).toBe(2);
         expect(d.geojson.features[0].properties.名称).toBe("A");
@@ -210,10 +190,9 @@ describe("S3-9 traffic-sources 对拍", () => {
           "200,29",
           "121,90",
         ].join("\n"));
-        const all = await loadBoth(ws, { path: "out.csv" });
-        expectJsonEqual(all.legacy, all.modern);
-        expect((all.legacy as any).error).toBe("没有解析到有效坐标行（2 行坐标缺失或超出中国范围 70–140E / 15–56N）");
-        expect((all.legacy as any).skipped).toBe(2);
+        const all: any = await loadOne(ws, { path: "out.csv" });
+        expect(all.error).toBe("没有解析到有效坐标行（2 行坐标缺失或超出中国范围 70–140E / 15–56N）");
+        expect(all.skipped).toBe(2);
       } finally { rmWs(ws); }
     });
 
@@ -225,9 +204,7 @@ describe("S3-9 traffic-sources 对拍", () => {
           "120.1,29.3,5",
           "120.2,29.4,7",
         ].join("\n"));
-        const r = await loadBoth(ws, { path: "xy.csv" });
-        expectJsonEqual(r.legacy, r.modern);
-        const d: any = r.legacy;
+        const d: any = await loadOne(ws, { path: "xy.csv" });
         expect(d.kind).toBe("points");
         expect(d.geojson.features[0].geometry.coordinates).toEqual([120.1, 29.3]);
         expect(d.geojson.features[0].properties.max_value).toBe(5);
@@ -241,14 +218,13 @@ describe("S3-9 traffic-sources 对拍", () => {
           "A,120.1,29.3,40",
           "B,120.2,29.4,55",
         ].join("\n"));
-        const r2 = await loadBoth(ws, { path: "noscale.csv" });
-        expectJsonEqual(r2.legacy, r2.modern);
-        expect((r2.legacy as any).stats.columns.measure).toBe("经度");
-        expect((r2.legacy as any).stats.columns.numeric).toEqual(["经度", "纬度", "speed"]);
-        expect((r2.legacy as any).stats.columns.carried).toEqual(["名称", "speed"]);
-        expect((r2.legacy as any).geojson.features[0].properties.经度).toBe(120.1);
-        expect((r2.legacy as any).geojson.features[0].properties.speed).toBe("40");
-        expect((r2.legacy as any).styleHint.field).toBe("经度");
+        const r2: any = await loadOne(ws, { path: "noscale.csv" });
+        expect(r2.stats.columns.measure).toBe("经度");
+        expect(r2.stats.columns.numeric).toEqual(["经度", "纬度", "speed"]);
+        expect(r2.stats.columns.carried).toEqual(["名称", "speed"]);
+        expect(r2.geojson.features[0].properties.经度).toBe(120.1);
+        expect(r2.geojson.features[0].properties.speed).toBe("40");
+        expect(r2.styleHint.field).toBe("经度");
 
         // 同语义最小表头：无任何业务数值列时 measure 仍兜底坐标列 "经度"
         fs.writeFileSync(path.join(ws, "plain.csv"), [
@@ -256,11 +232,10 @@ describe("S3-9 traffic-sources 对拍", () => {
           "A,120.1,29.3",
           "B,120.2,29.4",
         ].join("\n"));
-        const r3 = await loadBoth(ws, { path: "plain.csv" });
-        expectJsonEqual(r3.legacy, r3.modern);
-        expect((r3.legacy as any).stats.columns.measure).toBe("经度");
-        expect((r3.legacy as any).geojson.features[0].properties.value).toBe(120.1);
-        expect((r3.legacy as any).styleHint.field).toBe("经度");
+        const r3: any = await loadOne(ws, { path: "plain.csv" });
+        expect(r3.stats.columns.measure).toBe("经度");
+        expect(r3.geojson.features[0].properties.value).toBe(120.1);
+        expect(r3.styleHint.field).toBe("经度");
       } finally { rmWs(ws); }
     });
 
@@ -269,31 +244,26 @@ describe("S3-9 traffic-sources 对拍", () => {
       try {
         fs.writeFileSync(path.join(ws, "od.csv"), "oname,olng,olat,dname,dlng,dlat,flow\n义乌,120.07,29.31,金华,119.65,29.08,300\n");
         // 相对越界
-        const up = await loadBoth(ws, { path: "../outside.csv" });
-        expect((up.legacy as any).error).toBe("path 必须在工作区内");
-        expectJsonEqual(up.legacy, up.modern);
+        const up: any = await loadOne(ws, { path: "../outside.csv" });
+        expect(up.error).toBe("path 必须在工作区内");
         // 同前缀兄弟目录（path.relative 边界语义）
         const siblingDir = `${ws}2`;
         fs.mkdirSync(siblingDir, { recursive: true });
         fs.writeFileSync(path.join(siblingDir, "f.csv"), "经度,纬度\n120,29\n");
-        const sib = await loadBoth(ws, { path: "../" + path.basename(siblingDir) + "/f.csv" });
-        expect((sib.legacy as any).error).toBe("path 必须在工作区内");
-        expectJsonEqual(sib.legacy, sib.modern);
+        const sib: any = await loadOne(ws, { path: "../" + path.basename(siblingDir) + "/f.csv" });
+        expect(sib.error).toBe("path 必须在工作区内");
         // 文件不存在
-        const miss = await loadBoth(ws, { path: "nope.csv" });
-        expect((miss.legacy as any).error).toBe("文件不存在：nope.csv");
-        expectJsonEqual(miss.legacy, miss.modern);
+        const miss: any = await loadOne(ws, { path: "nope.csv" });
+        expect(miss.error).toBe("文件不存在：nope.csv");
         // CSV 无数据行
         fs.writeFileSync(path.join(ws, "empty.csv"), "a,b\n");
-        const empty = await loadBoth(ws, { path: "empty.csv" });
-        expect((empty.legacy as any).error).toBe("CSV 没有数据行");
-        expectJsonEqual(empty.legacy, empty.modern);
+        const empty: any = await loadOne(ws, { path: "empty.csv" });
+        expect(empty.error).toBe("CSV 没有数据行");
         // 列识别失败（表头逐字 + header 回传）
         fs.writeFileSync(path.join(ws, "unknown.csv"), "name,tel\nA,1\nB,2\n");
-        const unknown = await loadBoth(ws, { path: "unknown.csv" });
-        expectJsonEqual(unknown.legacy, unknown.modern);
-        expect((unknown.legacy as any).error).toBe("无法识别坐标列。表头：name、tel（需要 经度/纬度，或 起点+终点 经纬度）");
-        expect((unknown.legacy as any).header).toEqual(["name", "tel"]);
+        const unknown: any = await loadOne(ws, { path: "unknown.csv" });
+        expect(unknown.error).toBe("无法识别坐标列。表头：name、tel（需要 经度/纬度，或 起点+终点 经纬度）");
+        expect(unknown.header).toEqual(["name", "tel"]);
       } finally {
         rmWs(ws);
         fs.rmSync(`${ws}2`, { recursive: true, force: true });
@@ -309,10 +279,9 @@ describe("S3-9 traffic-sources 对拍", () => {
           '"A,B",120.1,29.3',
           '"C""D",120.2,29.4',
         ].join("\n"));
-        const q = await loadBoth(ws, { path: "quoted.csv" });
-        expectJsonEqual(q.legacy, q.modern);
-        expect((q.legacy as any).geojson.features[0].properties.名称).toBe("A,B");
-        expect((q.legacy as any).geojson.features[1].properties.名称).toBe('C"D');
+        const q: any = await loadOne(ws, { path: "quoted.csv" });
+        expect(q.geojson.features[0].properties.名称).toBe("A,B");
+        expect(q.geojson.features[1].properties.名称).toBe('C"D');
 
         // 制表符
         fs.writeFileSync(path.join(ws, "tsv.csv"), [
@@ -320,43 +289,36 @@ describe("S3-9 traffic-sources 对拍", () => {
           "A\t120.1\t29.3",
           "B\t120.2\t29.4",
         ].join("\n"));
-        const t = await loadBoth(ws, { path: "tsv.csv" });
-        expectJsonEqual(t.legacy, t.modern);
-        expect((t.legacy as any).geojson.features.length).toBe(2);
+        const t: any = await loadOne(ws, { path: "tsv.csv" });
+        expect(t.geojson.features.length).toBe(2);
 
         // 自动挑选：a.csv 先写、b.geojson 后写（mtime 更新），省略 path 应选 b
         fs.writeFileSync(path.join(ws, "a.csv"), "经度,纬度\n120,29\n120.1,29.1\n");
         fs.writeFileSync(path.join(ws, "b.geojson"), JSON.stringify({ type: "FeatureCollection", features: [] }));
         fs.utimesSync(path.join(ws, "a.csv"), new Date(1000000000000), new Date(1000000000000));
         fs.utimesSync(path.join(ws, "b.geojson"), new Date(2000000000000), new Date(2000000000000));
-        const auto = await loadBoth(ws, {});
-        expectJsonEqual(auto.legacy, auto.modern);
-        expect((auto.legacy as any).title).toBe("b");
+        const auto: any = await loadOne(ws, {});
+        expect(auto.title).toBe("b");
         // 交换 mtime → 选 a
         fs.utimesSync(path.join(ws, "a.csv"), new Date(3000000000000), new Date(3000000000000));
-        const auto2 = await loadBoth(ws, {});
-        expect((auto2.legacy as any).title).toBe("a");
-        expectJsonEqual(auto2.legacy, auto2.modern);
+        const auto2: any = await loadOne(ws, {});
+        expect(auto2.title).toBe("a");
       } finally { rmWs(ws); }
     });
 
-    it("空 workspace 参数 → 双侧一致（同 getWorkspace 语义）", async () => {
-      const l = await mod.legacy.vis.loadSource("local-file", { workspace: "" });
-      const m = await mod.modern.vis.loadSource("local-file", { workspace: "" });
-      expectJsonEqual(l, m);
-      // 当前真实工作区根目录无 CSV/GeoJSON 时给出明确错误；有则双侧产出同一描述符
-      expect((l as any).error === undefined || typeof (l as any).error === "string").toBe(true);
+    it("空 workspace 参数回落真实工作区（getWorkspace 兜底语义）", async () => {
+      const r: any = await mod.vis.loadSource("local-file", { workspace: "" });
+      // 当前真实工作区根目录无 CSV/GeoJSON 时给出明确错误；有则产出描述符
+      expect(r.error === undefined || typeof r.error === "string").toBe(true);
     });
   });
 
-  it("bundled-xinchang：四 kind + 非法 kind 默认 stations 双侧逐字节", async () => {
+  it("bundled-xinchang：四 kind + 非法 kind 默认 stations", async () => {
     for (const kind of ["routes", "stations", "od", "stats", undefined, "bogus"]) {
-      const l = await mod.legacy.vis.loadSource("bundled-xinchang", { kind });
-      const m = await mod.modern.vis.loadSource("bundled-xinchang", { kind });
-      expectJsonEqual(l, m);
-      expect((l as any).error).toBeUndefined();
+      const r: any = await mod.vis.loadSource("bundled-xinchang", { kind });
+      expect(r.error).toBeUndefined();
     }
-    const stations: any = await mod.modern.vis.loadSource("bundled-xinchang", { kind: "stations" });
+    const stations: any = await mod.vis.loadSource("bundled-xinchang", { kind: "stations" });
     expect(stations.id).toBe("m3-bus-stations");
     expect(stations.kind).toBe("points");
     expect(stations.geojson.features.length).toBeGreaterThan(0);
