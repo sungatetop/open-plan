@@ -2,9 +2,61 @@ appId: com.guiju.desktop
 productName: 规聚
 directories:
   output: dist
+  buildResources: build
+asar: false
+# R6-8 打包策略（asar 关闭）：
+# - main/renderer 均经 electron-vite 全量 bundle（out/ 自包含，bundle 内零 npm require），
+#   node_modules 运行时不被 require → files 排除，仅经 extraFiles 精确复制 tiler 物理链
+#   依赖闭包（scripts/lib/tiler.mjs ← geojson-vt/vt-pbf 的 ESM 解析树，runScript 子进程用）。
+#   维护契约：tiler.mjs 升级依赖时同步下述 node_modules 白名单（含 vt-pbf 嵌套 pbf@3 与
+#   平铺 pbf@4 双版本），verify-nsis-install.mjs 的 tiler 链探测作门禁兜底。
+# - asar 关闭原因：runScript 以物理 node 子进程执行 scripts/tools/*.mjs（asar 内无法直接
+#   exec）；运行时数据目录（.oaw/.规聚会话/maps/office-workspace）锚 PROJECT_DIR=应用根，
+#   需可写。per-user 安装（LocalAppData\Programs）可写性满足。
 files:
   - out/**
   - package.json
-# R6-7b：client/ + server/ 本体已删除（根目录仅剩 electron/），运行时自有静态资产在
-# electron/resources/（glyphs/xinchang-data/pi-extensions/pi-builtin-providers.json）——
-# resources 入包与 asar/files 策略随 R6-8 收口。
+  - "!node_modules/**"
+  # 桌面端自有静态资产（RESOURCES_DIR 打包态锚应用根/resources）
+  - resources/**
+extraFiles:
+  # 运行时配置：backend/kb.ts 锚 PROJECT_DIR/kb.json（extraFiles to 相对可执行文件目录）
+  - from: ../kb.json
+    to: resources/app/kb.json
+  # 物理脚本链（runScript 生产依赖：地图数据准备 + 矢量瓦片生成 + tiler 库）
+  - from: ../scripts/tools/prepare-map-data.mjs
+    to: resources/app/scripts/tools/prepare-map-data.mjs
+  - from: ../scripts/tools/build-vector-tiles.mjs
+    to: resources/app/scripts/tools/build-vector-tiles.mjs
+  - from: ../scripts/lib/tiler.mjs
+    to: resources/app/scripts/lib/tiler.mjs
+  # tiler 依赖闭包（electron/node_modules 实际解析树，见上维护契约）
+  - from: node_modules/geojson-vt
+    to: resources/app/node_modules/geojson-vt
+  - from: node_modules/@types/geojson
+    to: resources/app/node_modules/@types/geojson
+  - from: node_modules/vt-pbf
+    to: resources/app/node_modules/vt-pbf
+  - from: node_modules/@mapbox/point-geometry
+    to: resources/app/node_modules/@mapbox/point-geometry
+  - from: node_modules/@mapbox/vector-tile
+    to: resources/app/node_modules/@mapbox/vector-tile
+  - from: node_modules/pbf
+    to: resources/app/node_modules/pbf
+  - from: node_modules/ieee754
+    to: resources/app/node_modules/ieee754
+  - from: node_modules/resolve-protobuf-schema
+    to: resources/app/node_modules/resolve-protobuf-schema
+  - from: node_modules/protocol-buffers-schema
+    to: resources/app/node_modules/protocol-buffers-schema
+win:
+  target: nsis
+  icon: build/icon.ico
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  allowElevation: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: 规聚

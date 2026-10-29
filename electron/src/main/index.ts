@@ -2,6 +2,7 @@ import { app, BrowserWindow, ipcMain } from "electron";
 import path from "node:path";
 import fs from "node:fs";
 import os from "node:os";
+import { PROJECT_DIR as workspacePathsProjectDir } from "./backend/workspace-paths";
 import { createAgentDirectEventsBridge } from "./ipc/agent-direct-events";
 import {
   AGENT_DIRECT_INVOKE_CHANNELS,
@@ -154,9 +155,10 @@ const PRELOAD_PATH = path.join(__dirname, "../preload/index.js");
 // whenReady 内安装，锚点见 installOawDataProtocolHandler 调用处）。
 registerOawDataSchemePrivileged();
 
-/** 仓库根：out/main → out → electron → 项目根。打包形态后续里程碑再调整。 */
+/** 仓库根/应用根：OP_PROJECT_ROOT 覆盖优先；回退统一锚 workspace-paths 三态
+ * PROJECT_DIR（R6-8：dev=仓库根、打包=应用根，与 workspace-paths.ts 重校同源）。 */
 function projectRoot(): string {
-  return process.env.OP_PROJECT_ROOT || path.resolve(__dirname, "../../..");
+  return process.env.OP_PROJECT_ROOT || workspacePathsProjectDir;
 }
 
 let mainWindow: BrowserWindow | null = null;
@@ -1258,11 +1260,16 @@ function registerMapDirectInvokers(): void {
           return { exists: true, isDirectory: fs.statSync(dir).isDirectory() };
         },
         // server 用 PATH 上的 node 跑 scripts/tools/*.mjs（L752-756 逐点转录：超时 300s、
-        // cwd=PROJECT_DIR、"node" 字面同款——桌面端与 sidecar 等价，不换 process.execPath）。
+        // cwd=PROJECT_DIR、"node" 字面同款——桌面端与 sidecar 等价）。R6-8：打包分发态
+        // PATH 上的 node 不可假设存在，切 Electron 自带 node 运行时（execPath +
+        // ELECTRON_RUN_AS_NODE=1）；dev 态保持 "node" 字面与旧形态等价。
         runScript: (script, args) =>
           new Promise((resolve) => {
             void import("node:child_process").then(({ execFile }) => {
-              execFile("node", [script, ...args], { cwd: workspacePaths.PROJECT_DIR, timeout: 300_000 }, (err, stdout, stderr) => {
+              const packaged = app.isPackaged;
+              const command = packaged ? process.execPath : "node";
+              const env = packaged ? { ...process.env, ELECTRON_RUN_AS_NODE: "1" } : process.env;
+              execFile(command, [script, ...args], { cwd: workspacePaths.PROJECT_DIR, timeout: 300_000, env }, (err, stdout, stderr) => {
                 resolve({ code: err ? 1 : 0, out: (stdout || "") + (stderr || "") });
               });
             });
