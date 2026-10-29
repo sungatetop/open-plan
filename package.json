@@ -10,8 +10,7 @@
     "knowledge-base",
     "map",
     "pi-agent-sdk",
-    "react",
-    "express"
+    "react"
   ],
   "homepage": "https://github.com/oscarkincanland/open-plan#readme",
   "repository": {
@@ -44,16 +43,12 @@
     "test:map-layers:live": "node scripts/map-layer-entry-scene-test.mjs",
     "test:map-visual:live": "node scripts/map-visual-panel-scene-test.mjs",
     "test:map-chat:live": "node scripts/map-chat-scene-test.mjs",
-    "test:browser:live": "node scripts/builtin-browser-test.mjs --live",
-    "test:pi-connectivity": "node scripts/pi-connectivity-test.mjs",
-    "test:map-perf": "node scripts/map-perf-baseline.mjs",
-    "test:gis-e2e": "node scripts/gis-e2e-test.mjs"
+    "test:map-perf": "node scripts/map-perf-baseline.mjs"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "1.1.0",
     "@modelcontextprotocol/client": "^2.1.0",
     "docx": "^9.7.1",
-    "express": "^5.2.1",
     "geojson-vt": "^5.0.2",
     "jszip": "^3.10.2",
     "pptxgenjs": "^4.0.1",
