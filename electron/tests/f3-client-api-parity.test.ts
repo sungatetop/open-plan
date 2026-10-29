@@ -12,7 +12,14 @@
  */
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { DESKTOP_CHANNELS, type DesktopChannelId } from "../src/shared/protocol/channels";
-import { buildQueryString } from "../src/main/ipc/http-forward";
+
+/** 组装查询串（R6-4 起就地内联，原 http-forward buildQueryString 同语义）：undefined/null/空串跳过。 */
+function buildQueryString(query: Record<string, unknown> | undefined): string {
+  if (!query) return "";
+  const pairs = Object.entries(query).filter(([, value]) => value !== undefined && value !== null && value !== "");
+  if (!pairs.length) return "";
+  return "?" + pairs.map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(String(value))}`).join("&");
+}
 
 const clientApi = await import("../../client/src/api.js");
 const desktopApi = await import("../src/renderer/api/client-api");

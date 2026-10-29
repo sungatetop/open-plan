@@ -160,7 +160,7 @@ export function getAgentManager(): Promise<AgentManager> {
   return agentManagerSingleton;
 }
 
-/** agent 域装配开关（B2 装配层；S4 起默认开，OP_DESKTOP_AGENT_DOMAIN=0 显式关闭回滚）。 */
+/** agent 域装配开关（B2 装配层；R6-4 起恒 true——OP_DESKTOP_AGENT_DOMAIN 回滚旗标随 sidecar 退役删除，保留导出供测试对拍）。 */
 export function isAgentDomainEnabled(): boolean {
-  return process.env.OP_DESKTOP_AGENT_DOMAIN !== "0";
+  return true;
 }

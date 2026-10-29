@@ -15,9 +15,10 @@
  * 埋点必须永远不能影响对话：任何异常都在内部吞掉。
  *
  * 与 client/src/first-token-latency-tracker.js 逐函数等价（tests/f1-first-token-latency-tracker-parity.test.ts 对拍强制）。
+ * R6-4：上报通道退役——sidecar /api/agent/timing 随服务退役，TS 主进程从未消费
+ * 该聚合（S4 起桌面流量不经过 sidecar），settle 仍返回样本供调用方使用，
+ * reportLatencySample 收敛为 no-op。
  */
-
-const REPORT_URL = "/api/agent/timing";
 
 /** 允许的阶段名，避免把任意对象塞进聚合统计。 */
 export const LATENCY_STAGES: readonly string[] = Object.freeze([
@@ -120,19 +121,10 @@ export function finalizeLatencyProbe(extra: Record<string, unknown> = {}, option
   }
 }
 
-/** fire-and-forget 上报：走 sendBeacon 可以在页面关闭/刷新时仍然送达。 */
-export function reportLatencySample(sample: unknown): void {
-  try {
-    const body = JSON.stringify(sample);
-    const nav = typeof navigator !== "undefined" ? navigator : undefined;
-    if (nav && typeof nav.sendBeacon === "function") {
-      nav.sendBeacon(REPORT_URL, new Blob([body], { type: "application/json" }));
-      return;
-    }
-    fetch(REPORT_URL, { method: "POST", headers: { "Content-Type": "application/json" }, body, keepalive: true }).catch(() => {});
-  } catch {
-    /* 埋点失败不得影响对话 */
-  }
+/** 上报出口（R6-4 退役）：sidecar /api/agent/timing 已随服务退役，收敛为 no-op。
+ * 保留函数与签名以稳住调用点与对拍面；settle 返回的样本仍可供调用方自用。 */
+export function reportLatencySample(_sample: unknown): void {
+  /* 遥测退役：不再发送 */
 }
 
 /** 分位数：样本为空返回 null，不返回 0（0 会让"没有任何样本"看起来像"极快"）。 */

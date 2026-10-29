@@ -89,10 +89,9 @@
  * backend/map-template.ts（runOdCommuterTemplate，F5-3 GIS G5-v1）+
  * backend/builtin-browser.ts（B4 底座七函数：会话键/打开/视口/轮询/求值/截图/PDF）。
  *
- * 门控：OP_DESKTOP_MAP_DIRECT 且 OP_DESKTOP_AGENT_DOMAIN 双门控（S4 语义：未设置=
- * 默认启用，=0 显式回滚——流量切换评估方案 §4-S4）。未覆盖通道仍由 http-forward
- * 兜底转发 sidecar。本模块不 import electron（纯逻辑，vitest 可直接测）；注册入口
- * 在 main/index.ts。
+ * 门控：R6-4 起恒直调（S4 期 OP_DESKTOP_MAP_DIRECT 回滚旗标随 sidecar 退役删除，
+ * 流量切换评估方案 §4-S4 历史留档）。本模块不 import electron（纯逻辑，vitest 可直接测）；
+ * 注册入口在 main/index.ts。
  */
 import { resolve as pathResolve, join as pathJoin, basename as pathBasename } from "node:path";
 import type { InvokeEnvelope, InvokeResult } from "../../shared/protocol/channels";
@@ -226,9 +225,6 @@ export interface MapDirectDeps {
   browserPrintToPdf: (key: string) => Promise<{ base64?: string }>;
   /** 截图（builtin-browser browserScreenshot） */
   browserScreenshot: (key: string, options?: { format?: string }) => Promise<{ base64?: string }>;
-  /** 导出视图基端口（F5-5 style 兜底 origin 用——装配期 server 可能未就绪，闭包读 Latest 值；
-   * R6-4 随兜底逻辑退役收敛） */
-  exportViewPort: () => number;
   /** 导出视图页面 URL（R6-3 离屏窗口形态：renderer 导出路由 app/index.html?export=map，
    * dev 走 vite devUrl、打包走 file:// 产物；接线见 index.ts → export-view-window.ts） */
   exportViewUrl: (job: Record<string, any>) => string;
@@ -987,8 +983,8 @@ async function invokeTemplateOdCommuter(payload: InvokeEnvelope, deps: MapDirect
  * 桌面形态扩展：渲染层与 sidecar 不同源（file:// / vite dev），除 s.tiles 外将 style.glyphs
  * 与 geojson source.data 的根相对路径一并绝对化，MapLibre 资产加载可用。
  * R6-2 资产自持：已知资产前缀改写到 oaw-data:// 自定义协议（/api/map/data/* →
- * oaw-data://maps/*，/glyphs/* → oaw-data://glyphs/*，见 oaw-data-protocol.ts），
- * 其余根相对路径兜底 sidecar origin（历史形态保留，随 R6-4 退役收敛）。
+ * oaw-data://maps/*，/glyphs/* → oaw-data://glyphs/*，见 oaw-data-protocol.ts）；
+ * 其余根相对路径保持原样（sidecar origin 兜底随 R6-4 退役）。
  * 语义差异声明：server 正则路由 ([^/]+) 对 ".." 无白名单（可达父目录，历史形态）；桌面侧
  * 沿用 map.ts projectDir 白名单收紧，非法名同 404 信封。 */
 function invokeMapDataStyle(payload: InvokeEnvelope, deps: MapDirectDeps): InvokeResult<unknown> {
@@ -997,12 +993,12 @@ function invokeMapDataStyle(payload: InvokeEnvelope, deps: MapDirectDeps): Invok
   if (!file || !deps.dirProbe(file).exists) return fail(404, { error: "style not found" });
   try {
     const style = deps.hydrateBasemapSources(JSON.parse(deps.readStyleFile(file))) as Record<string, any>;
-    const origin = `http://127.0.0.1:${deps.exportViewPort()}`;
     const absolutize = (t: unknown) => {
       if (typeof t !== "string" || !t.startsWith("/")) return t;
       if (t.startsWith("/api/map/data/")) return `oaw-data://maps/${t.slice("/api/map/data/".length)}`;
       if (t.startsWith("/glyphs/")) return `oaw-data://glyphs/${t.slice("/glyphs/".length)}`;
-      return origin + t;
+      // 未知根相对路径：sidecar origin 兜底随 R6-4 退役，保持原样不再改写
+      return t;
     };
     for (const s of Object.values(style.sources || {})) {
       if (Array.isArray((s as Record<string, unknown>)?.tiles)) {

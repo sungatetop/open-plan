@@ -172,13 +172,9 @@ describe("B2 装配层：AgentManager 构造与单飞", () => {
 });
 
 describe("B2 装配层：flag 判定", () => {
-  it("OP_DESKTOP_AGENT_DOMAIN 未设/非 0 → 开（S4 默认路径翻转），=0 → 关", () => {
-    vi.stubEnv("OP_DESKTOP_AGENT_DOMAIN", "");
-    expect(isAgentDomainEnabled()).toBe(true);
-    vi.stubEnv("OP_DESKTOP_AGENT_DOMAIN", "1");
-    expect(isAgentDomainEnabled()).toBe(true);
+  it("R6-4 起恒开（OP_DESKTOP_AGENT_DOMAIN 回滚旗标随 sidecar 退役删除）", () => {
     vi.stubEnv("OP_DESKTOP_AGENT_DOMAIN", "0");
-    expect(isAgentDomainEnabled()).toBe(false);
+    expect(isAgentDomainEnabled()).toBe(true);
     vi.unstubAllEnvs();
   });
 });

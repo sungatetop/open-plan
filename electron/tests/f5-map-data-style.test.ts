@@ -9,7 +9,7 @@
  *   - 500 面：readStyleFile 抛错 / JSON 解析失败（err500 信封）；
  *   - 成功面：hydrate 底图注入（deps 透传）+ 已知资产前缀改写 oaw-data://（R6-2 资产自持：
  *     /api/map/data/* → oaw-data://maps/*、/glyphs/* → oaw-data://glyphs/*）+
- *     其余根相对路径 sidecar origin 兜底 + geojson source.data 桌面扩展改写（绝对 URL 不动）→
+ *     其余根相对路径保持原样（sidecar origin 兜底随 R6-4 退役）+ 绝对 URL 不动 →
  *     { text: JSON.stringify(style) }；
  *   - 桌面扩展语义差异声明（含在 map-direct.ts 注释内）：server 正则路由 ([^/]+) 对 ".."
  *     无白名单（历史形态），桌面侧沿用 map.ts projectDir 白名单收紧，非法名同 404 信封。
@@ -28,10 +28,7 @@ beforeAll(async () => {
   svc = await import("../src/main/ipc/map-direct");
 });
 
-const PORT = 3002;
-const ORIGIN = `http://127.0.0.1:${PORT}`;
-
-/** 最小 deps：invokeMapDataStyle 只消费 mapProjectDir / dirProbe / hydrateBasemapSources / readStyleFile / exportViewPort。 */
+/** 最小 deps：invokeMapDataStyle 只消费 mapProjectDir / dirProbe / hydrateBasemapSources / readStyleFile。 */
 function makeDeps(overrides: {
   projectDir?: unknown;
   exists?: boolean;
@@ -45,8 +42,7 @@ function makeDeps(overrides: {
     readStyleFile: vi.fn((file: string) => {
       if (overrides.styleText instanceof Error) throw overrides.styleText;
       return overrides.styleText ?? "{}";
-    }),
-    exportViewPort: vi.fn(() => PORT)
+    })
   } as never as MapModule.MapDirectDeps;
 }
 
@@ -97,7 +93,7 @@ describe("F5-5 500 面（server L608 catch res.status(500) 等价）", () => {
 });
 
 describe("F5-5 成功面（hydrate + oaw-data 改写 + text 载数据）", () => {
-  test("tiles/data/glyphs 已知前缀改写 oaw-data://；hydrate 兜底路径 sidecar origin；绝对 URL 不动", async () => {
+  test("tiles/data/glyphs 已知前缀改写 oaw-data://；未知根相对路径原样；绝对 URL 不动", async () => {
     const style = {
       version: 8,
       glyphs: "/glyphs/{fontstack}/{range}.pbf",
@@ -133,14 +129,13 @@ describe("F5-5 成功面（hydrate + oaw-data 改写 + text 载数据）", () =>
     const deps = makeDeps({ styleText: "{}", hydrate: () => enriched });
     const result = await invoke({ query: { project: "demo" } }, deps);
     const out = JSON.parse((result.data as { text: string }).text);
-    // 非 /api/map/data / /glyphs 前缀的根相对路径 → sidecar origin 兜底（R6-4 收敛）
-    expect(out.sources.injected.data).toBe(`${ORIGIN}/x.geojson`);
+    // 非 /api/map/data / /glyphs 前缀的根相对路径 → 保持原样（sidecar origin 兜底随 R6-4 退役）
+    expect(out.sources.injected.data).toBe("/x.geojson");
   });
 
-  test("port 取自 exportViewPort（sidecar 兜底路径注入 origin）", async () => {
+  test("未知根相对路径保持原样（sidecar origin 兜底随 R6-4 退役，exportViewPort 依赖已删）", async () => {
     const deps = makeDeps({ styleText: JSON.stringify({ glyphs: "/fallback/p" }) });
-    (deps as unknown as { exportViewPort: ReturnType<typeof vi.fn> }).exportViewPort.mockReturnValue(3210);
     const result = await invoke({ query: { project: "demo" } }, deps);
-    expect(JSON.parse((result.data as { text: string }).text).glyphs).toBe("http://127.0.0.1:3210/fallback/p");
+    expect(JSON.parse((result.data as { text: string }).text).glyphs).toBe("/fallback/p");
   });
 });

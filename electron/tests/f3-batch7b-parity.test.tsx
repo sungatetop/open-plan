@@ -454,49 +454,6 @@ describe("D. feed 行为（createGlobalEventFeed + fake transport + fake timers�
     cleanup();
   });
 
-  it("SSE 重连节奏：800→×2→5000 封顶；onopen 复位；帧消费含 {event} 信封拆包", async () => {
-    class FakeES {
-      static all: FakeES[] = [];
-      url: string;
-      onopen: (() => void) | null = null;
-      onmessage: ((event: { lastEventId?: string; data?: string }) => void) | null = null;
-      onerror: (() => void) | null = null;
-      constructor(url: string) {
-        this.url = url;
-        FakeES.all.push(this);
-      }
-    }
-    const transport = FEED.createSseGlobalEventTransport({ createEventSource: (url) => new FakeES(url) as unknown as EventSource });
-    const { refs, cleanup } = makeFeed(transport, { loadEventState: async () => ({ latest: 9 }) });
-    await flushMicro();
-    expect(FakeES.all).toHaveLength(1);
-    expect(FakeES.all[0]?.url).toContain("client=parity-client");
-    expect(FakeES.all[0]?.url).toContain("after=9");
-    // 退避翻倍序列（从不 open）
-    for (const [gap, expected] of [[800, 2], [1600, 3], [3200, 4], [5000, 5], [5000, 6]] as const) {
-      FakeES.all[FakeES.all.length - 1]?.onerror?.();
-      vi.advanceTimersByTime(gap - 1);
-      expect(FakeES.all).toHaveLength(expected - 1);
-      vi.advanceTimersByTime(1);
-      expect(FakeES.all, `退避 ${gap}ms 后重连`).toHaveLength(expected);
-    }
-    // onopen 复位：下一轮断开回到 800
-    FakeES.all[5]?.onopen?.();
-    FakeES.all[5]?.onerror?.();
-    vi.advanceTimersByTime(799);
-    expect(FakeES.all).toHaveLength(6);
-    vi.advanceTimersByTime(1);
-    expect(FakeES.all).toHaveLength(7);
-    // 帧：{event} 信封拆包 + 游标推进
-    FakeES.all[0]?.onmessage?.({ lastEventId: "11", data: JSON.stringify({ event: { seq: 11, type: "run_finished", threadId: "t-cur" } }) });
-    expect(refs.eventCursorRef.current).toBe(11);
-    // 无信封裸载荷同口径消费（旧 payload.event || payload）
-    FakeES.all[0]?.onmessage?.({ lastEventId: "", data: JSON.stringify({ seq: 12, type: "run_finished", threadId: "t-cur" }) });
-    expect(refs.eventCursorRef.current).toBe(12);
-    cleanup();
-    expect(FakeES.all[FakeES.all.length - 1]?.onmessage).toBeTruthy();
-  });
-
   it("IPC transport：watch 受理失败走重连（800ms）；cleanup 停订并 stop", async () => {
     let watchCount = 0;
     const watch = async (): Promise<{ ok: boolean }> => {

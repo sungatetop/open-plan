@@ -14,7 +14,6 @@ import {
   subscribeStreams,
   waitForStreamSlot,
   resetStreams,
-  closeEventSourceQuietly,
 } from "../src/renderer/lib/stream-budget";
 
 const clientModule = await import("../../client/src/stream-budget.js");
@@ -33,7 +32,6 @@ const client = clientModule as unknown as {
   subscribeStreams: typeof subscribeStreams;
   waitForStreamSlot: typeof waitForStreamSlot;
   resetStreams: typeof resetStreams;
-  closeEventSourceQuietly: typeof closeEventSourceQuietly;
 };
 
 type BudgetMod = typeof client;
@@ -194,7 +192,7 @@ describe("stream-budget TS 版与 client 版等价（对拍）", () => {
       {
         MAX_STREAMS, streamEvents, noteCursorGap, cursorGapStats, resetCursorGaps, streamSnapshot,
         activeStreamCount, hasStreamSlot, acquireStream, closeOptionalStreams, releaseStream,
-        subscribeStreams, waitForStreamSlot, resetStreams, closeEventSourceQuietly,
+        subscribeStreams, waitForStreamSlot, resetStreams,
       } as BudgetMod,
       advance,
     )));
@@ -289,143 +287,3 @@ describe("stream-budget TS 版与 client 版等价（对拍）", () => {
   }
 });
 
-type HandlerMap = Record<string, Array<[any, any]>>;
-
-/** 监听器注册形状（函数按"是否函数"比较，避免函数引用不等造成假失败）。 */
-function handlerShape(h: HandlerMap): Record<string, Array<{ isFn: boolean; opts: unknown }>> {
-  return Object.fromEntries(
-    Object.entries(h).map(([key, list]) => [key, list.map(([fn, opts]) => ({ isFn: typeof fn === "function", opts }))]),
-  );
-}
-
-describe("closeEventSourceQuietly TS 版与 client 版等价（对拍）", () => {
-  /** 造一个 fake EventSource 实例，记录 close 与 addEventListener 调用。 */
-  function makeEs(readyState: number | undefined): { es: any; closes: () => number; handlers: () => Record<string, Array<[any, any]>> } {
-    let closeCount = 0;
-    const registered: Record<string, Array<[any, any]>> = {};
-    const es = {
-      readyState,
-      close: () => { closeCount += 1; },
-      addEventListener: (type: string, fn: any, opts: any) => {
-        (registered[type] ||= []).push([fn, opts]);
-      },
-    };
-    return { es, closes: () => closeCount, handlers: () => registered };
-  }
-
-  it("无 EventSource 全局 / null / CLOSED：立即 close，行为一致", () => {
-    const desc = Object.getOwnPropertyDescriptor(globalThis, "EventSource");
-    delete (globalThis as any).EventSource;
-    try {
-      expect(() => closeEventSourceQuietly(null)).not.toThrow();
-      expect(() => client.closeEventSourceQuietly(null)).not.toThrow();
-      const d = makeEs(1);
-      const s = makeEs(1);
-      closeEventSourceQuietly(d.es);
-      client.closeEventSourceQuietly(s.es);
-      expect(d.closes()).toBe(1);
-      expect(s.closes()).toBe(1);
-      expect(handlerShape(d.handlers())).toEqual(handlerShape(s.handlers()));
-    } finally {
-      if (desc) Object.defineProperty(globalThis, "EventSource", desc);
-    }
-  });
-
-  it("OPEN 分支：注册 error 监听、POST stream/close、error 到达时 close 恰好一次", async () => {
-    vi.useFakeTimers();
-    const desc = Object.getOwnPropertyDescriptor(globalThis, "EventSource");
-    const origFetch = globalThis.fetch;
-    (globalThis as any).EventSource = { CLOSED: 3, OPEN: 1, CONNECTING: 0 };
-    const fetches: Array<{ url: string; opts: Record<string, any> }> = [];
-    globalThis.fetch = (async (url: string, opts: Record<string, any>) => {
-      fetches.push({ url, opts });
-      return new Response(null, { status: 200 });
-    }) as any;
-    try {
-      const d = makeEs(1);
-      const s = makeEs(1);
-      closeEventSourceQuietly(d.es, { client: "c1", thread: "t1" });
-      client.closeEventSourceQuietly(s.es, { client: "c1", thread: "t1" });
-      expect(handlerShape(d.handlers())).toEqual(handlerShape(s.handlers()));
-      expect(Object.keys(d.handlers())).toEqual(["error"]);
-      expect(d.handlers().error![0]![1]).toEqual({ once: true });
-      // error 事件到达 → close；重复到达不重复 close
-      d.handlers().error![0]![0]!();
-      d.handlers().error![0]![0]!();
-      s.handlers().error![0]![0]!();
-      s.handlers().error![0]![0]!();
-      expect(d.closes()).toBe(1);
-      expect(s.closes()).toBe(1);
-      // fetch POST 体一致
-      expect(fetches).toHaveLength(2);
-      expect(fetches[0]).toEqual(fetches[1]);
-      expect(fetches[0]!.url).toBe("/api/agent/stream/close");
-      expect(fetches[0]!.opts.method).toBe("POST");
-      expect(JSON.parse(fetches[0]!.opts.body)).toEqual({ client: "c1", thread: "t1" });
-    } finally {
-      globalThis.fetch = origFetch;
-      if (desc) Object.defineProperty(globalThis, "EventSource", desc);
-      vi.useRealTimers();
-    }
-  });
-
-  it("OPEN 无 meta / CLOSED / CONNECTING→open 回归 / close 抛错被吞：行为一致", () => {
-    vi.useFakeTimers();
-    const desc = Object.getOwnPropertyDescriptor(globalThis, "EventSource");
-    (globalThis as any).EventSource = { CLOSED: 3, OPEN: 1, CONNECTING: 0 };
-    try {
-      // OPEN 无 meta → 直接 finish
-      const a1 = makeEs(1); const a2 = makeEs(1);
-      closeEventSourceQuietly(a1.es, {});
-      client.closeEventSourceQuietly(a2.es, {});
-      expect(a1.closes()).toBe(1);
-      expect(a2.closes()).toBe(1);
-      // CLOSED → 立即 finish
-      const b1 = makeEs(3); const b2 = makeEs(3);
-      closeEventSourceQuietly(b1.es);
-      client.closeEventSourceQuietly(b2.es);
-      expect(b1.closes()).toBe(1);
-      expect(b2.closes()).toBe(1);
-      // CONNECTING → 注册 open/error；置 readyState=OPEN 后 open 到达，
-      // 递归按无 meta 处理 → 直接 close
-      const c1 = makeEs(0); const c2 = makeEs(0);
-      closeEventSourceQuietly(c1.es, {});
-      client.closeEventSourceQuietly(c2.es, {});
-      expect(Object.keys(c1.handlers()).sort()).toEqual(["error", "open"]);
-      expect(handlerShape(c1.handlers())).toEqual(handlerShape(c2.handlers()));
-      c1.es.readyState = 1;
-      c2.es.readyState = 1;
-      c1.handlers().open![0]![0]!();
-      c2.handlers().open![0]![0]!();
-      expect(c1.closes()).toBe(1);
-      expect(c2.closes()).toBe(1);
-      // CONNECTING + meta：open 回归后走 OPEN 分支再注册 error（error 监听变两条）
-      const e1 = makeEs(0); const e2 = makeEs(0);
-      closeEventSourceQuietly(e1.es, { client: "c" });
-      client.closeEventSourceQuietly(e2.es, { client: "c" });
-      e1.es.readyState = 1;
-      e2.es.readyState = 1;
-      e1.handlers().open![0]![0]!();
-      e2.handlers().open![0]![0]!();
-      expect(Object.keys(e1.handlers()).sort()).toEqual(["error", "open"]);
-      expect(handlerShape(e1.handlers())).toEqual(handlerShape(e2.handlers()));
-      e1.handlers().error![0]![0]!();
-      e2.handlers().error![0]![0]!();
-      expect(e1.closes()).toBe(1);
-      expect(e2.closes()).toBe(1);
-      // close 抛错被吞，不向外抛
-      const boom = { readyState: 3, close: () => { throw new Error("destroyed"); } };
-      expect(() => closeEventSourceQuietly(boom)).not.toThrow();
-      expect(() => client.closeEventSourceQuietly(boom)).not.toThrow();
-      // readyState undefined → 三个分支都不命中 → 直接 finish
-      const u1 = makeEs(undefined); const u2 = makeEs(undefined);
-      closeEventSourceQuietly(u1.es);
-      client.closeEventSourceQuietly(u2.es);
-      expect(u1.closes()).toBe(1);
-      expect(u2.closes()).toBe(1);
-    } finally {
-      if (desc) Object.defineProperty(globalThis, "EventSource", desc);
-      vi.useRealTimers();
-    }
-  });
-});

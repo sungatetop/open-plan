@@ -27,10 +27,8 @@
  *
  * /api/browser/shot 不迁（BrowserPanel 未消费，聊天工具卡文件走 openDocFile/file-urls）。
  *
- * 门控：OP_DESKTOP_BROWSER_DIRECT 且 OP_DESKTOP_AGENT_DOMAIN 双门控（S4 语义默认开，=0
- * 显式回滚：8 条 invoke 通道回落 http-forward 转发 sidecar；watch/unwatch 同门控关闭，
- * 回滚面向旧 client 验证，桌面新 UI 面板预期走直调路径）。本模块不 import electron
- * （纯逻辑，vitest 可注入桩直接测）；注册入口在 main/index.ts。
+ * 门控：R6-4 起恒直调（S4 期 OP_DESKTOP_BROWSER_DIRECT 回滚旗标随 sidecar 退役删除）。
+ * 本模块不 import electron（纯逻辑，vitest 可注入桩直接测）；注册入口在 main/index.ts。
  */
 import type { InvokeEnvelope, InvokeResult } from "../../shared/protocol/channels";
 import { BROWSER_INACTIVE_STATE, BROWSER_STREAM_EVENT_TYPE } from "../../shared/protocol/channels";

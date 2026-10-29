@@ -32,14 +32,12 @@ function runScenario(mod: {
   markFirstDomText: typeof markFirstDomText;
   finalizeLatencyProbe: typeof finalizeLatencyProbe;
 }): Record<string, unknown> {
-  const sends: Array<{ url: string; opts: Record<string, unknown> }> = [];
+  // 超替路径 client 版仍会 fetch 上报（TS 版 R6-4 起恒 no-op）：stub 掉避免真实网络，
+  // 上报面不对拍（时序遥测随 sidecar 退役，见文件尾 reportLatencySample 用例）。
   const origFetch = globalThis.fetch;
-  (globalThis as any).fetch = async (url: string, opts: Record<string, unknown>) => {
-    sends.push({ url, opts });
-    return new Response(null, { status: 204 });
-  };
+  (globalThis as any).fetch = async () => new Response(null, { status: 204 });
   try {
-    const out: Record<string, unknown> = { sends };
+    const out: Record<string, unknown> = {};
     out.finalizeNoProbe = mod.finalizeLatencyProbe({}, { send: false });
     out.markNoProbe = mod.markLatency("firstEventAt", 1);
     out.patchNoProbe = mod.patchLatencyMeta({ runId: "x" });
@@ -95,14 +93,6 @@ describe("first-token-latency-tracker TS 版与 client 版等价（对拍）", (
     // snapshot extra 覆盖 runId 但不污染 marks
     expect((ts.snapExtra as Record<string, any>).runId).toBe("run-override");
     expect((ts.snapExtra as Record<string, any>).extraKey).toBe("e");
-    // 超替上报体：reason=superseded，POST 到 /api/agent/timing
-    const sends = ts.sends as Array<{ url: string; opts: Record<string, any> }>;
-    expect(sends).toHaveLength(1);
-    expect(sends[0]!.url).toBe("/api/agent/timing");
-    expect(sends[0]!.opts.method).toBe("POST");
-    expect((sends[0]!.opts.headers as any)["Content-Type"]).toBe("application/json");
-    const sentSample = JSON.parse(sends[0]!.opts.body as string);
-    expect(sentSample).toMatchObject({ clientSubmitAt: 5000, reason: "superseded", runId: null });
     // finalizeP5：clientSubmitAt=6000，无其他阶段 → 分项全 null
     expect(ts.finalizeP5).toMatchObject({ clientSubmitAt: 6000, submitToFirstEventMs: null, submitToFirstTextDeltaMs: null, tokenToDomMs: null });
   });
@@ -125,7 +115,7 @@ describe("first-token-latency-tracker TS 版与 client 版等价（对拍）", (
     expect(client.getActiveProbe()).toBeNull();
   });
 
-  it("reportLatencySample 走 sendBeacon 时：URL 与 Blob 内容一致", async () => {
+  it("reportLatencySample：TS 版 R6-4 起恒 no-op 不发送；client 版 sendBeacon 保持原语义", async () => {
     const calls: Array<{ url: string; blob: Blob }> = [];
     const desc = Object.getOwnPropertyDescriptor(globalThis, "navigator")!;
     Object.defineProperty(globalThis, "navigator", {
@@ -136,12 +126,10 @@ describe("first-token-latency-tracker TS 版与 client 版等价（对拍）", (
     try {
       reportLatencySample({ clientSubmitAt: 1, submitToFirstEventMs: 2 });
       client.reportLatencySample({ clientSubmitAt: 1, submitToFirstEventMs: 2 });
-      expect(calls).toHaveLength(2);
+      expect(calls).toHaveLength(1); // 仅 client 版上报（TS 版 sidecar 遥测退役 no-op）
       expect(calls[0]!.url).toBe("/api/agent/timing");
-      expect(calls[1]!.url).toBe(calls[0]!.url);
       expect(JSON.parse(await calls[0]!.blob.text())).toEqual({ clientSubmitAt: 1, submitToFirstEventMs: 2 });
-      expect(await calls[1]!.blob.type).toBe("application/json");
-      expect(calls[0]!.blob.type).toBe(calls[1]!.blob.type);
+      expect(await calls[0]!.blob.type).toBe("application/json");
     } finally {
       Object.defineProperty(globalThis, "navigator", desc);
     }

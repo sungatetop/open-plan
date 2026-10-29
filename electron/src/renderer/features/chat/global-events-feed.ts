@@ -1,24 +1,22 @@
 /**
  * 全局事件流连接与消费层（F3 批7b）：App.jsx 根级事件订阅 effect
- * （client/src/App.jsx 563-654）的 TS 迁移，传输层抽象为双形态：
+ * （client/src/App.jsx 563-654）的 TS 迁移。
  *
- *   - SSE transport：逐行等价旧 EventSource 用法（web / 无桥降级形态）；
- *   - IPC transport：经 op:agent-events:watch / op:agent-event（main 侧
- *     global-events-bridge 消费 legacy /api/agent/events 后转发），
- *     新 UI 的主路径（方案 §3：新 renderer 只走 IPC）。
+ * 传输层：IPC transport（op:agent-events:watch / op:agent-event，main 侧
+ * 全局事件直推消费 event-storage 落库事件）。旧 SSE transport（web / 无桥
+ * 降级形态）随 R6-4 sidecar 退役删除。
  *
  * 消费语义与旧实现逐行同构：
  *   - 游标：event.seq 判定推进（seq <= cursor 丢弃），localStorage
  *     "oaw_event_cursor" 持久化；localStorage 无游标时先经
- *     /api/agent/events/state（旧为 fetch，新为 op:agent:events-state IPC，
- *     3000ms 超时）引导起点；
+ *     op:agent:events-state IPC 引导起点（3000ms 超时）；
  *   - 100ms 批处理：eventVersion / artifactVersion 合并自增；
  *   - 未读：跨 thread 且命中 GLOBAL_EVENT_NOTICES 的去重计数（noticeKey）；
  *   - 180ms 防抖 refreshSessions（仅页面可见时）；run_finished 重置
  *     browserAutoOpenBlocked（浏览器侧栏自动展开不跨轮传递）。
  *
- * 重连分工：SSE 形态由本层自带 800ms 起指数翻倍、5000ms 封顶、onopen 复位；
- * IPC 形态 main 侧桥自持同节奏重连，本层仅在 watch 受理失败时按同节奏重试。
+ * 重连分工：IPC 形态 main 侧直推无断线（进程内订阅），本层仅在 watch
+ * 受理失败时按 800ms 起指数翻倍、5000ms 封顶的节奏重试。
  */
 import { acquireStream } from "../../lib/stream-budget";
 import { flag } from "../../lib/feature-flags";
@@ -97,60 +95,7 @@ export interface GlobalEventFeedDeps {
 }
 
 // ============================================================================
-// SSE transport（web / 无桥降级形态：逐行等价旧 EventSource 用法）
-// ============================================================================
-
-export interface SseGlobalEventTransportOptions {
-  /** 测试注入；默认 window.EventSource */
-  createEventSource?: (url: string) => EventSource;
-}
-
-export function createSseGlobalEventTransport(
-  options: SseGlobalEventTransportOptions = {}
-): GlobalEventTransport {
-  const createEventSource =
-    options.createEventSource ?? ((url: string) => new EventSource(url));
-  return {
-    connect(params: { client: string; after: number }): GlobalEventConnection {
-      const source = createEventSource(
-        `/api/agent/events?client=${encodeURIComponent(params.client)}&after=${encodeURIComponent(params.after)}`
-      );
-      const connection: GlobalEventConnection = {
-        onOpen(callback) {
-          source.onopen = () => callback();
-        },
-        onMessage(callback) {
-          source.onmessage = (event) => {
-            let payload: unknown;
-            try {
-              payload = JSON.parse((event as MessageEvent).data || "{}");
-            } catch {
-              return;
-            }
-            // 旧 onmessage：payload.event || payload 信封拆包
-            const record = (payload && typeof payload === "object" ? payload : {}) as { event?: unknown };
-            const data = (record.event && typeof record.event === "object" ? record.event : payload) as AgentEventPayload;
-            callback({ eventId: Number((event as MessageEvent).lastEventId || 0), data });
-          };
-        },
-        onError(callback) {
-          source.onerror = () => callback();
-        },
-        close() {
-          try {
-            source.close();
-          } catch {
-            /* 已销毁，忽略 */
-          }
-        }
-      };
-      return connection;
-    }
-  };
-}
-
-// ============================================================================
-// IPC transport（新 UI 主路径：main 侧 global-events-bridge → op:agent-event）
+// IPC transport（main 侧全局事件直推 → op:agent-event）
 // ============================================================================
 
 export interface IpcGlobalEventTransportOptions {

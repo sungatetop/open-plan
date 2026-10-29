@@ -5,16 +5,16 @@
  *   - event-registry：事件推送（emitChannel → op:event）的事件类型清单；
  *   - channels.ts：请求/响应通道（op:invoke）的通道清单与请求/响应类型。
  *
- * 迁移期对应关系（BRD-009 绞杀者模式）：每个通道映射 legacy server 的一条 HTTP 路由，
- * main 侧转发器（src/main/ipc/http-forward.ts）把 IPC 调用翻译成对内嵌服务的 HTTP 请求；
- * B6 收口后转发器退役，通道直接调主进程域服务，本文件的通道名与类型保持不变。
+ * 演进对应关系（BRD-009 绞杀者模式）：每个通道最初映射 legacy server 的一条 HTTP 路由，
+ * R6-4 起 sidecar / http-forward 退役，全部通道进程内直调主进程域服务，
+ * 通道名与类型保持不变（method/path 字段留作历史路由对照）。
  *
- * 对账：tests/channels-manifest.test.ts 校验通道清单与 server/index.mjs 路由面
+ * 对账：tests/channels-manifest.test.ts 校验通道清单自洽
  * （无幽灵通道、chat 域无缺漏、SSE 替代关系显式声明）。
  *
- * 请求载荷约定（转发器按此组装 HTTP）：
- *   - params：路径参数，填充 path 中的 `:param` 段（encodeURIComponent）；
- *   - query：查询串（undefined/null/空串跳过）；
+ * 请求载荷约定（直调器按此取参）：
+ *   - params：路径参数，对应旧路由的 `:param` 段；
+ *   - query：查询参数（直调器按服务端 `x || ""` 兜底语义取值）；
  *   - body：JSON 请求体（GET 不发送）。
  */
 

@@ -7,13 +7,11 @@
  *   - 幂等门闩（重放/实时不重复）、游标续传与代际清零、truncated → stream_resync；
  *   - ensureRuntime 45s 超时转录（runtime_init_failed + retryable）与失败分类帧；
  *   - watch/stop 生命周期（同键幂等、切键摘除旧订阅、非当前键 stop 忽略）；
- *   - 心跳 → op:heartbeat 活性帧（与 events-bridge 对 SSE heartbeat 的转发同形）；
- *   - 对拍锚点：同一逻辑通道事件经 events-bridge（SSE 桥）与直推桥的
- *     op:event 通道事件帧逐一相等（id/type/at/streamId/protocolVersion/data）。
+ *   - 心跳 → op:heartbeat 活性帧（R6-4 前 events-bridge 对 SSE heartbeat 的转发同形）；
+ * R6-4：对拍锚点块随 events-bridge（SSE 桥）退役删除。
  */
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { createAgentDirectEventsBridge, type DirectAgentManagerView, type DirectEntryView } from "../src/main/ipc/agent-direct-events";
-import { createEventStreamBridge, type EventStreamFetch, type EventStreamResponse } from "../src/main/ipc/events-bridge";
 import { PROTOCOL_VERSION } from "../src/shared/runtime/event-protocol";
 import type { DesktopEvent } from "../src/shared/protocol/channels";
 
@@ -81,14 +79,6 @@ function makeChannel(streamId: string, history: ChannelStub["history"] = []): Ch
 
 function ev(id: number, type = "token", data: Record<string, unknown> = { value: `v${id}` }): ChannelStub["history"][number] {
   return { id, type, at: `2026-01-01T00:00:0${id % 10}.000Z`, streamId: "S1", data };
-}
-
-async function until(assert: () => boolean, timeoutMs = 1000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (!assert()) {
-    if (Date.now() > deadline) throw new Error("until: condition not met");
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  }
 }
 
 describe("S1 agent 直推桥：帧编排对齐 SSE 路由语义", () => {
@@ -327,79 +317,3 @@ describe("S1 agent 直推桥：帧编排对齐 SSE 路由语义", () => {
   });
 });
 
-describe("S1 对拍锚点：直推桥与 events-bridge（SSE 桥）通道事件帧逐一相等", () => {
-  test("同一逻辑事件序列：SSE 转发帧 == 直推帧（id/type/at/streamId/protocolVersion/data）", async () => {
-    const logical = [ev(1, "run_admitted"), ev(2, "token"), ev(3, "tool_output", { chunk: "x" }), ev(4, "run_finished", { summary: "done" })];
-    const channel = makeChannel("S1", logical.slice(0, 3));
-
-    // ── 路径 A：SSE 桥（模拟 server send() 的 SSE 字节流：前 3 条 history + 第 4 条实时） ──
-    const sseSent: DesktopEvent[] = [];
-    const encoder = new TextEncoder();
-    const frames: string[] = [];
-    frames.push(`data: ${JSON.stringify({ type: "runtime_connecting", at: "2026-01-01T00:00:00.000Z", data: { client: "c1", thread: "t1" } })}\n\n`);
-    for (const item of logical.slice(0, 3)) {
-      frames.push(`id: ${item.id}\ndata: ${JSON.stringify({
-        id: item.id, protocolVersion: PROTOCOL_VERSION, streamId: item.streamId,
-        type: item.type, at: item.at ?? null, data: item.data
-      })}\n\n`);
-    }
-    frames.push(`event: heartbeat\ndata: ${JSON.stringify({ type: "heartbeat", at: "2026-01-01T00:00:09.000Z" })}\n\n`);
-    const liveItem = logical[3] as NonNullable<typeof logical[3]>;
-    frames.push(`id: ${liveItem.id}\ndata: ${JSON.stringify({
-      id: liveItem.id, protocolVersion: PROTOCOL_VERSION, streamId: liveItem.streamId,
-      type: liveItem.type, at: liveItem.at ?? null, data: liveItem.data
-    })}\n\n`);
-
-    const sseFetch: EventStreamFetch = async () => {
-      let index = 0;
-      const body = {
-        getReader() {
-          return {
-            read: async (): Promise<{ done: boolean; value?: Uint8Array }> => {
-              if (index < frames.length) {
-                const value = encoder.encode(frames[index]);
-                index += 1;
-                return { done: false, value };
-              }
-              // 末帧消费后挂起：桥停留在读取态（不触发重连循环）
-              return new Promise(() => {});
-            }
-          };
-        }
-      };
-      return { ok: true, status: 200, body, text: async () => frames.join("") } as unknown as EventStreamResponse;
-    };
-    const sseBridge = createEventStreamBridge({
-      getPort: () => 3003,
-      send: (event) => sseSent.push(event),
-      fetchImpl: sseFetch,
-      delay: async () => {}
-    });
-    await sseBridge.watch({ client: "c1", thread: "t1" });
-    await until(() => sseSent.filter((f) => typeof f.id === "number").length >= 4);
-
-    // ── 路径 B：直推桥（同一通道：3 条 history + 第 4 条实时 emit） ──
-    const directSent: DesktopEvent[] = [];
-    const directBridge = createAgentDirectEventsBridge({
-      getManager: async () => makeManager(new Map([["c1::t1", channel]]), []),
-      send: (event) => directSent.push(event)
-    });
-    await directBridge.watch({ client: "c1", thread: "t1" });
-    channel.history.push(liveItem);
-    channel.emit(liveItem);
-
-    // ── 对拍：通道事件帧（带 id）逐一相等 ──
-    const sseEvents = sseSent.filter((f) => typeof f.id === "number");
-    const directEvents = directSent.filter((f) => typeof f.id === "number");
-    expect(JSON.parse(JSON.stringify(directEvents))).toEqual(JSON.parse(JSON.stringify(sseEvents)));
-
-    // 心跳同形（type + data 空；at 各自生成不比较）
-    const sseHeartbeat = sseSent.find((f) => f.type === "op:heartbeat");
-    expect(sseHeartbeat).toBeDefined();
-    const directHeartbeat = { type: "op:heartbeat", data: {} };
-    expect({ type: sseHeartbeat?.type, data: sseHeartbeat?.data }).toEqual(directHeartbeat);
-
-    sseBridge.dispose();
-    directBridge.dispose();
-  });
-});

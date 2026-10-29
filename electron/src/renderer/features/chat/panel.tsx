@@ -103,12 +103,10 @@ import {
   sendAgentPrompt,
   setAgentModel,
 } from "../../api/client-api";
-import { getDesktopApi } from "../../api/ipc-client";
 import { createChatEventMachine, type ChatEventInput, type ChatRunState } from "./event-machine";
 import {
   createChatEventStreamController,
   createIpcThreadEventTransport,
-  createSseThreadEventTransport,
 } from "./event-stream";
 import { MemoMessage } from "./message";
 import {
@@ -1151,10 +1149,9 @@ const ChatPanel = forwardRef(function ChatPanel({
   }), []);
   const { handleEvent, patch, cancelTextReveal, flushNow, pushSystem, upsertRunSummary, finalizeStopped } = machine;
 
-  // 对话流连接：桥可用走 IPC transport（新 UI 主路径），否则 SSE transport
-  // （web / 无桥降级，jsdom 对拍同走此形态）。连接状态机与旧 SSE effect 逐行同构。
+  // 对话流连接：IPC transport（sidecar 退役后唯一形态，R6-4）。连接状态机与旧 SSE effect 逐行同构。
   useEffect(() => {
-    const transport = getDesktopApi() ? createIpcThreadEventTransport() : createSseThreadEventTransport();
+    const transport = createIpcThreadEventTransport();
     return createChatEventStreamController({
       clientId,
       threadId,

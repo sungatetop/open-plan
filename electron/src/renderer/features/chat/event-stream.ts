@@ -1,19 +1,18 @@
 /**
  * 对话流连接层（F3 批6c）：ChatPanel SSE effect（client/src/components/
- * ChatPanel.jsx 1515-1696）的 TS 迁移，传输层抽象为双形态：
+ * ChatPanel.jsx 1515-1696）的 TS 迁移。
  *
- *   - SSE transport：逐行等价旧 EventSource 用法（web / 无桥降级形态）；
- *   - IPC transport：经 op:events:watch / op:event（main 侧事件桥消费 legacy
- *     SSE 后转发），新 UI 的主路径（方案 §3：新 renderer 只走 IPC）。
+ * 传输层：IPC transport（op:events:watch / op:event，main 侧直推桥消费）。
+ * 旧 SSE transport（web / 无桥降级形态）随 R6-4 sidecar 退役删除。
  *
  * 连接状态机（重连退避 / 静默 watchdog / 游标与代际管理 / 握手就绪承诺 /
  * 缺号诊断 / 槽位预算）与旧实现逐行同构，transport 仅替换「建连 + 收帧 +
- * 关闭」三个动作，保证任一形态下行为一致。
+ * 关闭」三个动作。
  *
  * 事件消费侧（handleEvent 状态机）由批6b 的 createChatEventMachine 承担，
  * 本层只负责把帧递入 deps.refs.eventHandlerRef。
  */
-import { acquireStream, closeEventSourceQuietly, noteCursorGap } from "../../lib/stream-budget";
+import { acquireStream, noteCursorGap } from "../../lib/stream-budget";
 import { flag, numberFlag } from "../../lib/feature-flags";
 import { subscribeDesktopEvents, stopThreadEvents, watchThreadEvents } from "../../api/ipc-client";
 import type { ChatEventEnvelope, ChatEventInput } from "./event-machine";
@@ -97,61 +96,7 @@ export interface ChatEventStreamDeps {
 }
 
 // ============================================================================
-// SSE transport（web / 无桥降级形态：逐行等价旧 EventSource 用法）
-// ============================================================================
-
-export interface SseThreadEventTransportOptions {
-  /** 测试注入；默认 window.EventSource */
-  createEventSource?: (url: string) => EventSource;
-}
-
-export function createSseThreadEventTransport(
-  options: SseThreadEventTransportOptions = {}
-): ThreadEventTransport {
-  const createEventSource =
-    options.createEventSource ?? ((url: string) => new EventSource(url));
-  return {
-    connect(params: ThreadEventConnectParams): ThreadEventConnection {
-      const workspaceQuery = params.cwd ? `&cwd=${encodeURIComponent(params.cwd)}` : "";
-      const cursorQuery = params.after ? `&after=${params.after}` : "";
-      const streamQuery = params.streamId ? `&stream=${encodeURIComponent(params.streamId)}` : "";
-      const source = createEventSource(
-        `/api/agent/stream?client=${encodeURIComponent(params.client)}&thread=${encodeURIComponent(params.thread)}${workspaceQuery}${cursorQuery}${streamQuery}`
-      );
-      type MessageEventLike = { lastEventId?: unknown; data?: unknown };
-      const connection: ThreadEventConnection = {
-        onOpen(callback) {
-          source.onopen = () => callback();
-        },
-        onHeartbeat(callback) {
-          source.addEventListener("heartbeat", () => callback());
-        },
-        onMessage(callback) {
-          source.onmessage = (event) => {
-            const like = event as unknown as MessageEventLike;
-            callback({
-              eventId: Number(like.lastEventId || 0),
-              data: typeof like.data === "string" ? like.data : String(like.data ?? "")
-            });
-          };
-        },
-        onError(callback) {
-          source.onerror = () => callback();
-        },
-        onInterrupt() {
-          // SSE 形态无桥状态帧；断连走 onError
-        },
-        close() {
-          closeEventSourceQuietly(source, { client: params.client, thread: params.thread });
-        }
-      };
-      return connection;
-    }
-  };
-}
-
-// ============================================================================
-// IPC transport（新 UI 主路径：main 侧事件桥 → op:event 推送）
+// IPC transport（main 侧事件直推桥 → op:event 推送）
 // ============================================================================
 
 export interface IpcThreadEventTransportOptions {
@@ -161,7 +106,7 @@ export interface IpcThreadEventTransportOptions {
   subscribe?: typeof subscribeDesktopEvents;
 }
 
-/** op:event 中非对话流帧（记忆变更桥 / doc 实时预览 watch / SSE 命名事件 open 的降级形态）。 */
+/** op:event 中非对话流帧（记忆变更直推 / doc 实时预览 watch / 直推未识别命名帧兜底）。 */
 const NON_THREAD_FRAME_TYPES = new Set(["op:memory-change", "op:sse-unknown", "op:doc-watch", "op:browser-stream"]);
 
 export function createIpcThreadEventTransport(
