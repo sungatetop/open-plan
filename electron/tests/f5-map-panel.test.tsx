@@ -17,7 +17,10 @@
  *   E. 等时圈：未选点守卫文案 + stub 地图 click 选点后 mapIsochrone 四元组载荷；
  *   F. 批量导出（flag mapExport）：勾选项目 → mapExportBatch 入队 → 1.2s 轮询
  *      mapExportStatus（running → done）进度与结果文案；
- *   G. 数据导入：GeoJSON 文件 → mapImportBatch 载荷 → 成功文案 + reloadStyle + zoomToLayer。
+ *   G. 数据导入：GeoJSON 文件 → mapImportBatch 载荷 → 成功文案 + reloadStyle + zoomToLayer；
+ *   H. 工作区切换地图库跟随（2026-10-30 改造）：op:maps-changed → mapProjects 重拉 +
+ *      按事件携带工作区取项目详情（loadProject ws 显式传参）+ 清行政区缓存 + 强制
+ *      reloadStyle（3s 轮询哈希去重同款 style 不自愈）；无关帧不触发。
  */
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import React, { act } from "react";
@@ -584,5 +587,68 @@ describe("视口上报与交互链", () => {
       expect(mapStub.fitBounds).toHaveBeenCalled();
       expect(host.querySelector(".mp-iso-info")!.textContent).toContain("已导入 1 个图层（roads），瓦片已重建");
     } finally { unmount(); }
+  });
+});
+
+/* ==================== H. 工作区切换地图库跟随（op:maps-changed） ==================== */
+
+describe("工作区切换地图库跟随（op:maps-changed）", () => {
+  /** 假桥：捕获 onEvent 订阅者，用例内手动派发 op:maps-changed 帧。 */
+  function installFakeBridge() {
+    const listeners: Array<(e: unknown) => void> = [];
+    (window as unknown as Record<string, unknown>).opDesktop = {
+      onEvent: vi.fn((fn: (e: unknown) => void) => {
+        listeners.push(fn);
+        return () => {};
+      })
+    };
+    return listeners;
+  }
+
+  it("H1 收到 op:maps-changed：mapProjects 重拉 + 按事件工作区取项目详情 + 强制 reloadStyle", async () => {
+    const listeners = installFakeBridge();
+    try {
+      mount(<MapPanel {...(mapPanelProps() as any)} />);
+      await flush();
+      expect(mapProjectsMock).toHaveBeenCalledTimes(1); // 初始加载
+      const initialProjectCalls = mapProjectMock.mock.calls.length;
+      const handle = stubs.mapViewerHandle.current as Record<string, ReturnType<typeof vi.fn>>;
+      const reloadCalls = handle.reloadStyle!.mock.calls.length;
+      act(() => {
+        listeners.forEach((fn) => fn({ type: "op:maps-changed", at: "2026-10-30T00:00:00.000Z", data: { workspace: "ws2", mapsRoot: "W:\\ws2\\maps" } }));
+      });
+      await flush(3);
+      expect(mapProjectsMock).toHaveBeenCalledTimes(2); // 跟随重拉
+      expect(mapProjectMock.mock.calls.length).toBe(initialProjectCalls + 1);
+      // 按事件携带的新工作区取归属视图（不依赖 prop 传播时序）
+      expect(mapProjectMock).toHaveBeenLastCalledWith("zhejiang-map", "ws2");
+      expect(handle.reloadStyle!.mock.calls.length).toBe(reloadCalls + 1);
+      expect(host.querySelector(".mp-msg")!.textContent).toContain("工作区已切换，地图库已刷新");
+    } finally {
+      delete (window as unknown as Record<string, unknown>).opDesktop;
+      unmount();
+    }
+  });
+
+  it("H2 无关事件帧（op:memory-change 等）不触发刷新", async () => {
+    const listeners = installFakeBridge();
+    try {
+      mount(<MapPanel {...(mapPanelProps() as any)} />);
+      await flush();
+      const projectCalls = mapProjectMock.mock.calls.length;
+      const handle = stubs.mapViewerHandle.current as Record<string, ReturnType<typeof vi.fn>>;
+      const reloadCalls = handle.reloadStyle!.mock.calls.length;
+      act(() => {
+        listeners.forEach((fn) => fn({ type: "op:memory-change", data: { file: "a.md" } }));
+        listeners.forEach((fn) => fn({ type: "op:stream-state", data: { running: false } }));
+      });
+      await flush(3);
+      expect(mapProjectsMock).toHaveBeenCalledTimes(1);
+      expect(mapProjectMock.mock.calls.length).toBe(projectCalls);
+      expect(handle.reloadStyle!.mock.calls.length).toBe(reloadCalls);
+    } finally {
+      delete (window as unknown as Record<string, unknown>).opDesktop;
+      unmount();
+    }
   });
 });

@@ -37,6 +37,7 @@ import {
   mapDuplicateProject, mapRenameProject, mapArchiveProject, mapDeleteProject,
   mapExportBatch, mapExportStatus,
 } from "../../api/client-api";
+import { subscribeDesktopEvents } from "../../api/ipc-client";
 import { flag } from "../../lib/feature-flags";
 import type { Map as MapLibreMap } from "maplibre-gl";
 import type { SessionRecord } from "../../components/SessionList";
@@ -364,6 +365,7 @@ export default function MapPanel({
   const [regionCode, setRegionCode] = useState("");
   const [layerScope, setLayerScope] = useState("region"); // 当前区域 / 当前地市 / 全省
   const [regionQuery, setRegionQuery] = useState("");
+  const [regionToken, setRegionToken] = useState(0); // 工作区切换（地图库跟随）强制重读行政区缓存
   const [annotationsVisible, setAnnotationsVisible] = useState(true);
   // 阶段 2：顶栏收敛后的菜单与面板开关
   const [visualOpen, setVisualOpen] = useState(false);   // 可视面板（替代 6 个旧分析面板）
@@ -552,11 +554,12 @@ export default function MapPanel({
     setTimeout(() => setMsg(""), 4000);
   }, []);
 
-  // 加载项目详情（config + style + 图层文件清单 + 归属视图）
-  const loadProject = useCallback(async (name: string) => {
+  // 加载项目详情（config + style + 图层文件清单 + 归属视图）；
+  // ws 显式传参：op:maps-changed 到达早于 workspace prop 传播时也能按新库取归属视图。
+  const loadProject = useCallback(async (name: string, ws: string = workspace) => {
     try {
       // 归属视图随工作区变化：共享数据集 + 本工作区自有图层（阶段 1）。
-      const p = await mapProject(name, workspace);
+      const p = await mapProject(name, ws);
       const doc = (p || {}) as {
         config?: MapConfigDoc | null;
         style?: MapStyleDoc | null;
@@ -620,7 +623,7 @@ export default function MapPanel({
       })
       .catch(() => {});
     return () => { cancelled = true; };
-  }, [project]);
+  }, [project, regionToken]);
 
   const selectRegion = useCallback((value: string) => {
     setRegionCode(value);
@@ -669,6 +672,33 @@ export default function MapPanel({
     workspaceRef.current = workspace;
     loadProject(project);
   }, [workspace, project, loadProject]);
+
+  // 地图库跟随（2026-10-30 改造）：workspace:switch 成功后 main 广播 op:maps-changed，
+  // 此处重拉项目清单 + 清行政区缓存 + 清下钻 + 按事件携带的新工作区重载当前项目
+  // （config/style/files/layerViews 归新库），并强制 reloadStyle——MapViewer 3s 轮询
+  // 按 style 内容哈希去重，新库 style 与旧库同内容时不会自愈，必须显式重载。
+  const refreshMapsLibrary = useCallback(async (ws: string) => {
+    try {
+      const listed = await mapProjects();
+      setProjects((listed.projects || []) as MapProjectMeta[]);
+    } catch { /* 清单重拉失败保持现状，后续操作自愈 */ }
+    regionOptionsCacheRef.current.clear();
+    setRegionToken((t) => t + 1);
+    setDrill(null);
+    mapRef.current?.clearDrill?.();
+    await loadProject(project, ws);
+    await mapRef.current?.reloadStyle?.();
+    flash("工作区已切换，地图库已刷新");
+  }, [project, loadProject, flash]);
+  const refreshMapsLibraryRef = useRef(refreshMapsLibrary);
+  refreshMapsLibraryRef.current = refreshMapsLibrary;
+  useEffect(() => {
+    return subscribeDesktopEvents((event) => {
+      if (event.type !== "op:maps-changed") return;
+      const data = (event.data ?? {}) as { workspace?: unknown };
+      void refreshMapsLibraryRef.current(typeof data.workspace === "string" ? data.workspace : "");
+    });
+  }, []);
 
   // 临时分析只属于当前对话；切换会话时清理运行时图层，但保留共享基础图层和正式文件图层。
   useEffect(() => {
