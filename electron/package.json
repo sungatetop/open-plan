@@ -1,6 +1,6 @@
 {
   "name": "guiju-desktop",
-  "version": "0.11.55",
+  "version": "0.11.56",
   "private": true,
   "description": "规聚桌面端（Electron 一体化壳：Node 侧承载后端，渲染层承载前端）",
   "type": "commonjs",

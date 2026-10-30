@@ -127,7 +127,7 @@ Electron Renderer (React + TS)
 ## 快速开始
 
 ### 安装包（推荐）
-Windows x64 安装包从 [GitHub Releases](https://github.com/sungatetop/open-plan/releases/latest) 下载（如 `GuiJu-Setup-0.11.55.exe`，per-user 安装，无需管理员权限）。
+Windows x64 安装包从 [GitHub Releases](https://github.com/sungatetop/open-plan/releases/latest) 下载（如 `GuiJu-Setup-0.11.56.exe`，per-user 安装，无需管理员权限）。
 
 ### 源码运行
 
@@ -154,7 +154,7 @@ npm run verify   # desktop:typecheck + desktop:test（vitest 全量）+ desktop:
 
 ## 版本历史
 
-当前版本 **v0.11.55**，详见 [变更日志.md](变更日志.md)。0.11.x 完成桌面端一体化重构（R0-R6）：全界面 TypeScript 化、client/server 退役并入 electron/、IPC 一体化（op:* 通道取代 HTTP/SSE）、测试全量 vitest、NSIS 安装包交付。
+当前版本 **v0.11.56**，详见 [变更日志.md](变更日志.md)。0.11.x 完成桌面端一体化重构（R0-R6）：全界面 TypeScript 化、client/server 退役并入 electron/、IPC 一体化（op:* 通道取代 HTTP/SSE）、测试全量 vitest、NSIS 安装包交付。
 
 > v0.11.x 起（对话流折叠与结论、每轮用时与 token、产物归属分层、模型切换排队与分割线等）逐版本记录见 [变更日志.md](变更日志.md)。
 

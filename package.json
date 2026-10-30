@@ -1,6 +1,6 @@
 {
   "name": "open-plan",
-  "version": "0.11.55",
+  "version": "0.11.56",
   "private": true,
   "description": "Open Plan（规聚）— 面向规划工程师的 AI 一体化工作台：Office 文档、知识库、地图可视化与 Agent 协作",
   "keywords": [
