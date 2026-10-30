@@ -9,8 +9,8 @@
  * 注入 ACAO 放行。
  *
  * 新路径：单 scheme 双 host——
- *   - oaw-data://maps/<path>   → 工作区 maps 根（office-workspace/maps，运行时数据，
- *     与 backend/map.ts MAPS_ROOT 同锚点 WORKSPACE_DIR/maps）；
+ *   - oaw-data://maps/<path>   → 当前工作区 maps 根（<当前工作区>/maps，运行时数据，
+ *     与 backend/map.ts mapsRoot() 同锚动态跟随，2026-10-30 地图库跟随改造）；
  *   - oaw-data://glyphs/<path> → electron/resources/glyphs（自托管 MapLibre 字体切片，
  *     R6-2 起 client/public/glyphs 迁移至此；R6-1 后 legacy 形态不可达，client/dist
  *     不再被新 UI 消费）。
@@ -19,7 +19,7 @@
  *   - registerOawDataSchemePrivileged() 在 app ready 前调用（standard + secure +
  *     supportFetchAPI + stream + corsEnabled，MapLibre 引擎 fetch 资产的必要特权）；
  *   - installOawDataProtocolHandler(roots) 在 whenReady 后调用（protocol.handle 契约），
- *     roots 由接线方注入（maps 锚 workspace.WORKSPACE_DIR/maps，glyphs 锚
+ *     roots 由接线方注入（maps 锚 workspace.getMapsRoot() 动态 getter，glyphs 锚
  *     app.getAppPath()/resources/glyphs——dev 即 electron/resources/glyphs，打包态随
  *     files 配置入包，Electron fs 对 asar 内文件透明可读）。
  *
@@ -46,7 +46,12 @@ export const OAW_DATA_SCHEME = "oaw-data";
 export type OawDataHost = "maps" | "glyphs";
 
 export interface OawDataRoots {
-  maps: string;
+  /**
+   * maps 根：静态路径或动态 getter（每请求求值）。工作区切换时地图库跟随
+   * （2026-10-30 改造）：接线方传 () => workspace.getMapsRoot()，同一
+   * oaw-data://maps/<...> URL 自动解析到当前工作区的 maps 库。
+   */
+  maps: string | (() => string);
   glyphs: string;
 }
 
@@ -86,7 +91,7 @@ export function resolveOawDataFile(url: string, roots: OawDataRoots): { filePath
   }
   const host = parsed.host as OawDataHost;
   if (host !== "maps" && host !== "glyphs") return null;
-  const root = host === "maps" ? roots.maps : roots.glyphs;
+  const root = host === "maps" ? (typeof roots.maps === "function" ? roots.maps() : roots.maps) : roots.glyphs;
   let rel: string;
   try {
     rel = decodeURIComponent(parsed.pathname);

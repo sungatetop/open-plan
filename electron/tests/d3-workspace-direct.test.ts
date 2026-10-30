@@ -172,6 +172,19 @@ describe("D-3 op:workspace:switch（L3466-3482）", () => {
     expect(okResult.ok).toBe(true);
     expect(okResult.data).toEqual({ ok: true, workspace: "D:\\ws\\默认", files: [{ name: "a.docx", path: "a.docx" }] });
   });
+
+  test("切换成功触发 onSwitched（getWorkspace() 值）；失败与前置校验路径不触发", async () => {
+    const onSwitched = vi.fn();
+    await invoke("op:workspace:switch", { body: { path: "D:\\ws\\x" } }, makeDeps({ onSwitched }));
+    expect(onSwitched).toHaveBeenCalledTimes(1);
+    expect(onSwitched).toHaveBeenCalledWith("D:\\ws\\默认");
+
+    const notFired = vi.fn();
+    await invoke("op:workspace:switch", { body: { path: "D:\\ws\\x" } }, makeDeps({ setWorkspace: vi.fn(() => false), onSwitched: notFired }));
+    await invoke("op:workspace:switch", { body: { path: "坏路径" } }, makeDeps({ onSwitched: notFired }));
+    await invoke("op:workspace:switch", { body: {} }, makeDeps({ onSwitched: notFired }));
+    expect(notFired).not.toHaveBeenCalled();
+  });
 });
 
 describe("D-3 op:workspace:validate（L3520-3545）", () => {

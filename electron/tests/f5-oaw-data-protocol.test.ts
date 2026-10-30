@@ -5,8 +5,9 @@
  *   - 旧 sidecar 静态服务面：server/index.mjs L611 express.static(map.STATIC_ROOT)
  *     （/api/map/data/* → WORKSPACE_DIR/maps）+ L5740 express.static(client/dist)
  *     （/glyphs/* → client/public/glyphs，R6-2 起迁移 electron/resources/glyphs）；
- *   - 桌面形态：单 scheme 双 host（maps = WORKSPACE_DIR/maps，glyphs = app 根
- *     resources/glyphs），MapLibre 引擎 fetch 资产面（业务通道之外）等价替换；
+ *   - 桌面形态：单 scheme 双 host（maps = workspace.getMapsRoot() 动态 getter，
+ *     工作区切换时地图库跟随；glyphs = app 根 resources/glyphs），MapLibre 引擎
+ *     fetch 资产面（业务通道之外）等价替换；
  *   - 调用方可感知语义：未命中/穿越 → 404（express.static 未命中 → next() → 404 等价）；
  *     mime 对齐 mime-db（.geojson → application/geo+json、.pbf → application/x-protobuf）。
  *
@@ -75,6 +76,30 @@ describe("oaw-data mime 映射（对齐旧侧 mime-db 调用方语义）", () =>
 
   test("未知扩展 → application/octet-stream", () => {
     expect(resolveOawDataFile("oaw-data://maps/demo/blob.xyz", ROOTS)?.mime).toBe("application/octet-stream");
+  });
+});
+
+describe("oaw-data roots 动态化（地图库跟随 2026-10-30）", () => {
+  test("maps 根为 getter：每请求求值（同一 URL 切换后解析到新工作区库）", () => {
+    let current = "W:\\ws-a\\maps";
+    const dynRoots: OawDataRoots = { maps: () => current, glyphs: "D:\\app\\resources\\glyphs" };
+    expect(resolveOawDataFile("oaw-data://maps/demo/style.json", dynRoots)?.filePath).toBe(
+      join("W:\\ws-a\\maps", "demo", "style.json")
+    );
+    // 模拟工作区切换：getter 返回新根，同一 URL 自动解析到新库（渲染面零改造）
+    current = "W:\\ws-b\\maps";
+    expect(resolveOawDataFile("oaw-data://maps/demo/style.json", dynRoots)?.filePath).toBe(
+      join("W:\\ws-b\\maps", "demo", "style.json")
+    );
+  });
+
+  test("getter 形态同样受穿越守卫约束；glyphs 静态形态不受影响", () => {
+    let current = "W:\\ws\\maps";
+    const dynRoots: OawDataRoots = { maps: () => current, glyphs: "D:\\g" };
+    expect(resolveOawDataFile("oaw-data://maps/x%2f..%2f..%2fescape.json", dynRoots)).toBeNull();
+    expect(resolveOawDataFile("oaw-data://glyphs/Noto/0-255.pbf", dynRoots)?.filePath).toBe(
+      join("D:\\g", "Noto", "0-255.pbf")
+    );
   });
 });
 

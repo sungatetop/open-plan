@@ -1413,7 +1413,15 @@ function registerWorkspaceDirectInvokers(): void {
         readSessionTextCached: (found) => sessionFiles.readSessionTextCached(found as never),
         existsSync: (p) => fs.existsSync(p),
         readdirSync: (p) => fs.readdirSync(p),
-        realpathSync: (p) => fs.realpathSync(p)
+        realpathSync: (p) => fs.realpathSync(p),
+        // 地图库跟随（2026-10-30 改造）：switch 成功后广播 op:maps-changed，
+        // 渲染层地图面板据此重拉项目清单 + 重载当前 style
+        onSwitched: (ws) =>
+          broadcastEvent({
+            type: "op:maps-changed",
+            at: new Date().toISOString(),
+            data: { workspace: ws, mapsRoot: workspace.getMapsRoot() }
+          })
       };
     })();
     return depsPromise;
@@ -1642,12 +1650,13 @@ if (!gotLock) {
     registerEventBridgeHandlers();
     registerMemoryBridgeHandlers();
     registerGlobalEventsBridgeHandlers();
-    // R6-2 资产自持：oaw-data://maps（锚 WORKSPACE_DIR/maps，与 backend/map.ts MAPS_ROOT
-    // 同源）+ oaw-data://glyphs（锚 app 根 resources/glyphs，dev 即 electron/resources/glyphs）。
+    // R6-2 资产自持：oaw-data://maps（锚 workspace.getMapsRoot() 动态 getter，与
+    // backend/map.ts mapsRoot() 同源，工作区切换时地图库跟随）+ oaw-data://glyphs
+    // （锚 app 根 resources/glyphs，dev 即 electron/resources/glyphs）。
     void import("./backend/workspace")
       .then((workspace) =>
         installOawDataProtocolHandler({
-          maps: path.join(workspace.WORKSPACE_DIR, "maps"),
+          maps: () => workspace.getMapsRoot(),
           glyphs: path.join(app.getAppPath(), "resources", "glyphs")
         })
       )

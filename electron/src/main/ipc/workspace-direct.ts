@@ -33,7 +33,9 @@
  *     时收掉对话框；IPC invoke 无中断场景且 runPicker 结束时已自清 activePicker
  *     （native-files.ts L235），保留调用作为等价兜底（no-op，D-1a pick-files 同款）；
  *   - switch/validate/list/cancel 四条薄路由 sidecar 无整体 try/catch（异常走
- *     express 默认错误页），直调形态统一由分发器兜底 500 { ok:false, error }。
+ *     express 默认错误页），直调形态统一由分发器兜底 500 { ok:false, error }；
+ *   - switch 成功分支新增 onSwitched 回调（生产广播 op:maps-changed，旧 sidecar
+ *     无此推送——地图库跟随改造 2026-10-30，渲染层地图面板据此刷新）。
  *
  * 数据源：backend/workspace.ts（B2 对拍覆盖）+ backend/workspace-write-probe.ts
  * （S3-3）+ backend/office.ts checkOfficecli + backend/native-files.ts（S3-15）+
@@ -80,6 +82,8 @@ export interface WorkspaceDirectDeps {
   readdirSync: (p: string) => Array<string>;
   /** realpath 归一（canonical 与隐藏路径比对） */
   realpathSync: (p: string) => string;
+  /** switch 成功后回调（可选；生产接线广播 op:maps-changed 供地图面板刷新——地图库跟随改造 2026-10-30） */
+  onSwitched?: (workspace: string) => void;
 }
 
 /** workspace 族直调 invoke 通道清单（与 DESKTOP_CHANNELS 对应路由一致）。 */
@@ -192,6 +196,8 @@ function invokeWorkspaceSwitch(payload: InvokeEnvelope, deps: WorkspaceDirectDep
   if (!deps.setWorkspace(workspace)) {
     return { ok: false, status: 400, data: { error: "工作区切换失败", code: "WORKSPACE_SWITCH_FAILED" } };
   }
+  // 切换成功通知（地图库跟随：地图面板重拉项目清单 + 重载当前 style）
+  deps.onSwitched?.(deps.getWorkspace());
   return ok({ ok: true, workspace: deps.getWorkspace(), files: deps.listWorkspace() });
 }
 
