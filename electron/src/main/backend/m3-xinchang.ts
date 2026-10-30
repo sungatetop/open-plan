@@ -9,10 +9,12 @@
  *
  * 行为保真说明：
  *  - DATA_DIR 锚点：旧侧以 __dirname（server/）拼 xinchang-data；server/ 随 R6-7b 退役。
- *    R6 收口后修正：切外部运行时数据目录（WORKSPACE_DIR/maps/bus-xinchang，与 map.ts BUS_DATA_DIR
- *    同锚）——业务数据外部可加载、不进安装包资源：新装机缺数据时各维度返回既有
+ *    R6 收口后修正：切外部运行时数据目录（maps/bus-xinchang，与 map.ts busDataDir 同锚）
+ *    ——业务数据外部可加载、不进安装包资源：新装机缺数据时各维度返回既有
  *    「数据不存在」错误路径，用户按提示把数据放入 maps/bus-xinchang/ 即生效（readJSON
  *    缺文件不写缓存，落盘后无需重启）。
+ *    地图库跟随改造（2026-10-30）：锚点函数化 dataDir() → workspace.getMapsRoot()，
+ *    随工作区切换；readJSON 缓存键改全路径（跨工作区同名文件天然 miss，不串库）。
  *  - readJSON 模块级 Map 缓存、分类规则/配色/统计口径逐行转录；falsy 语义与旧 JS 一致。
  *  - TS strict 适配（noUncheckedIndexedAccess）：索引访问加 ! 断言（均为基内访问，越界
  *    语义不变）。
@@ -21,19 +23,21 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import { WORKSPACE_DIR } from "./workspace";
+import { getMapsRoot } from "./workspace";
 
-const DATA_DIR = path.join(WORKSPACE_DIR, "maps", "bus-xinchang");
+/** 公交数据目录：<当前工作区>/maps/bus-xinchang（地图库跟随改造 2026-10-30） */
+function dataDir(): string {
+  return path.join(getMapsRoot(), "bus-xinchang");
+}
 
-/** 读取 JSON 文件（带缓存） */
+/** 读取 JSON 文件（带缓存；缓存键 = 全路径，工作区切换天然 miss 不串库） */
 const cache = new Map<string, any>();
 function readJSON(file: string): any {
-  const key = file;
-  if (cache.has(key)) return cache.get(key);
-  const fp = path.join(DATA_DIR, file);
+  const fp = path.join(dataDir(), file);
+  if (cache.has(fp)) return cache.get(fp);
   if (!fs.existsSync(fp)) return null;
   const data = JSON.parse(fs.readFileSync(fp, "utf8"));
-  cache.set(key, data);
+  cache.set(fp, data);
   return data;
 }
 

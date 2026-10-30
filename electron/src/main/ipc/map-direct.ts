@@ -149,6 +149,8 @@ export interface MapDirectDeps {
   }>;
   /** 当前工作区（backend/workspace.ts getWorkspace） */
   getWorkspace: () => string;
+  /** 当前工作区地图库根（backend/workspace.ts getMapsRoot；prepare 传 CLI --maps-root） */
+  getMapsRoot: () => string;
   /** 仓库根（workspace-paths.ts PROJECT_DIR，prepare 脚本 cwd 与 data 目录锚点） */
   projectDir: string;
   /** 目录探测（node:fs existsSync/statSync 的注入面，prepare 校验用） */
@@ -507,8 +509,10 @@ async function invokePrepare(payload: InvokeEnvelope, deps: MapDirectDeps): Prom
   if (!probe.exists || !probe.isDirectory) {
     return fail(400, { error: "目录不存在: " + (srcDir || "data") + "（请先把矢量数据放入该目录）" });
   }
-  const p1 = await deps.runScript("scripts/tools/prepare-map-data.mjs", [src]);
-  const p2 = await deps.runScript("scripts/tools/build-vector-tiles.mjs", ["--force"]);
+  // 两脚本均支持 --maps-root 覆盖默认锚（地图库跟随 2026-10-30）：按当前工作区传根
+  const mapsRootArg = `--maps-root=${deps.getMapsRoot()}`;
+  const p1 = await deps.runScript("scripts/tools/prepare-map-data.mjs", [src, mapsRootArg]);
+  const p2 = await deps.runScript("scripts/tools/build-vector-tiles.mjs", ["--force", mapsRootArg]);
   return ok({ ok: p1.code === 0 && p2.code === 0, prepare: p1.out.slice(-800), tiles: p2.out.slice(-500) });
 }
 

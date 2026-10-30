@@ -12,13 +12,17 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import * as modern from "../src/main/backend/m3-xinchang";
+import { setWorkspace, WORKSPACE_DIR } from "../src/main/backend/workspace";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(HERE, "../..");
 
 beforeAll(() => {
+  // 数据锚点随当前工作区（2026-10-30 地图库跟随）：测试固定默认工作区锚，
+  // 防 .workspace-state.json 残留切换态干扰真实数据断言
+  setWorkspace(WORKSPACE_DIR);
   // 锚点 sanity：真实数据在场（三份源文件同一物理目录；R6 收口后修正起切外部运行时
-  // 数据目录 office-workspace/maps/bus-xinchang，与 map.ts BUS_DATA_DIR 同锚，资源包
+  // 数据目录 office-workspace/maps/bus-xinchang，与 map.ts busDataDir 同锚，资源包
   // 不再内置业务数据——缺数据时各维度走「数据不存在」错误路径，用户放数据即生效）
   expect(fs.existsSync(path.join(PROJECT_ROOT, "office-workspace/maps/bus-xinchang/routes.geojson"))).toBe(true);
   expect(fs.existsSync(path.join(PROJECT_ROOT, "office-workspace/maps/bus-xinchang/stations.json"))).toBe(true);

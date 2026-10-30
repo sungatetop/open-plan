@@ -1254,6 +1254,7 @@ function registerMapDirectInvokers(): void {
         listLayers: (project, options) => layerRepo.listLayers(project, options),
         buildProjectZip: (input) => projectPack.buildProjectZip(input),
         getWorkspace: () => workspace.getWorkspace(),
+        getMapsRoot: () => workspace.getMapsRoot(),
         projectDir: workspacePaths.PROJECT_DIR,
         dirProbe: (dir) => {
           if (!fs.existsSync(dir)) return { exists: false, isDirectory: false };

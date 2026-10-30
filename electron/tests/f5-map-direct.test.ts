@@ -68,6 +68,7 @@ function makeDeps(overrides: Partial<MapModule.MapDirectDeps> = {}) {
       buffer: Buffer.from("ZIPDATA")
     })),
     getWorkspace: vi.fn(() => "W:\\ws"),
+    getMapsRoot: vi.fn(() => "W:\\ws\\maps"),
     projectDir: "P:\\proj",
     dirProbe: vi.fn(() => ({ exists: true, isDirectory: true })),
     runScript: vi.fn(async (script: string) => ({ code: 0, out: `ran ${script}` })),
@@ -356,8 +357,9 @@ describe("F5-1 样式配置/导入/瓦片/图层族（L704-779）", () => {
       dirProbe: vi.fn(() => ({ exists: true, isDirectory: true }))
     }));
     expect(runFn).toHaveBeenCalledTimes(2);
-    expect(runFn).toHaveBeenNthCalledWith(1, "scripts/tools/prepare-map-data.mjs", [expect.stringContaining("data")]);
-    expect(runFn).toHaveBeenNthCalledWith(2, "scripts/tools/build-vector-tiles.mjs", ["--force"]);
+    // prepare 链传当前工作区 maps 根（地图库跟随 2026-10-30）
+    expect(runFn).toHaveBeenNthCalledWith(1, "scripts/tools/prepare-map-data.mjs", [expect.stringContaining("data"), "--maps-root=W:\\ws\\maps"]);
+    expect(runFn).toHaveBeenNthCalledWith(2, "scripts/tools/build-vector-tiles.mjs", ["--force", "--maps-root=W:\\ws\\maps"]);
     const data = okRes.data as Record<string, unknown>;
     expect(data.ok).toBe(true);
     expect(data.prepare).toHaveLength(800);

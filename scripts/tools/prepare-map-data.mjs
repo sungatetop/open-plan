@@ -2,7 +2,11 @@
 /**
  * 准备浙江省地图图层数据（矢量数据 → 简化 → 输出到项目 layers/）
  *
- * 用法: node scripts/tools/prepare-map-data.mjs [数据源目录]
+ * 用法: node scripts/tools/prepare-map-data.mjs [数据源目录] [--maps-root=<目录>]
+ *
+ * maps 根锚点优先级：--maps-root= 参数 > OAW_MAPS_ROOT 环境变量 > 默认
+ * {项目根}/office-workspace/maps（CLI 直跑行为不变）。
+ * 桌面端「准备数据」链路（map-direct invokePrepare）按当前工作区传 --maps-root。
  *
  * 数据源目录（默认 ../全省高速公路可视化/浙江省高速矢量数据，可传任意目录）：
  *   按文件名关键词自动匹配（不区分大小写）：
@@ -27,8 +31,14 @@ import { fileURLToPath } from "node:url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_DIR = path.resolve(__dirname, "..", "..");
 const DEFAULT_SRC = path.resolve(PROJECT_DIR, "..", "全省高速公路可视化", "浙江省高速矢量数据");
-const SRC = path.resolve(process.argv[2] || DEFAULT_SRC);
-const LAYERS_DIR = path.join(PROJECT_DIR, "office-workspace", "maps", "zhejiang-map", "layers");
+// 位置参数 = 数据源目录（-- 开头的开关参数不计入，避免 --maps-root= 被误当目录）
+const positional = process.argv.slice(2).filter((a) => !a.startsWith("--"));
+const SRC = path.resolve(positional[0] || DEFAULT_SRC);
+const mapsRootArg = process.argv.find((a) => a.startsWith("--maps-root="));
+const MAPS_ROOT = path.resolve(
+  mapsRootArg?.slice("--maps-root=".length) || process.env.OAW_MAPS_ROOT || path.join(PROJECT_DIR, "office-workspace", "maps")
+);
+const LAYERS_DIR = path.join(MAPS_ROOT, "zhejiang-map", "layers");
 
 fs.mkdirSync(LAYERS_DIR, { recursive: true });
 if (!fs.existsSync(SRC)) {

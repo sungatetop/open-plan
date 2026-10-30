@@ -2,7 +2,11 @@
 /**
  * 生成矢量瓦片（CLI 入口，逻辑见 scripts/lib/tiler.mjs）
  *
- * 用法: node scripts/tools/build-vector-tiles.mjs [--force] [--layer=highways]
+ * 用法: node scripts/tools/build-vector-tiles.mjs [--force] [--layer=highways] [--maps-root=<目录>]
+ *
+ * maps 根锚点优先级：--maps-root= 参数 > OAW_MAPS_ROOT 环境变量 > 默认
+ * {项目根}/office-workspace/maps（CLI 直跑行为不变）。
+ * 桌面端「准备数据」链路（map-direct invokePrepare）按当前工作区传 --maps-root。
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -11,7 +15,11 @@ import { LAYER_DEFS, buildProjectTiles } from "../lib/tiler.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_DIR = path.resolve(__dirname, "..", "..");
-const MAP_DIR = path.join(PROJECT_DIR, "office-workspace", "maps", "zhejiang-map");
+const mapsRootArg = process.argv.find((a) => a.startsWith("--maps-root="));
+const MAPS_ROOT = path.resolve(
+  mapsRootArg?.slice("--maps-root=".length) || process.env.OAW_MAPS_ROOT || path.join(PROJECT_DIR, "office-workspace", "maps")
+);
+const MAP_DIR = path.join(MAPS_ROOT, "zhejiang-map");
 const TILES_DIR = path.join(MAP_DIR, "tiles");
 
 const FORCE = process.argv.includes("--force");
