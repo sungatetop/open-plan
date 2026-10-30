@@ -8,8 +8,11 @@
  *   4. 公交线网结构统计
  *
  * 行为保真说明：
- *  - DATA_DIR 锚点：旧侧以 __dirname（server/）拼 xinchang-data；server/ 随 R6-7b 退役，
- *    数据迁 electron/resources/xinchang-data（RESOURCES_DIR 统一锚点，与旧侧物理内容同一份）。
+ *  - DATA_DIR 锚点：旧侧以 __dirname（server/）拼 xinchang-data；server/ 随 R6-7b 退役。
+ *    R6 收口后修正：切外部运行时数据目录（WORKSPACE_DIR/maps/bus-xinchang，与 map.ts BUS_DATA_DIR
+ *    同锚）——业务数据外部可加载、不进安装包资源：新装机缺数据时各维度返回既有
+ *    「数据不存在」错误路径，用户按提示把数据放入 maps/bus-xinchang/ 即生效（readJSON
+ *    缺文件不写缓存，落盘后无需重启）。
  *  - readJSON 模块级 Map 缓存、分类规则/配色/统计口径逐行转录；falsy 语义与旧 JS 一致。
  *  - TS strict 适配（noUncheckedIndexedAccess）：索引访问加 ! 断言（均为基内访问，越界
  *    语义不变）。
@@ -18,9 +21,9 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import { RESOURCES_DIR } from "./workspace-paths";
+import { WORKSPACE_DIR } from "./workspace";
 
-const DATA_DIR = path.join(RESOURCES_DIR, "xinchang-data");
+const DATA_DIR = path.join(WORKSPACE_DIR, "maps", "bus-xinchang");
 
 /** 读取 JSON 文件（带缓存） */
 const cache = new Map<string, any>();

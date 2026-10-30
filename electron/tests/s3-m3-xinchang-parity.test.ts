@@ -17,10 +17,12 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(HERE, "../..");
 
 beforeAll(() => {
-  // 锚点 sanity：真实数据在场（三份源文件同一物理目录；R6-7b 起 electron/resources/xinchang-data）
-  expect(fs.existsSync(path.join(PROJECT_ROOT, "electron/resources/xinchang-data/routes.geojson"))).toBe(true);
-  expect(fs.existsSync(path.join(PROJECT_ROOT, "electron/resources/xinchang-data/stations.json"))).toBe(true);
-  expect(fs.existsSync(path.join(PROJECT_ROOT, "electron/resources/xinchang-data/od-flow.json"))).toBe(true);
+  // 锚点 sanity：真实数据在场（三份源文件同一物理目录；R6 收口后修正起切外部运行时
+  // 数据目录 office-workspace/maps/bus-xinchang，与 map.ts BUS_DATA_DIR 同锚，资源包
+  // 不再内置业务数据——缺数据时各维度走「数据不存在」错误路径，用户放数据即生效）
+  expect(fs.existsSync(path.join(PROJECT_ROOT, "office-workspace/maps/bus-xinchang/routes.geojson"))).toBe(true);
+  expect(fs.existsSync(path.join(PROJECT_ROOT, "office-workspace/maps/bus-xinchang/stations.json"))).toBe(true);
+  expect(fs.existsSync(path.join(PROJECT_ROOT, "office-workspace/maps/bus-xinchang/od-flow.json"))).toBe(true);
 });
 
 describe("S3-9 m3-xinchang 域", () => {
