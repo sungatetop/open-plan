@@ -88,6 +88,11 @@ export function getWorkspace(): string {
   return _currentWorkspace;
 }
 
+/** 当前工作区地图库根：<当前工作区>/maps，工作区切换时跟随（地图库跟随改造 2026-10-30）。 */
+export function getMapsRoot(): string {
+  return path.join(getWorkspace(), "maps");
+}
+
 /**
  * 解析并校验一个工作区目录，统一给 HTTP 层、Agent 和 Run 使用。
  * 返回 realpath，避免同一个目录因相对路径/符号链接产生多个运行归属。

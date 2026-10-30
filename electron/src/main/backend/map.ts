@@ -11,8 +11,9 @@
  * 静态文件由旧 index.mjs 挂载: /api/map/data/* → maps 根目录（HTTP 面随流量切换批切换）。
  *
  * 行为保真说明：
- *  - WORKSPACE_DIR 静态直绑 workspace.ts（B6-1 先例），与旧侧 server/workspace.mjs
- *    同指 {项目根}/office-workspace，MAPS_ROOT 天然同锚点。
+ *  - 地图库锚点跟随当前工作区：mapsRoot() → workspace.getMapsRoot()（<当前工作区>/maps），
+ *    默认工作区下 = WORKSPACE_DIR/maps，与旧侧 server/workspace.mjs 同锚（行为等价）。
+ *    底图 Key 设置（settings*.json）保持全局锚 WORKSPACE_DIR/maps，不随工作区切换。
  *  - LAYER_DEFS/GROUP_BY_TYPE/buildProjectTiles 经物理相对路径静态绑定
  *    scripts/lib/tiler.mjs（CLI 与 server 共用库，不属 map 域转录面，新旧侧
  *    引用同一物理模块，行为天然等价）。
@@ -25,17 +26,20 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import { WORKSPACE_DIR } from "./workspace";
+import { WORKSPACE_DIR, getMapsRoot } from "./workspace";
 import { LAYER_DEFS, GROUP_BY_TYPE, buildProjectTiles } from "../../../../scripts/lib/tiler.mjs";
 
-const MAPS_ROOT = path.join(WORKSPACE_DIR, "maps");
+// 地图库根跟随当前工作区（方案：docs/solutions/2026-10-30-工作区切换地图库跟随改造方案.md）
+function mapsRoot(): string {
+  return getMapsRoot();
+}
 export const DEFAULT_PROJECT = "zhejiang-map";
 
 // 字形地址（单一定义）：自托管到 /glyphs/，由 client/public/glyphs 提供
 // （scripts/tools/generate-map-glyphs.mjs 生成）。改这里即可全项目生效。
 export const GLYPHS_URL = "/glyphs/{fontstack}/{range}.pbf";
 
-export const STATIC_ROOT = MAPS_ROOT; // index.mjs 静态挂载点
+export function staticRoot(): string { return mapsRoot(); } // index.mjs 静态挂载点（旧常量面，函数化跟随工作区）
 
 // 基础底图（始终可用）：高德 3 档，国内 CDN 稳定、CORS 全开
 // style=8 路网（含道路注记） / style=6 卫星影像 / style=7 卫星影像+注记
@@ -157,10 +161,11 @@ function noKeyBasemaps() {
   };
 }
 
-// 底图设置（maps/settings.json）：各底图服务 Key
-const MAP_SETTINGS_PATH = path.join(MAPS_ROOT, "settings.json");
+// 底图设置（maps/settings.json）：各底图服务 Key。
+// Key 是账号属性，保持全局锚（默认工作区 maps/），不随工作区切换（方案决策）。
+const MAP_SETTINGS_PATH = path.join(WORKSPACE_DIR, "maps", "settings.json");
 // 密钥只写入 settings.local.json（被 .gitignore 忽略），避免误提交到仓库。
-const MAP_SETTINGS_LOCAL_PATH = path.join(MAPS_ROOT, "settings.local.json");
+const MAP_SETTINGS_LOCAL_PATH = path.join(WORKSPACE_DIR, "maps", "settings.local.json");
 const DEFAULT_MAP_SETTINGS = { basemaps: { tiandituKey: "", maptilerKey: "", geoapifyKey: "", esriToken: "" } };
 
 export function loadMapSettings() {
@@ -183,7 +188,7 @@ export function saveMapSettings(basemaps: any = {}) {
     geoapifyKey: String(basemaps.geoapifyKey ?? cur.basemaps.geoapifyKey ?? ""),
     esriToken: String(basemaps.esriToken ?? cur.basemaps.esriToken ?? ""),
   };
-  fs.mkdirSync(MAPS_ROOT, { recursive: true });
+  fs.mkdirSync(path.dirname(MAP_SETTINGS_LOCAL_PATH), { recursive: true });
   fs.writeFileSync(MAP_SETTINGS_LOCAL_PATH, JSON.stringify({ basemaps: cur.basemaps }, null, 2));
   return cur;
 }
@@ -389,17 +394,18 @@ function defaultConfig(project: any, { name = null, baseProject = null }: any = 
 export function projectDir(name: any = DEFAULT_PROJECT) {
   const n = String(name || "").trim();
   if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(n)) return null;
-  return path.join(MAPS_ROOT, n);
+  return path.join(mapsRoot(), n);
 }
 
 export function listProjects() {
-  if (!fs.existsSync(MAPS_ROOT)) return [];
+  const root = mapsRoot();
+  if (!fs.existsSync(root)) return [];
   return fs
-    .readdirSync(MAPS_ROOT, { withFileTypes: true })
-    .filter((e) => e.isDirectory() && fs.existsSync(path.join(MAPS_ROOT, e.name, "map.config.json")))
+    .readdirSync(root, { withFileTypes: true })
+    .filter((e) => e.isDirectory() && fs.existsSync(path.join(root, e.name, "map.config.json")))
     .map((e) => {
       try {
-        return JSON.parse(fs.readFileSync(path.join(MAPS_ROOT, e.name, "map.config.json"), "utf8"));
+        return JSON.parse(fs.readFileSync(path.join(root, e.name, "map.config.json"), "utf8"));
       } catch {
         return { project: e.name, name: e.name };
       }
@@ -695,7 +701,7 @@ export function deleteProject(name: any) {
     error.code = "MAP_PROJECT_NOT_FOUND";
     throw error;
   }
-  const trashRoot = path.join(MAPS_ROOT, ".trash");
+  const trashRoot = path.join(mapsRoot(), ".trash");
   fs.mkdirSync(trashRoot, { recursive: true });
   const target = path.join(trashRoot, `${id}-${Date.now().toString(36)}`);
   let moved = false;
@@ -1280,11 +1286,13 @@ function numericStats(values: any[]) {
 
 // ---------- M3 公交数据分析 ----------
 
-const BUS_DATA_DIR = path.join(MAPS_ROOT, "bus-xinchang");
+function busDataDir(): string {
+  return path.join(mapsRoot(), "bus-xinchang");
+}
 
 /** 读取公交线路数据 */
 export function getBusRoutes() {
-  const routesPath = path.join(BUS_DATA_DIR, "routes.geojson");
+  const routesPath = path.join(busDataDir(), "routes.geojson");
   if (!fs.existsSync(routesPath)) {
     return { error: "公交线路数据不存在，请复制新昌公交数据到 maps/bus-xinchang/" };
   }
@@ -1315,7 +1323,7 @@ export function getBusRoutes() {
 
 /** 读取公交站点数据 */
 export function getBusStops() {
-  const stopsPath = path.join(BUS_DATA_DIR, "stops.csv");
+  const stopsPath = path.join(busDataDir(), "stops.csv");
   if (!fs.existsSync(stopsPath)) {
     return { error: "站点数据不存在" };
   }
@@ -1352,7 +1360,7 @@ export function getBusStops() {
 
 /** 读取公交 OD 数据 */
 export function getBusOD(period: any = "all") {
-  const odPath = path.join(BUS_DATA_DIR, "od.csv");
+  const odPath = path.join(busDataDir(), "od.csv");
   if (!fs.existsSync(odPath)) {
     return { error: "OD 数据不存在" };
   }

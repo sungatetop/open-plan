@@ -1,5 +1,5 @@
 /**
- * S3-8 map 域单侧测试：导出面（35 导出）/ 锚点 sanity（STATIC_ROOT/DEFAULT_PROJECT/
+ * S3-8 map 域单侧测试：导出面（35 导出）/ 锚点 sanity（staticRoot/DEFAULT_PROJECT/
  * GLYPHS_URL）/ projectDir 防目录穿越边界 / 底图与设置（getBasemaps/loadMapSettings 与
  * 真实 maps/settings*.json 同源）/ 真实数据面只读（listProjects/getProject/
  * getTrafficBandwidth/getODLines/getExchangeSankey/getRoadStructure/getBus*，无论数据
@@ -11,7 +11,8 @@
  * EXISTS/BASE_NOT_FOUND/NOT_FOUND/PROTECTED）/ 网络面无外呼分支（route 缺参、
  * amap 无 Key stubEnv、isochrone 无 Key 条件断言；真实外呼有意不做）。
  *
- * 真实 IO：modern 静态 import src/main/backend/map.ts，MAPS_ROOT 锚点 office-workspace/maps，
+ * 真实 IO：modern 静态 import src/main/backend/map.ts，MAPS_ROOT 锚点 office-workspace/maps
+ * （beforeAll 固定默认工作区锚，防 .workspace-state.json 残留切换态干扰），
  * tiler（LAYER_DEFS/buildProjectTiles）引用物理模块 scripts/lib/tiler.mjs。
  * 写盘面在 office-workspace/maps 下用唯一临时项目 id，beforeAll 记 .trash 快照，
  * afterAll 差集清理。duplicatedAt/archivedAt/trash 名含时间戳：冻结 Date 断言
@@ -23,6 +24,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import * as modern from "../src/main/backend/map";
+import { setWorkspace, WORKSPACE_DIR } from "../src/main/backend/workspace";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(HERE, "../..");
@@ -41,6 +43,8 @@ describe("S3-8 map 域", () => {
   let trashBefore: string[] = [];
 
   beforeAll(() => {
+    // 地图库锚点跟随当前工作区（2026-10-30 改造）：测试固定默认工作区锚
+    setWorkspace(WORKSPACE_DIR);
     trashBefore = fs.existsSync(path.join(MAPS_ROOT, ".trash")) ? fs.readdirSync(path.join(MAPS_ROOT, ".trash")) : [];
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date("2026-10-24T02:00:00Z"));
@@ -68,8 +72,8 @@ describe("S3-8 map 域", () => {
     expect(Object.keys(impl).length).toBe(35);
   });
 
-  it("锚点 sanity：STATIC_ROOT/DEFAULT_PROJECT/GLYPHS_URL", () => {
-    expect(impl.STATIC_ROOT).toBe(MAPS_ROOT);
+  it("锚点 sanity：staticRoot/DEFAULT_PROJECT/GLYPHS_URL", () => {
+    expect(impl.staticRoot()).toBe(MAPS_ROOT);
     expect(impl.DEFAULT_PROJECT).toBe("zhejiang-map");
     expect(impl.GLYPHS_URL).toBe("/glyphs/{fontstack}/{range}.pbf");
   });
